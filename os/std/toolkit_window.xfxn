@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/toolkit_window.xfxn - a toolkit ui in a window (roadmap 2.8a1).
+// Aurora Tejeda / CATX Systems
+// Threads: one per window.
+//
+// The ui draws into a canvas of its own; a commit copies what changed into
+// the window's back buffer. That buffer was last drawn two commits ago (the
+// two swap), so what changed since then is this frame's damage and the
+// last one's, and both are copied. One commit is in flight at a time: the
+// next waits for WM_EV_FRAME, so a burst of changes is one frame.
+
+import "toolkit.xfxn";
+import "window.xfxn";
+
+struct tk_win {
+    w: win,
+    ui: *tk_ui,
+    open: u32,
+    in_flight: u32,
+    last: ds_damage,    // what the commit before this one drew
+    font: ds_font,
+    has_font: u32
+}
+
+// The server's font, from slot WIN_FONT_SLOT, mapped read-only and checked
+// as a file would be: 1 if there is one, else 0 (text is then not drawn).
+fn tk_win_font(tw: *tk_win) -> u32 {
+    tw.has_font = 0;
+    let h: i32 = args_handle(WIN_FONT_SLOT);
+    if (h <= 0) { return 0; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = h as u32;
+    a.length = DS_FONT_BYTES_MAX as u64;
+    a.prot = MPROT_READ;
+    if (vm_map(&a) != E_OK) { return 0; }
+    if (ds_font_parse(&tw.font, a.addr as *u8, DS_FONT_BYTES_MAX) != 0) { vm_unmap(a.addr, 0); return 0; }
+    tw.has_font = 1;
+    return 1;
+}
+
+// Copy rects of the canvas into the back buffer.
+fn tk_win_copy(tw: *tk_win, d: *ds_damage) -> void {
+    let k: u32 = 0;
+    while (k < d.n) {
+        let r: *ds_rect = &d.r[k];
+        let y: u32 = 0;
+        while (y < r.h) {
+            let from: *u32 = ds_row(&tw.ui.canvas, r.y + y);
+            let to: *u32 = ds_row(&tw.w.s, r.y + y);
+            memcpy((&to[r.x]) as *u8, (&from[r.x]) as *u8, r.w * 4);
+            y = y + 1;
+        }
+        k = k + 1;
+    }
+}
+
+// What to send with a commit: the damage, made to fit DS_RECTS_MAX.
+fn tk_win_rects(d: *ds_damage, out: *ds_rect) -> u32 {
+    let n: u32 = d.n;
+    let k: u32 = 0;
+    while (k < n && k < DS_RECTS_MAX) { out[k] = d.r[k]; k = k + 1; }
+    if (n > DS_RECTS_MAX) {
+        // the rest into the last one
+        while (k < n) { ds_rect_grow(&out[DS_RECTS_MAX - 1], &d.r[k]); k = k + 1; }
+        n = DS_RECTS_MAX;
+    }
+    return n;
+}
+
+// Draw and commit if there is anything to show and no commit in flight: 0
+// or an error.
+fn tk_win_flush(tw: *tk_win) -> i32 {
+    if (tw.in_flight == 1) { return 0; }
+    let d: ds_damage;
+    if (tk_paint(tw.ui, &d) == 0) { return 0; }
+    // the back buffer is two frames old: this frame's damage and the last's
+    let both: ds_damage = d;
+    let k: u32 = 0;
+    while (k < tw.last.n) { ds_damage_add(&both, tw.last.r[k].x, tw.last.r[k].y, tw.last.r[k].w, tw.last.r[k].h); k = k + 1; }
+    tk_win_copy(tw, &both);
+    let rects: [4]ds_rect;      // DS_RECTS_MAX
+    let n: u32 = tk_win_rects(&d, &rects[0]);
+    let rc: i32 = win_commit_rects(&tw.w, &rects[0], n);
+    if (rc != 0) { return rc; }
+    tw.last = d;
+    tw.in_flight = 1;
+    return 0;
+}
+
+// Open a window for ui, sized to what its tree asks for (at least 1x1),
+// and show it: 0 or an error. The ui keeps its widgets.
+fn tk_win_open(tw: *tk_win, ui: *tk_ui, ep: i32, title: *u8, flags: u32) -> i32 {
+    tw.ui = ui;
+    tw.open = 0;
+    tw.in_flight = 0;
+    let w: u32 = 0;
+    let h: u32 = 0;
+    tk_fit(ui, &w, &h);
+    if (w == 0) { w = 1; }
+    if (h == 0) { h = 1; }
+    let rc: i32 = tk_size(ui, w, h);
+    if (rc != 0) { return rc; }
+    rc = win_open(&tw.w, ep, w, h, flags, title);
+    if (rc != 0) { return rc; }
+    tw.open = 1;
+    // the first frame is all of it, in both buffers' history
+    ds_damage_init(&tw.last, w, h);
+    ds_damage_all(&tw.last);
+    return tk_win_flush(tw);
+}
+
+fn tk_win_close(tw: *tk_win) -> void {
+    if (tw.open == 1) { win_close(&tw.w); tw.open = 0; }
+    tk_free(tw.ui);
+}
+
+// Open again at another size (after a change of scale): 0 or an error.
+fn tk_win_reopen(tw: *tk_win, ep: i32, title: *u8, flags: u32) -> i32 {
+    if (tw.open == 1) { win_close(&tw.w); tw.open = 0; }
+    return tk_win_open(tw, tw.ui, ep, title, flags);
+}
+
+// The next thing for the app, blocking: widgets' events, keys nobody took,
+// TK_EV_CLOSE, or TK_EV_GONE with the error in value. Drawing happens in
+// here, between events.
+fn tk_win_next(tw: *tk_win, ev: *tk_event) -> void {
+    while (1 == 1) {
+        if (tk_next(tw.ui, ev) == 1) { return; }
+        let rc: i32 = tk_win_flush(tw);
+        if (rc != 0) { ev.kind = TK_EV_GONE; ev.id = 0; ev.value = rc; ev.code = 0; return; }
+        let we: wm_event;
+        rc = win_wait(&tw.w, &we);
+        if (rc != 0) { ev.kind = TK_EV_GONE; ev.id = 0; ev.value = rc; ev.code = 0; return; }
+        if (we.kind == WM_EV_FRAME) { tw.in_flight = 0; }
+        else if (we.kind == WM_EV_CLOSE) { ev.kind = TK_EV_CLOSE; ev.id = 0; ev.value = 0; ev.code = 0; return; }
+        else if (we.kind == WM_EV_KEY) { tk_key(tw.ui, we.a as u32); }
+        else if (we.kind == WM_EV_POINTER) { tk_pointer(tw.ui, we.a, we.b, we.c as u32); }
+    }
+}

@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/gallery.xfxn - the widget gallery, the toolkit's witness (roadmap 2.8a1).
+// Aurora Tejeda / CATX Systems
+// Threads: one.
+//
+//   run +screen +spawn +endpoint +disk displayd gallery
+//
+// Every widget in every state (gallery_pages.xfxn). Started by the display
+// server, which gives it the connection and the font. Keys: Tab, Space,
+// Enter and the arrows go to the widgets; D turns dark on and off; 1, 2, 3
+// show it at 100, 150 and 200 %.
+
+import "toolkit_window.xfxn";
+import "gallery_pages.xfxn";
+
+global ga_ui: tk_ui;
+global ga_win: tk_win;
+
+fn _start() -> void {
+    let ep: i32 = win_connection();
+    if (ep <= 0) { exit(2); }
+    let font: *ds_font = 0 as *ds_font;
+    if (tk_win_font(&ga_win) == 1) { font = &ga_win.font; }
+    tk_init(&ga_ui, 4, font);
+    if (gp_build(&ga_ui) != 0) { exit(3); }
+    if (tk_win_open(&ga_win, &ga_ui, ep, "Widget gallery", 0) != 0) { exit(4); }
+    let ev: tk_event;
+    while (1 == 1) {
+        tk_win_next(&ga_win, &ev);
+        if (ev.kind == TK_EV_CLOSE) { tk_win_close(&ga_win); exit(0); }
+        if (ev.kind == TK_EV_GONE) { exit(5); }
+        if (ev.kind == TK_EV_KEY && gp_key(&ga_ui, ev.code) == 1) {
+            if (tk_win_reopen(&ga_win, ep, "Widget gallery", 0) != 0) { exit(6); }
+        }
+    }
+}

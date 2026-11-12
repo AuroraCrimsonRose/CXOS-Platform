@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/gallery_pages.xfxn - what the widget gallery shows (roadmap 2.8a1).
+// Aurora Tejeda / CATX Systems
+//
+// Shared by the gallery (gallery.xfxn) and its test in xtest.xfxn, which
+// builds the same page with no window and requires the gallery's window to
+// hold exactly the pixels the test drew, key for key.
+//
+// Every widget in every state: the states a pointer or the focus makes
+// (hover, pressed, focused) are also shown fixed, beside a live one.
+
+import "toolkit.xfxn";
+
+fn gp_add(ui: *tk_ui, parent: u32, kind: u32, text: *u8, flags: u32) -> u32 {
+    let id: u32 = tk_add(ui, parent, kind, text);
+    if (id != 0 && flags != 0) { tk_set_flags(ui, id, flags, 0); }
+    return id;
+}
+
+// One row of the table: its name, and a row of widgets to fill.
+fn gp_row(ui: *tk_ui, grid: u32, name: *u8) -> u32 {
+    gp_add(ui, grid, TK_LABEL, name, TK_F_MUTED);
+    let row: u32 = tk_add(ui, grid, TK_ROW, 0 as *u8);
+    tk_set_spacing(ui, row, 2, 0);
+    return row;
+}
+
+// The page: 0, or 1 if the ui ran out of room.
+fn gp_build(ui: *tk_ui) -> u32 {
+    let root: u32 = tk_root(ui);
+    tk_set_spacing(ui, root, 3, 4);
+    if (gp_add(ui, root, TK_HEADING, "Widget gallery", 0) == 0) { return 1; }
+    gp_add(ui, root, TK_LABEL, "Tab moves, Space presses. D dark, 1 2 3 scale.", TK_F_MUTED);
+    let grid: u32 = tk_add(ui, root, TK_GRID, 0 as *u8);
+    tk_set_cols(ui, grid, 2);
+    tk_set_spacing(ui, grid, 3, 0);
+
+    let r: u32 = gp_row(ui, grid, "Button");
+    gp_add(ui, r, TK_BUTTON, "Button", 0);
+    gp_add(ui, r, TK_BUTTON, "Default", TK_F_DEFAULT);
+    gp_add(ui, r, TK_BUTTON, "Hover", TK_F_HOVER);
+    gp_add(ui, r, TK_BUTTON, "Press", TK_F_PRESSED);
+    gp_add(ui, r, TK_BUTTON, "Focus", TK_F_SHOW_RING);
+    gp_add(ui, r, TK_BUTTON, "Off", TK_F_DISABLED);
+
+    r = gp_row(ui, grid, "Check box");
+    gp_add(ui, r, TK_CHECK, "No", 0);
+    gp_add(ui, r, TK_CHECK, "Yes", TK_F_CHECKED);
+    gp_add(ui, r, TK_CHECK, "Mixed", TK_F_MIXED);
+    gp_add(ui, r, TK_CHECK, "Focus", TK_F_SHOW_RING);
+    gp_add(ui, r, TK_CHECK, "Off", TK_F_DISABLED);
+    gp_add(ui, r, TK_CHECK, "Off", TK_F_DISABLED | TK_F_CHECKED);
+
+    r = gp_row(ui, grid, "Radio");
+    let a: u32 = gp_add(ui, r, TK_RADIO, "One", TK_F_CHECKED);
+    let b: u32 = gp_add(ui, r, TK_RADIO, "Two", 0);
+    let c: u32 = gp_add(ui, r, TK_RADIO, "Three", 0);
+    tk_set_group(ui, a, 1); tk_set_group(ui, b, 1); tk_set_group(ui, c, 1);
+    let d: u32 = gp_add(ui, r, TK_RADIO, "Off", TK_F_DISABLED);
+    let e: u32 = gp_add(ui, r, TK_RADIO, "Off", TK_F_DISABLED | TK_F_CHECKED);
+    tk_set_group(ui, d, 2); tk_set_group(ui, e, 2);
+
+    r = gp_row(ui, grid, "Switch");
+    gp_add(ui, r, TK_SWITCH, "Off", 0);
+    gp_add(ui, r, TK_SWITCH, "On", TK_F_CHECKED);
+    gp_add(ui, r, TK_SWITCH, "Off", TK_F_DISABLED);
+    gp_add(ui, r, TK_SWITCH, "On", TK_F_DISABLED | TK_F_CHECKED);
+
+    r = gp_row(ui, grid, "Slider");
+    let s: u32 = gp_add(ui, r, TK_SLIDER, "Volume", 0);
+    tk_set_range(ui, s, 0, 100, 5);
+    tk_set_value(ui, s, 40);
+    s = gp_add(ui, r, TK_SLIDER, "Off", TK_F_DISABLED);
+    tk_set_value(ui, s, 70);
+
+    r = gp_row(ui, grid, "Progress");
+    let p: u32 = gp_add(ui, r, TK_PROGRESS, "Empty", 0);
+    p = gp_add(ui, r, TK_PROGRESS, "Part", 0);
+    tk_set_value(ui, p, 40);
+    p = gp_add(ui, r, TK_PROGRESS, "Full", 0);
+    if (p == 0) { return 1; }
+    tk_set_value(ui, p, 100);
+
+    r = gp_row(ui, grid, "Label");
+    gp_add(ui, r, TK_LABEL, "Text", 0);
+    gp_add(ui, r, TK_LABEL, "Muted", TK_F_MUTED);
+    if (gp_add(ui, r, TK_LABEL, "Off", TK_F_DISABLED) == 0) { return 1; }
+    return 0;
+}
+
+// What the gallery does with a key no widget took: 1 if the window must
+// be opened again at a new size (the scale changed), else 0.
+fn gp_key(ui: *tk_ui, code: u32) -> u32 {
+    if (code == 100 || code == 68) { tk_set_dark(ui, 1 - ui.dark); return 0; }    // d D
+    if (code == 49) { tk_set_scale(ui, 4); return 1; }                           // 1
+    if (code == 50) { tk_set_scale(ui, 6); return 1; }                           // 2
+    if (code == 51) { tk_set_scale(ui, 8); return 1; }                           // 3
+    return 0;
+}

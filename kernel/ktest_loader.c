@@ -1455,7 +1455,9 @@ int ktest_xtests(int (*report)(const char *, int), int *total) {
     out[1] = -1;                                       /* the runner's now */
 
     /* 2: its lines until every writer has gone, each result reported */
-    uint64_t deadline = timer_now_ns() + 600000 * TIMER_NS_PER_TICK;
+    /* the whole run: about 700 s of guest time by 2.8a1, most of it signed
+       programs starting under icount (a minute each) */
+    uint64_t deadline = timer_now_ns() + 1200000 * TIMER_NS_PER_TICK;
     step = 2;
     for (;;) {
         if (syscall_object_wait(out[0], SIGNAL_PIPE_READABLE | SIGNAL_PIPE_PEER_CLOSED, deadline, 0) != E_OK) goto done;

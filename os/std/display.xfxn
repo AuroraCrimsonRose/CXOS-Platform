@@ -236,11 +236,16 @@ fn ds_fill(s: *ds_surface, x: u32, y: u32, w: u32, h: u32, argb: u32) -> void {
     let r: ds_rect;
     ds_rect_set(&r, x, y, w, h);
     if (ds_rect_clip(&r, s.width, s.height) == 0) { return; }
+    // two pixels a store
+    let v: u64 = (argb as u64) | ((argb as u64) << 32);
+    let pairs: u32 = r.w >> 1;
     let j: u32 = 0;
     while (j < r.h) {
         let row: *u32 = ds_row(s, r.y + j);
+        let r8: *u64 = (&row[r.x]) as *u64;
         let i: u32 = 0;
-        while (i < r.w) { row[r.x + i] = argb; i = i + 1; }
+        while (i < pairs) { r8[i] = v; i = i + 1; }
+        if ((r.w & 1) == 1) { row[r.x + r.w - 1] = argb; }
         j = j + 1;
     }
 }
@@ -282,15 +287,34 @@ struct ds_font {
     bits: *u8,
     width: u32,
     height: u32,
-    count: u32
+    count: u32,
+    mem: i32            // the memory object it is in (ds_font_load), or 0
 }
 
 const DS_FONT_BYTES_MAX: u32 = 16384;
 
-// Load one, every field checked against the file's length, as the kernel's
-// reader does: 0 or an error.
+// A font in memory at p, n bytes of it, every field checked against n, as
+// the kernel's reader does: 0 or E_INVALID_ARGS. Used for a file just read
+// and for the copy the display server shares with its clients, which they
+// check again rather than trust.
+fn ds_font_parse(f: *ds_font, p: *u8, n: u32) -> i32 {
+    f.bits = 0 as *u8;
+    if (n < 24 || p[0] != 88 || p[1] != 70 || p[2] != 78 || p[3] != 84) { return E_INVALID_ARGS; }
+    let bpr: u32 = p[7] as u32;
+    let width: u32 = p[8] as u32;
+    let height: u32 = p[9] as u32;
+    let count: u32 = (p[10] as u32) | ((p[11] as u32) << 8);
+    if (p[6] != 1 || bpr != 1 || width == 0 || width > 8 || height == 0 || height > 32) { return E_INVALID_ARGS; }
+    if (count == 0 || count > 256 || 24 + count * height > n) { return E_INVALID_ARGS; }
+    f.bits = &p[24];
+    f.width = width; f.height = height; f.count = count;
+    return 0;
+}
+
+// Load one: 0 or an error. The memory object stays in f.mem, for sharing.
 fn ds_font_load(f: *ds_font, path: *u8) -> i32 {
     f.bits = 0 as *u8;
+    f.mem = 0;
     let h: i32 = file_open(path, FOPEN_READ);
     if (h <= 0) { return h; }
     let addr: u64 = 0;
@@ -299,16 +323,10 @@ fn ds_font_load(f: *ds_font, path: *u8) -> i32 {
     let p: *u8 = addr as *u8;
     let n: i32 = file_read(h, p, DS_FONT_BYTES_MAX as u64);
     file_close(h);
-    if (n < 24 || p[0] != 88 || p[1] != 70 || p[2] != 78 || p[3] != 84) { return E_INVALID_ARGS; }
-    let bpr: u32 = p[7] as u32;
-    let width: u32 = p[8] as u32;
-    let height: u32 = p[9] as u32;
-    let count: u32 = (p[10] as u32) | ((p[11] as u32) << 8);
-    if (p[6] != 1 || bpr != 1 || width == 0 || width > 8 || height == 0 || height > 32) { return E_INVALID_ARGS; }
-    if (count == 0 || count > 256 || 24 + count * height > (n as u32)) { return E_INVALID_ARGS; }
-    f.bits = (addr + 24) as *u8;
-    f.width = width; f.height = height; f.count = count;
-    return 0;
+    if (n < 0) { return n; }
+    let rc: i32 = ds_font_parse(f, p, n as u32);
+    if (rc == 0) { f.mem = m; }
+    return rc;
 }
 
 // Text at (x, y) on a surface, set in one colour, stopping before `room`
@@ -483,7 +501,7 @@ fn ds_draw(dst: *ds_surface, l: *ds_layer, clip: *ds_rect) -> void {
         let s: *u32 = ds_row(l.s, oy + j);
         let i: u32 = 0;
         if (copy == 1) {
-            while (i < r.w) { d[r.x + i] = s[ox + i]; i = i + 1; }
+            memcpy((&d[r.x]) as *u8, (&s[ox]) as *u8, r.w * 4);
         } else if (l.alpha == 255) {
             while (i < r.w) { d[r.x + i] = ds_over(s[ox + i], d[r.x + i]); i = i + 1; }
         } else {
@@ -685,8 +703,13 @@ fn ds_present_rect(sc: *ds_screen, back: *ds_surface, r: *ds_rect) -> void {
         let at: u64 = sc.px + ((r.y + j) as u64) * (sc.pitch as u64);
         let i: u32 = 0;
         if (sc.format == SCREEN_XRGB8888) {
+            // two pixels a store, alpha dropped from both
             let d: *u32 = (at + (r.x as u64) * 4) as *u32;
-            while (i < r.w) { d[i] = s[r.x + i] & 0x00FFFFFF; i = i + 1; }
+            let d8: *u64 = d as *u64;
+            let s8: *u64 = (&s[r.x]) as *u64;
+            let pairs: u32 = r.w >> 1;
+            while (i < pairs) { d8[i] = s8[i] & 0x00FFFFFF00FFFFFF; i = i + 1; }
+            if ((r.w & 1) == 1) { d[r.w - 1] = s[r.x + r.w - 1] & 0x00FFFFFF; }
         } else {
             let d: *u16 = (at + (r.x as u64) * 2) as *u16;
             while (i < r.w) { d[i] = ds_pack(SCREEN_RGB565, s[r.x + i]) as u16; i = i + 1; }

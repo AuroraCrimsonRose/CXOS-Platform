@@ -1588,6 +1588,44 @@ language work in `language/CX_X_PLAN.md`.
      Survey first: Haiku's Deskbar, Serenity's Taskbar and Assistant,
      Windows' Start, macOS's Spotlight and Dock. The terminal comes first;
      the launcher and taskbar follow it in this step or the next.
+     **Not responding** (Aurora, 2026-11-11: "a process hang visual for
+     application and a pop up for it on the window"). 2.6 already marks a
+     client hung after `WM_HANG_MS` with events unread (`wm.xfxn`), greys
+     its title bar, and kills it outright from the close box. Planned, all
+     drawn by the compositor so no app can fake or hide it: the window's
+     content shown greyed and dimmed (its own pixels unchanged), the title
+     with "(Not responding)" after it, a busy pointer over it (Serenity
+     does these three: `Compositor.cpp` greys and darkens the backing
+     store, `Window::computed_title` adds the suffix,
+     `ConnectionFromClient::set_unresponsive` swaps the cursor). And a
+     sheet on the window itself, opened by a click on it, by its close box
+     (which no longer kills unasked) or by the time a hang has lasted:
+     "<name> is not responding", the signer from the trusted band, and
+     **Wait** (the default; asks again only after another full hang
+     period) or **End it**. It closes itself, and the window recovers its
+     colours, the moment the app reads its events again. Sabotages: a
+     hang while waiting on the user (consent) is not a hang; an app that
+     answers just before End is not ended; the sheet's input reaches only
+     the server.
+     **Settings** (Aurora, 2026-11-11: "a system setting window too in
+     phase 2"), opened by Super+, (the keybind above) and from the
+     launcher, whose search finds every page and option. Pages:
+     **Display** (resolution, UI scale, light and dark, accent; on the
+     BIOS path the mode is VBE's, chosen by the loader, so a new one is
+     stored for it and takes effect at the next boot, said so on the page;
+     under Bochs or virtio-gpu, at once, with a 15-second revert), **Keyboard**
+     (layout, repeat, the keybinds), **Pointer**, **Language and input**
+     (2.8a4's locale and input methods), **Time and date**, **Apps** (each
+     app's grants and always-on-top, from 2.8c), **Security** (the trusted
+     signers in `/System/KeyVault`, read-only until Phase 3 says who may
+     change them), **About** (the system monitor's "copy system info").
+     Sound, network and users join with their services. Storage: one
+     settings file per area written as `setcheck` writes (durable, only
+     when asked), moved into Phase 3's layered settings without changing
+     what an app calls. Every change is a command (2.8a2), so a keybind,
+     the launcher and a script can make it too. Survey first: Haiku's
+     preferences apps, Serenity's Settings, Windows' Settings, macOS's
+     System Settings.
    - **2.8d, the rig:** 2.5 to 2.8 on the FX-8350 (none of it has run there).
    - **2.8e, the compositor API, public and stable** (Aurora, 2026-11-11),
      after the toolkit, its first user. What 2.4-2.5 built, for anyone: windows,
@@ -1725,6 +1763,16 @@ apps ask for "play", "decode a frame" and "capture with consent" (the 2.6
 consent screen, an indicator while it lasts). Video in X on the CPU will be
 slow until there is hardware decode: images and audio first, video playback a
 later milestone.
+
+**An optimiser for X** (Aurora, 2026-11-11), before media: the codegen is
+straight from the tree, about 50 instructions a step of a byte loop, so under
+QEMU's icount a full toolkit paint took 6 s and every hot loop in 2.8a1 had
+to be rewritten by hand to move eight bytes a store. In the C# back end and
+`os/xc` together (the differential tests keep them one): registers for locals
+across a loop, constant folding, strength reduction of `a[i]` in a loop to
+a moving pointer, and inlining of small leaf functions (`ds_row`,
+`tk_imin`). Each pass is measured on the toolkit's paint and the
+compositor's copy, and the self-hosting fixed point holds.
 
 ### Later
 

@@ -6,12 +6,19 @@
 //
 //   import "mem.xfxn";
 //
-// Byte-oriented, no allocation, no dependencies. Everything takes explicit
+// Word-wide where it can be, no allocation, no dependencies. Everything takes explicit
 // lengths - there is no hidden NUL scanning here (that's string.xfxn).
 
-// fill n bytes of dst with value
+// fill n bytes of dst with value. Eight at a time (x86 takes them
+// unaligned), then the rest a byte at a time: a byte loop is ~8x slower,
+// and every surface clear and copy comes through here.
 fn memset(dst: *u8, value: u8, n: u32) -> void {
-    let i: u32 = 0;
+    let v: u64 = (value as u64) * 0x0101010101010101;
+    let words: u32 = n >> 3;
+    let d8: *u64 = dst as *u64;
+    let k: u32 = 0;
+    while (k < words) { d8[k] = v; k = k + 1; }
+    let i: u32 = words << 3;
     while (i < n) {
         dst[i] = value;
         i = i + 1;
@@ -23,7 +30,13 @@ fn memzero(dst: *u8, n: u32) -> void { memset(dst, 0, n); }
 
 // copy n bytes; regions must NOT overlap (use memmove if they might)
 fn memcpy(dst: *u8, src: *u8, n: u32) -> void {
-    let i: u32 = 0;
+    // eight at a time, as memset
+    let words: u32 = n >> 3;
+    let d8: *u64 = dst as *u64;
+    let s8: *u64 = src as *u64;
+    let k: u32 = 0;
+    while (k < words) { d8[k] = s8[k]; k = k + 1; }
+    let i: u32 = words << 3;
     while (i < n) {
         dst[i] = src[i];
         i = i + 1;

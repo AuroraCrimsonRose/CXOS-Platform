@@ -35,6 +35,32 @@
 - Survey first: Haiku's ActivityMonitor, Serenity's SystemMonitor, Windows
   Task Manager's Performance tab.
 
+## 2b. The processes and services tabs (Aurora, 2026-11-11)
+
+"Needs to show running services and such too and how much resources every
+program and service uses."
+
+- **Processes:** every program, the system's own included, grouped under
+  its app or service (a job, `process_stat.job`), with a total per group.
+  Columns: CPU share, memory (in use and quota), disk and network rates,
+  threads, handles, signer and trust, the pid that started it. GPU when
+  there is a GPU to count. Sortable; a column can be hidden.
+- **Services:** every service the supervisor knows from its `.xosv`, run
+  or not: its name and description, state (running, stopped, failed,
+  disabled), how it starts, its pid, how often it restarted and why it
+  last ended, its grants, and the same resource columns as its process.
+  Start, stop and restart are the supervisor's to grant, not
+  `GRANT_INSPECT`'s (which only reads).
+- Where each number comes from: CPU, memory, threads and handles are in
+  `process_stat` today (`SYS_PROCESS_QUERY`, 2.7c). Per-process disk and
+  network bytes are not counted anywhere yet: the filesystem and network
+  services count them per client, by the badge the client called with. A
+  service's state and restart count are the supervisor's, through a query
+  on its endpoint (not built).
+- Survey first: Serenity's SystemMonitor, Haiku's ProcessController and
+  ActivityMonitor, Windows Task Manager's Processes, Details and Services
+  tabs.
+
 ## 3. Rules
 
 1. **Read-only first.** A hardware-monitor service in user space reads the
@@ -64,7 +90,9 @@ development PC is AMD.
    (`hardware/CX_HW_REPORT.md`: "SMBIOS 0"); the loader scans for it as it
    scans for the RSDP and fills CXBI's field, and the kernel checks it.
 2. CPU and memory with the Process Manager's window (2.8a's second
-   program): per-core usage, clocks, caches, SMBIOS memory.
+   program): per-core usage, clocks, caches, SMBIOS memory; the processes
+   tab, grouped by job; the services tab, once the supervisor answers a
+   query (§2b).
 3. Disks (SMART) and network with their services.
 4. SPD, the Super I/O chip and `Tctl` on the rig; alerts.
 5. Fan control, then the GPU.

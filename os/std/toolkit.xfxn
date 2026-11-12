@@ -1,0 +1,1560 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/toolkit.xfxn - the toolkit, its core (roadmap 2.8a1, system/CX_TOOLKIT.md).
+// Aurora Tejeda / CATX Systems
+// Threads: a ui belongs to one thread.
+//
+// A ui is a retained tree of widgets in logical units, drawn into a canvas
+// of device pixels at a scale in quarters (4 = 100 %). Changing a widget
+// marks its box as damage; tk_paint draws only what the damage covers and
+// hands the rectangles back. Nothing here knows about windows: toolkit_window.xfxn
+// puts a ui in one, and the self-tests drive a ui with no server at all.
+//
+// Widgets are named by a tk id, an index and a generation, so an id kept
+// past tk_reset is refused rather than naming whatever took its place.
+// Text is copied into the ui's own arena: a widget never points at its
+// caller's memory.
+//
+// Names: X has one namespace, so everything here starts tk_ (toolkit), as
+// display.xfxn's start ds_ and wm.xfxn's wm_.
+
+import "display.xfxn";
+import "string.xfxn";
+import "mem.xfxn";
+
+const TK_NODES_MAX: u32 = 256;
+const TK_ARENA_BYTES: u32 = 8192;
+const TK_EVENTS_MAX: u32 = 32;
+const TK_NONE: u32 = 0xFFFFFFFF;
+const TK_GRID_COLS_MAX: u32 = 8;
+const TK_SCALE_MIN: u32 = 4;        // 100 %
+const TK_SCALE_MAX: u32 = 16;       // 400 %
+
+// ---- kinds: one switch each, not a class hierarchy (CX_TOOLKIT.md §1) ----
+
+const TK_COLUMN: u32 = 1;           // containers
+const TK_ROW: u32 = 2;
+const TK_GRID: u32 = 3;             // cols: its column count
+const TK_STACK: u32 = 4;            // children on top of each other
+const TK_LABEL: u32 = 10;
+const TK_HEADING: u32 = 11;
+const TK_BUTTON: u32 = 12;          // first of the ones that take input
+const TK_CHECK: u32 = 13;
+const TK_RADIO: u32 = 14;           // group: which radios are exclusive
+const TK_SWITCH: u32 = 15;
+const TK_SLIDER: u32 = 16;          // last of the ones that take input
+const TK_PROGRESS: u32 = 17;
+
+// ---- flags ----
+
+const TK_F_HIDDEN: u32 = 1;
+const TK_F_DISABLED: u32 = 2;
+const TK_F_CHECKED: u32 = 4;
+const TK_F_MIXED: u32 = 8;          // a check box that is neither
+const TK_F_PRESSED: u32 = 16;
+const TK_F_HOVER: u32 = 32;
+const TK_F_FOCUS: u32 = 64;         // the ui's own: has the keyboard focus
+const TK_F_GROW: u32 = 128;         // takes a share of what is left on its parent's axis
+const TK_F_FILL: u32 = 256;         // stretched across its parent's axis
+const TK_F_DEFAULT: u32 = 512;      // the button Enter presses
+const TK_F_MUTED: u32 = 1024;       // secondary text
+const TK_F_SHOW_RING: u32 = 2048;   // drawn as if focused (a gallery's state)
+const TK_F_APP: u32 = 4031;         // what tk_set_flags may change: all but FOCUS
+const TK_F_LAYOUT: u32 = 385;       // HIDDEN | GROW | FILL: a change lays out again
+const TK_F_USED: u32 = 0x80000000;
+
+// ---- accessibility roles (the tree is the accessibility tree) ----
+
+const TK_ROLE_GROUP: u32 = 1;
+const TK_ROLE_TEXT: u32 = 2;
+const TK_ROLE_HEADING: u32 = 3;
+const TK_ROLE_BUTTON: u32 = 4;
+const TK_ROLE_CHECK: u32 = 5;
+const TK_ROLE_RADIO: u32 = 6;
+const TK_ROLE_SWITCH: u32 = 7;
+const TK_ROLE_SLIDER: u32 = 8;
+const TK_ROLE_PROGRESS: u32 = 9;
+
+// ---- what the app is told ----
+
+const TK_EV_NONE: u32 = 0;
+const TK_EV_ACTIVATE: u32 = 1;      // id: a button was pressed
+const TK_EV_CHANGE: u32 = 2;        // id, value: a check, radio, switch or slider changed
+const TK_EV_KEY: u32 = 3;           // code: a key no widget took
+const TK_EV_CLOSE: u32 = 4;         // the window's close box (toolkit_window.xfxn)
+const TK_EV_GONE: u32 = 5;          // value: the server has gone, or a commit failed
+
+// ---- keys, as WM_EV_KEY gives them today (one code per press) ----
+
+const TK_KEY_TAB: u32 = 9;
+const TK_KEY_ENTER: u32 = 13;
+const TK_KEY_NL: u32 = 10;
+const TK_KEY_SPACE: u32 = 32;
+const TK_KEY_UP: u32 = 0x80;
+const TK_KEY_DOWN: u32 = 0x81;
+const TK_KEY_LEFT: u32 = 0x82;
+const TK_KEY_RIGHT: u32 = 0x83;
+const TK_KEY_HOME: u32 = 0x88;
+const TK_KEY_END: u32 = 0x89;
+
+// ---- the design system, in logical units ----
+
+const TK_RING: i32 = 3;             // round every focusable widget: room for its ring
+const TK_RING_T: i32 = 2;           // the ring's thickness
+const TK_RADIUS: i32 = 4;           // the one radius
+const TK_CTRL_H: i32 = 28;
+const TK_BTN_PADX: i32 = 16;
+const TK_BOX: i32 = 16;             // a check box, a radio
+const TK_TEXT_GAP: i32 = 8;         // from a control to its text
+const TK_SW_W: i32 = 32;
+const TK_SW_H: i32 = 18;
+const TK_SLIDER_W: i32 = 160;
+const TK_SLIDER_H: i32 = 20;
+const TK_KNOB: i32 = 16;
+const TK_TRACK: i32 = 4;
+const TK_PROG_H: i32 = 8;
+
+// The spacing scale: an app names a step, never a number of units.
+fn tk_sp(step: u32) -> i32 {
+    if (step == 1) { return 4; }
+    if (step == 2) { return 8; }
+    if (step == 3) { return 12; }
+    if (step == 4) { return 16; }
+    if (step == 5) { return 24; }
+    if (step >= 6) { return 32; }
+    return 0;
+}
+
+struct tk_theme {
+    surface: u32,
+    raised: u32,
+    text: u32,
+    muted: u32,
+    accent: u32,
+    on_accent: u32,
+    border: u32,
+    ring: u32,
+    hover: u32,
+    pressed: u32,
+    off_bg: u32,
+    off_text: u32,
+    track: u32
+}
+
+fn tk_theme_set(t: *tk_theme, dark: u32) -> void {
+    if (dark == 0) {
+        t.surface = 0xFFF5F6F8; t.raised = 0xFFFFFFFF; t.text = 0xFF1B1F24;
+        t.muted = 0xFF5B6470; t.accent = 0xFF2F6FDB; t.on_accent = 0xFFFFFFFF;
+        t.border = 0xFFC3CAD4; t.ring = 0xFF2F6FDB; t.hover = 0xFFEDF0F4;
+        t.pressed = 0xFFDCE2EA; t.off_bg = 0xFFE7EAEE; t.off_text = 0xFF9AA2AD;
+        t.track = 0xFFD3D9E0;
+    } else {
+        t.surface = 0xFF1E2126; t.raised = 0xFF2A2E35; t.text = 0xFFE8EAED;
+        t.muted = 0xFFA2AAB5; t.accent = 0xFF5B93F0; t.on_accent = 0xFF0E1726;
+        t.border = 0xFF474E58; t.ring = 0xFF7FAAF5; t.hover = 0xFF333841;
+        t.pressed = 0xFF3D434D; t.off_bg = 0xFF2A2D32; t.off_text = 0xFF686F79;
+        t.track = 0xFF3F4650;
+    }
+}
+
+struct tk_node {
+    flags: u32,
+    gen: u32,
+    kind: u32,
+    parent: u32,
+    first: u32,
+    last: u32,
+    next: u32,
+    text: u32,          // its offset in the arena, or TK_NONE
+    value: i32,
+    vmin: i32,
+    vmax: i32,
+    step: i32,
+    group: u32,         // radios: the group
+    cols: u32,          // grids: the column count
+    gap: u32,           // containers: spacing steps between and around
+    pad: u32,
+    minw: i32,          // logical units
+    minh: i32,
+    pw: i32,            // measured: the size it asks for
+    ph: i32,
+    x: i32,             // arranged: its box, logical, in the ui
+    y: i32,
+    w: i32,
+    h: i32,
+    dx: u32,            // its box in device pixels, each edge rounded on its own
+    dy: u32,
+    dw: u32,
+    dh: u32
+}
+
+struct tk_event {
+    kind: u32,
+    id: u32,
+    value: i32,
+    code: u32
+}
+
+struct tk_ui {
+    node: [256]tk_node,     // TK_NODES_MAX
+    used: u32,
+    root: u32,
+    gen: u32,
+    focus: u32,
+    hover: u32,
+    capture: u32,
+    buttons: u32,
+    scale: u32,             // quarters
+    glyph: u32,             // the bitmap font's magnification
+    dark: u32,
+    theme: tk_theme,
+    font: *ds_font,         // 0: text is measured as 8x16 and not drawn
+    canvas: ds_surface,
+    damage: ds_damage,
+    relayout: u32,
+    lw: i32,                // the canvas in logical units
+    lh: i32,
+    arena: [8192]u8,        // TK_ARENA_BYTES
+    arena_used: u32,
+    ev: [32]tk_event,       // TK_EVENTS_MAX
+    ev_head: u32,
+    ev_n: u32
+}
+
+// ---- units ----
+
+// A logical edge to a device pixel: each edge is rounded on its own, so
+// boxes that meet in logical units meet in pixels at every scale.
+fn tk_dev(ui: *tk_ui, v: i32) -> u32 {
+    if (v <= 0) { return 0; }
+    return (((v as u32) * ui.scale + 2) / 4);
+}
+
+// A logical length as device pixels, never less than one if it is any.
+fn tk_len(ui: *tk_ui, v: i32) -> i32 {
+    if (v <= 0) { return 0; }
+    let d: i32 = (tk_dev(ui, v)) as i32;
+    if (d == 0) { return 1; }
+    return d;
+}
+
+// Device pixels to logical units, rounded up.
+fn tk_logical(ui: *tk_ui, d: u32) -> i32 {
+    return ((d * 4 + ui.scale - 1) / ui.scale) as i32;
+}
+
+fn tk_imax(a: i32, b: i32) -> i32 { if (a > b) { return a; } return b; }
+fn tk_imin(a: i32, b: i32) -> i32 { if (a < b) { return a; } return b; }
+
+// ---- the tree ----
+
+fn tk_glyph_for(scale: u32) -> u32 {
+    let g: u32 = (scale + 1) / 4;
+    if (g == 0) { return 1; }
+    return g;
+}
+
+fn tk_node_new(ui: *tk_ui, kind: u32) -> u32 {
+    if (ui.used >= TK_NODES_MAX) { return TK_NONE; }
+    let i: u32 = ui.used;
+    ui.used = ui.used + 1;
+    let n: *tk_node = &ui.node[i];
+    memzero(n as *u8, sizeof *n);
+    n.flags = TK_F_USED;
+    n.gen = ui.gen;
+    n.kind = kind;
+    n.parent = TK_NONE; n.first = TK_NONE; n.last = TK_NONE; n.next = TK_NONE;
+    n.text = TK_NONE;
+    n.vmax = 100;
+    n.step = 1;
+    return i;
+}
+
+// Forget every widget; ids from before are refused from now on.
+fn tk_reset(ui: *tk_ui) -> void {
+    ui.gen = ui.gen + 1;
+    if (ui.gen > 65535) { ui.gen = 1; }
+    ui.used = 0;
+    ui.arena_used = 0;
+    ui.focus = TK_NONE; ui.hover = TK_NONE; ui.capture = TK_NONE;
+    ui.ev_head = 0; ui.ev_n = 0;
+    ui.root = tk_node_new(ui, TK_COLUMN);
+    ui.relayout = 1;
+}
+
+// A ui at `scale` quarters with this font (0 for none). No canvas yet: give
+// it one with tk_size, or let toolkit_window.xfxn.
+fn tk_init(ui: *tk_ui, scale: u32, font: *ds_font) -> void {
+    memzero(ui as *u8, sizeof *ui);
+    if (scale < TK_SCALE_MIN) { scale = TK_SCALE_MIN; }
+    if (scale > TK_SCALE_MAX) { scale = TK_SCALE_MAX; }
+    ui.scale = scale;
+    ui.glyph = tk_glyph_for(scale);
+    ui.font = font;
+    ui.canvas.px = 0;
+    ui.canvas.mem = 0 - 1;
+    tk_theme_set(&ui.theme, 0);
+    tk_reset(ui);
+}
+
+fn tk_free(ui: *tk_ui) -> void {
+    if (ui.canvas.px != 0) { ds_surface_free(&ui.canvas); ui.canvas.px = 0; }
+}
+
+fn tk_id(ui: *tk_ui, i: u32) -> u32 {
+    if (i == TK_NONE) { return 0; }
+    return (ui.node[i].gen << 16) | (i + 1);
+}
+
+// The index an id names, or TK_NONE if it is stale or was never one.
+fn tk_index(ui: *tk_ui, id: u32) -> u32 {
+    let low: u32 = id & 0xFFFF;
+    if (low == 0 || low > ui.used) { return TK_NONE; }
+    let i: u32 = low - 1;
+    if ((ui.node[i].flags & TK_F_USED) == 0) { return TK_NONE; }
+    if (ui.node[i].gen != (id >> 16)) { return TK_NONE; }
+    return i;
+}
+
+fn tk_root(ui: *tk_ui) -> u32 { return tk_id(ui, ui.root); }
+
+fn tk_is_container(kind: u32) -> u32 {
+    if (kind >= TK_COLUMN && kind <= TK_STACK) { return 1; }
+    return 0;
+}
+
+fn tk_takes_input(kind: u32) -> u32 {
+    if (kind >= TK_BUTTON && kind <= TK_SLIDER) { return 1; }
+    return 0;
+}
+
+// Copy text into the arena: its offset, or TK_NONE when the arena is full.
+fn tk_store(ui: *tk_ui, text: *u8) -> u32 {
+    if (text == (0 as *u8)) { return TK_NONE; }
+    let n: u32 = strlen(text);
+    if (ui.arena_used + n + 1 > TK_ARENA_BYTES) { return TK_NONE; }
+    let at: u32 = ui.arena_used;
+    memcpy(&ui.arena[at], text, n);
+    ui.arena[at + n] = 0;
+    ui.arena_used = at + n + 1;
+    return at;
+}
+
+// A new widget at the end of parent's children: its id, or 0 (the parent is
+// stale or not a container, the pool or the arena is full).
+fn tk_add(ui: *tk_ui, parent: u32, kind: u32, text: *u8) -> u32 {
+    let p: u32 = tk_index(ui, parent);
+    if (p == TK_NONE || tk_is_container(ui.node[p].kind) == 0) { return 0; }
+    if (kind < TK_COLUMN || kind > TK_PROGRESS || (kind > TK_STACK && kind < TK_LABEL)) { return 0; }
+    let at: u32 = TK_NONE;
+    if (text != (0 as *u8)) {
+        at = tk_store(ui, text);
+        if (at == TK_NONE) { return 0; }
+    }
+    let i: u32 = tk_node_new(ui, kind);
+    if (i == TK_NONE) { return 0; }
+    ui.node[i].text = at;
+    ui.node[i].parent = p;
+    if (ui.node[p].last == TK_NONE) { ui.node[p].first = i; }
+    else { ui.node[ui.node[p].last].next = i; }
+    ui.node[p].last = i;
+    if (kind == TK_GRID) { ui.node[i].cols = 2; }
+    ui.relayout = 1;
+    return tk_id(ui, i);
+}
+
+fn tk_text_of(ui: *tk_ui, i: u32) -> *u8 {
+    if (ui.node[i].text == TK_NONE) { return 0 as *u8; }
+    return &ui.arena[ui.node[i].text];
+}
+
+// ---- damage ----
+
+fn tk_damage_node(ui: *tk_ui, i: u32) -> void {
+    let n: *tk_node = &ui.node[i];
+    if (n.dw == 0 || n.dh == 0) { return; }
+    ds_damage_add(&ui.damage, n.dx, n.dy, n.dw, n.dh);
+}
+
+fn tk_damage_all(ui: *tk_ui) -> void { ds_damage_all(&ui.damage); }
+
+// ---- setting what a widget is ----
+
+// Set and clear flags (only TK_F_APP ones): 0, or E_INVALID_ARGS for a
+// stale id.
+fn tk_set_flags(ui: *tk_ui, id: u32, set: u32, clear: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    let old: u32 = ui.node[i].flags;
+    let f: u32 = (old & ~(clear & TK_F_APP)) | (set & TK_F_APP);
+    if (f == old) { return 0; }
+    ui.node[i].flags = f;
+    if (((old ^ f) & TK_F_LAYOUT) != 0) { ui.relayout = 1; }
+    else { tk_damage_node(ui, i); }
+    // a widget that goes away or off cannot keep the focus
+    if (ui.focus == i && (f & (TK_F_HIDDEN | TK_F_DISABLED)) != 0) {
+        ui.node[i].flags = ui.node[i].flags & ~TK_F_FOCUS;
+        ui.focus = TK_NONE;
+    }
+    return 0;
+}
+
+fn tk_flags(ui: *tk_ui, id: u32) -> u32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return 0; }
+    return ui.node[i].flags;
+}
+
+fn tk_clamp_value(n: *tk_node, v: i32) -> i32 {
+    if (v < n.vmin) { v = n.vmin; }
+    if (v > n.vmax) { v = n.vmax; }
+    return v;
+}
+
+fn tk_set_range(ui: *tk_ui, id: u32, vmin: i32, vmax: i32, step: i32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || vmax <= vmin || step <= 0) { return E_INVALID_ARGS; }
+    let n: *tk_node = &ui.node[i];
+    n.vmin = vmin; n.vmax = vmax; n.step = step;
+    n.value = tk_clamp_value(n, n.value);
+    tk_damage_node(ui, i);
+    return 0;
+}
+
+fn tk_set_value(ui: *tk_ui, id: u32, v: i32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    let n: *tk_node = &ui.node[i];
+    let c: i32 = tk_clamp_value(n, v);
+    if (c != n.value) { n.value = c; tk_damage_node(ui, i); }
+    return 0;
+}
+
+fn tk_value(ui: *tk_ui, id: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return 0; }
+    return ui.node[i].value;
+}
+
+fn tk_set_text(ui: *tk_ui, id: u32, text: *u8) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    let at: u32 = tk_store(ui, text);
+    if (at == TK_NONE && text != (0 as *u8)) { return E_NO_RESOURCES; }
+    ui.node[i].text = at;
+    ui.relayout = 1;
+    return 0;
+}
+
+// A container's spacing, as steps of the design scale.
+fn tk_set_spacing(ui: *tk_ui, id: u32, gap: u32, pad: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    ui.node[i].gap = gap; ui.node[i].pad = pad;
+    ui.relayout = 1;
+    return 0;
+}
+
+fn tk_set_min(ui: *tk_ui, id: u32, w: i32, h: i32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || w < 0 || h < 0) { return E_INVALID_ARGS; }
+    ui.node[i].minw = w; ui.node[i].minh = h;
+    ui.relayout = 1;
+    return 0;
+}
+
+fn tk_set_cols(ui: *tk_ui, id: u32, cols: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || cols == 0 || cols > TK_GRID_COLS_MAX) { return E_INVALID_ARGS; }
+    ui.node[i].cols = cols;
+    ui.relayout = 1;
+    return 0;
+}
+
+fn tk_set_group(ui: *tk_ui, id: u32, group: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    ui.node[i].group = group;
+    return 0;
+}
+
+fn tk_set_scale(ui: *tk_ui, scale: u32) -> void {
+    if (scale < TK_SCALE_MIN) { scale = TK_SCALE_MIN; }
+    if (scale > TK_SCALE_MAX) { scale = TK_SCALE_MAX; }
+    ui.scale = scale;
+    ui.glyph = tk_glyph_for(scale);
+    ui.relayout = 1;
+}
+
+fn tk_set_dark(ui: *tk_ui, dark: u32) -> void {
+    ui.dark = dark;
+    tk_theme_set(&ui.theme, dark);
+    tk_damage_all(ui);
+}
+
+// ---- accessibility ----
+
+fn tk_role(ui: *tk_ui, id: u32) -> u32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return 0; }
+    let k: u32 = ui.node[i].kind;
+    if (tk_is_container(k) == 1) { return TK_ROLE_GROUP; }
+    if (k == TK_LABEL) { return TK_ROLE_TEXT; }
+    if (k == TK_HEADING) { return TK_ROLE_HEADING; }
+    if (k == TK_BUTTON) { return TK_ROLE_BUTTON; }
+    if (k == TK_CHECK) { return TK_ROLE_CHECK; }
+    if (k == TK_RADIO) { return TK_ROLE_RADIO; }
+    if (k == TK_SWITCH) { return TK_ROLE_SWITCH; }
+    if (k == TK_SLIDER) { return TK_ROLE_SLIDER; }
+    return TK_ROLE_PROGRESS;
+}
+
+fn tk_name(ui: *tk_ui, id: u32) -> *u8 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return 0 as *u8; }
+    return tk_text_of(ui, i);
+}
+
+// ---- events for the app ----
+
+fn tk_push(ui: *tk_ui, kind: u32, i: u32, value: i32, code: u32) -> void {
+    if (ui.ev_n == TK_EVENTS_MAX) { return; }   // the app is behind: the oldest stand
+    let at: u32 = (ui.ev_head + ui.ev_n) % TK_EVENTS_MAX;
+    ui.ev[at].kind = kind;
+    ui.ev[at].id = tk_id(ui, i);
+    ui.ev[at].value = value;
+    ui.ev[at].code = code;
+    ui.ev_n = ui.ev_n + 1;
+}
+
+// The next thing for the app: 1 and *ev, or 0 if there is none.
+fn tk_next(ui: *tk_ui, ev: *tk_event) -> u32 {
+    if (ui.ev_n == 0) { return 0; }
+    *ev = ui.ev[ui.ev_head];
+    ui.ev_head = (ui.ev_head + 1) % TK_EVENTS_MAX;
+    ui.ev_n = ui.ev_n - 1;
+    return 1;
+}
+
+// ---- text metrics ----
+
+fn tk_char_w(ui: *tk_ui) -> u32 {
+    if (ui.font == (0 as *ds_font)) { return 8 * ui.glyph; }
+    return ui.font.width * ui.glyph;
+}
+
+fn tk_char_h(ui: *tk_ui) -> u32 {
+    if (ui.font == (0 as *ds_font)) { return 16 * ui.glyph; }
+    return ui.font.height * ui.glyph;
+}
+
+// Text's size in logical units; a heading is drawn one pixel wider.
+fn tk_text_lw(ui: *tk_ui, i: u32) -> i32 {
+    let s: *u8 = tk_text_of(ui, i);
+    if (s == (0 as *u8)) { return 0; }
+    let d: u32 = strlen(s) * tk_char_w(ui);
+    if (ui.node[i].kind == TK_HEADING && d > 0) { d = d + 1; }
+    return tk_logical(ui, d);
+}
+
+fn tk_text_lh(ui: *tk_ui, i: u32) -> i32 {
+    if (ui.node[i].text == TK_NONE) { return 0; }
+    return tk_logical(ui, tk_char_h(ui));
+}
+
+// ---- layout: measure, children first ----
+
+fn tk_shown(ui: *tk_ui, i: u32) -> u32 {
+    if ((ui.node[i].flags & TK_F_HIDDEN) != 0) { return 0; }
+    return 1;
+}
+
+fn tk_measure_leaf(ui: *tk_ui, i: u32) -> void {
+    let n: *tk_node = &ui.node[i];
+    let tw: i32 = tk_text_lw(ui, i);
+    let th: i32 = tk_text_lh(ui, i);
+    let w: i32 = 0;
+    let h: i32 = 0;
+    let k: u32 = n.kind;
+    if (k == TK_LABEL || k == TK_HEADING) { w = tw; h = th; }
+    else if (k == TK_BUTTON) { w = tw + 2 * TK_BTN_PADX + 2 * TK_RING; h = TK_CTRL_H + 2 * TK_RING; }
+    else if (k == TK_CHECK || k == TK_RADIO || k == TK_SWITCH) {
+        let cw: i32 = TK_BOX;
+        let ch: i32 = TK_BOX;
+        if (k == TK_SWITCH) { cw = TK_SW_W; ch = TK_SW_H; }
+        w = 2 * TK_RING + cw;
+        if (tw > 0) { w = w + TK_TEXT_GAP + tw; }
+        h = tk_imax(ch, th) + 2 * TK_RING;
+    }
+    else if (k == TK_SLIDER) { w = TK_SLIDER_W + 2 * TK_RING; h = TK_SLIDER_H + 2 * TK_RING; }
+    else if (k == TK_PROGRESS) { w = TK_SLIDER_W; h = TK_PROG_H; }
+    n.pw = w;
+    n.ph = h;
+}
+
+fn tk_measure(ui: *tk_ui, i: u32) -> void {
+    let n: *tk_node = &ui.node[i];
+    if (tk_is_container(n.kind) == 0) {
+        tk_measure_leaf(ui, i);
+    } else {
+        let gap: i32 = tk_sp(n.gap);
+        let pad: i32 = tk_sp(n.pad);
+        let w: i32 = 0;
+        let h: i32 = 0;
+        let count: u32 = 0;
+        let colw: [8]i32;
+        let k: u32 = 0;
+        while (k < TK_GRID_COLS_MAX) { colw[k] = 0; k = k + 1; }
+        let rowh: i32 = 0;
+        let rows: i32 = 0;
+        let c: u32 = n.first;
+        while (c != TK_NONE) {
+            if (tk_shown(ui, c) == 1) {
+                tk_measure(ui, c);
+                let cn: *tk_node = &ui.node[c];
+                if (n.kind == TK_COLUMN) {
+                    w = tk_imax(w, cn.pw);
+                    h = h + cn.ph;
+                    if (count > 0) { h = h + gap; }
+                } else if (n.kind == TK_ROW) {
+                    h = tk_imax(h, cn.ph);
+                    w = w + cn.pw;
+                    if (count > 0) { w = w + gap; }
+                } else if (n.kind == TK_STACK) {
+                    w = tk_imax(w, cn.pw);
+                    h = tk_imax(h, cn.ph);
+                } else {
+                    let col: u32 = count % n.cols;
+                    colw[col] = tk_imax(colw[col], cn.pw);
+                    rowh = tk_imax(rowh, cn.ph);
+                    if (col == n.cols - 1) { h = h + rowh; rows = rows + 1; rowh = 0; }
+                }
+                count = count + 1;
+            }
+            c = ui.node[c].next;
+        }
+        if (n.kind == TK_GRID) {
+            if (rowh > 0) { h = h + rowh; rows = rows + 1; }
+            if (rows > 1) { h = h + gap * (rows - 1); }
+            let used: u32 = n.cols;
+            if (count < used) { used = count; }
+            k = 0;
+            while (k < used) { w = w + colw[k]; if (k > 0) { w = w + gap; } k = k + 1; }
+        }
+        n.pw = w + 2 * pad;
+        n.ph = h + 2 * pad;
+    }
+    n.pw = tk_imax(n.pw, n.minw);
+    n.ph = tk_imax(n.ph, n.minh);
+}
+
+// ---- layout: arrange, parents first ----
+
+fn tk_place(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
+    let n: *tk_node = &ui.node[i];
+    n.x = x; n.y = y; n.w = w; n.h = h;
+    let x0: u32 = tk_dev(ui, x);
+    let y0: u32 = tk_dev(ui, y);
+    n.dx = x0;
+    n.dy = y0;
+    n.dw = tk_dev(ui, x + w) - x0;
+    n.dh = tk_dev(ui, y + h) - y0;
+}
+
+// Grow children's count on a container's axis.
+fn tk_growers(ui: *tk_ui, i: u32) -> i32 {
+    let g: i32 = 0;
+    let c: u32 = ui.node[i].first;
+    while (c != TK_NONE) {
+        if (tk_shown(ui, c) == 1 && (ui.node[c].flags & TK_F_GROW) != 0) { g = g + 1; }
+        c = ui.node[c].next;
+    }
+    return g;
+}
+
+fn tk_arrange(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
+    tk_place(ui, i, x, y, w, h);
+    let n: *tk_node = &ui.node[i];
+    if (tk_is_container(n.kind) == 0) { return; }
+    let gap: i32 = tk_sp(n.gap);
+    let pad: i32 = tk_sp(n.pad);
+    let ix: i32 = x + pad;
+    let iy: i32 = y + pad;
+    let iw: i32 = tk_imax(w - 2 * pad, 0);
+    let ih: i32 = tk_imax(h - 2 * pad, 0);
+    let growers: i32 = tk_growers(ui, i);
+    let extra: i32 = 0;
+    // what the children asked for along the axis (not the container's own
+    // minimum): the rest goes to the growers
+    let asked: i32 = 0;
+    let shown: i32 = 0;
+    let c: u32 = n.first;
+    while (c != TK_NONE) {
+        if (tk_shown(ui, c) == 1) {
+            if (n.kind == TK_COLUMN) { asked = asked + ui.node[c].ph; }
+            if (n.kind == TK_ROW) { asked = asked + ui.node[c].pw; }
+            shown = shown + 1;
+        }
+        c = ui.node[c].next;
+    }
+    if (shown > 1) { asked = asked + gap * (shown - 1); }
+    if (n.kind == TK_COLUMN) { extra = tk_imax(ih - asked, 0); }
+    if (n.kind == TK_ROW) { extra = tk_imax(iw - asked, 0); }
+
+    let colw: [8]i32;
+    let colx: [8]i32;
+    if (n.kind == TK_GRID) {
+        let k: u32 = 0;
+        while (k < TK_GRID_COLS_MAX) { colw[k] = 0; k = k + 1; }
+        let count: u32 = 0;
+        c = n.first;
+        while (c != TK_NONE) {
+            if (tk_shown(ui, c) == 1) {
+                let col: u32 = count % n.cols;
+                colw[col] = tk_imax(colw[col], ui.node[c].pw);
+                count = count + 1;
+            }
+            c = ui.node[c].next;
+        }
+        let at: i32 = ix;
+        k = 0;
+        while (k < n.cols) { colx[k] = at; at = at + colw[k] + gap; k = k + 1; }
+    }
+
+    let at: i32 = 0;
+    let given: i32 = 0;
+    let g: i32 = 0;
+    let count: u32 = 0;
+    let rowy: i32 = iy;
+    let rowh: i32 = 0;
+    c = n.first;
+    while (c != TK_NONE) {
+        if (tk_shown(ui, c) == 1) {
+            let cn: *tk_node = &ui.node[c];
+            let grows: u32 = 0;
+            if ((cn.flags & TK_F_GROW) != 0) { grows = 1; }
+            let fills: u32 = 0;
+            if ((cn.flags & TK_F_FILL) != 0) { fills = 1; }
+            if (n.kind == TK_COLUMN) {
+                let ch: i32 = cn.ph;
+                if (grows == 1 && growers > 0) {
+                    g = g + 1;
+                    // the last grower takes the remainder, so nothing is lost
+                    let share: i32 = (extra * g) / growers - given;
+                    given = given + share;
+                    ch = ch + share;
+                }
+                let cw: i32 = tk_imin(cn.pw, iw);
+                if (fills == 1) { cw = iw; }
+                tk_arrange(ui, c, ix, iy + at, cw, ch);
+                at = at + ch + gap;
+            } else if (n.kind == TK_ROW) {
+                let cw: i32 = cn.pw;
+                if (grows == 1 && growers > 0) {
+                    g = g + 1;
+                    let share: i32 = (extra * g) / growers - given;
+                    given = given + share;
+                    cw = cw + share;
+                }
+                let ch: i32 = tk_imin(cn.ph, ih);
+                let cy: i32 = iy + (ih - ch) / 2;
+                if (fills == 1) { ch = ih; cy = iy; }
+                tk_arrange(ui, c, ix + at, cy, cw, ch);
+                at = at + cw + gap;
+            } else if (n.kind == TK_STACK) {
+                tk_arrange(ui, c, ix, iy, iw, ih);
+            } else {
+                let col: u32 = count % n.cols;
+                if (col == 0 && count > 0) { rowy = rowy + rowh + gap; rowh = 0; }
+                // the row's height: the tallest in it
+                let rh: i32 = 0;
+                let r: u32 = c;
+                let k2: u32 = col;
+                while (r != TK_NONE && k2 < n.cols) {
+                    if (tk_shown(ui, r) == 1) { rh = tk_imax(rh, ui.node[r].ph); k2 = k2 + 1; }
+                    r = ui.node[r].next;
+                }
+                if (col == 0) { rowh = rh; }
+                let cw: i32 = cn.pw;
+                if (fills == 1) { cw = colw[col]; }
+                tk_arrange(ui, c, colx[col], rowy + (rowh - cn.ph) / 2, cw, cn.ph);
+            }
+            count = count + 1;
+        }
+        c = ui.node[c].next;
+    }
+}
+
+// Lay the tree out over the canvas.
+fn tk_layout(ui: *tk_ui) -> void {
+    tk_measure(ui, ui.root);
+    tk_arrange(ui, ui.root, 0, 0, ui.lw, ui.lh);
+    ui.relayout = 0;
+}
+
+// The size the tree asks for, in device pixels.
+fn tk_fit(ui: *tk_ui, w: *u32, h: *u32) -> void {
+    tk_measure(ui, ui.root);
+    *w = tk_dev(ui, ui.node[ui.root].pw);
+    *h = tk_dev(ui, ui.node[ui.root].ph);
+}
+
+// A canvas of w x h device pixels (a new one, the old freed): 0 or an error.
+fn tk_size(ui: *tk_ui, w: u32, h: u32) -> i32 {
+    tk_free(ui);
+    let rc: i32 = ds_surface_new(&ui.canvas, w, h);
+    if (rc != 0) { ui.canvas.px = 0; return rc; }
+    ds_damage_init(&ui.damage, w, h);
+    ui.lw = tk_logical(ui, w);
+    ui.lh = tk_logical(ui, h);
+    // a logical size rounded up can reach past the canvas: what is past it is clipped
+    ui.relayout = 1;
+    return 0;
+}
+
+// ---- drawing: device pixels, every pixel clipped to `c` ----
+
+fn tk_blend(ui: *tk_ui, x: i32, y: i32, argb: u32, cov: u32, c: *ds_rect) -> void {
+    if (x < (c.x as i32) || y < (c.y as i32)) { return; }
+    if (x >= ((c.x + c.w) as i32) || y >= ((c.y + c.h) as i32)) { return; }
+    if (cov == 0) { return; }
+    let row: *u32 = ds_row(&ui.canvas, y as u32);
+    if (cov >= 16) { row[x] = argb; return; }
+    row[x] = ds_over(ds_fade(argb, (cov * 255) / 16), row[x]);
+}
+
+fn tk_box(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, w: i32, h: i32, argb: u32) -> void {
+    if (w <= 0 || h <= 0) { return; }
+    let x0: i32 = tk_imax(x, c.x as i32);
+    let y0: i32 = tk_imax(y, c.y as i32);
+    let x1: i32 = tk_imin(x + w, (c.x + c.w) as i32);
+    let y1: i32 = tk_imin(y + h, (c.y + c.h) as i32);
+    if (x1 <= x0 || y1 <= y0) { return; }
+    ds_fill(&ui.canvas, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32, argb);
+}
+
+// Is (sx, sy), in eighths of a pixel, inside the rounded rectangle at
+// (x, y, w, h) pixels with radius r?
+fn tk_in_rr(sx: i32, sy: i32, x: i32, y: i32, w: i32, h: i32, r: i32) -> u32 {
+    let x8: i32 = x * 8;
+    let y8: i32 = y * 8;
+    let r8: i32 = r * 8;
+    if (sx < x8 || sy < y8 || sx >= x8 + w * 8 || sy >= y8 + h * 8) { return 0; }
+    if (r <= 0) { return 1; }
+    let lx: i32 = x8 + r8;
+    let rx: i32 = x8 + w * 8 - r8;
+    let ty: i32 = y8 + r8;
+    let by: i32 = y8 + h * 8 - r8;
+    let dx: i32 = 0;
+    let dy: i32 = 0;
+    if (sx < lx) { dx = lx - sx; } else if (sx > rx) { dx = sx - rx; }
+    if (sy < ty) { dy = ty - sy; } else if (sy > by) { dy = sy - by; }
+    if (dx * dx + dy * dy <= r8 * r8) { return 1; }
+    return 0;
+}
+
+// The samples of a pixel are the 4 x 4 at (s0x + 2i, s0y + 2j): are all of
+// them inside the rounded rectangle? Its four corners decide, it being convex.
+fn tk_rr_all(s0x: i32, s0y: i32, x: i32, y: i32, w: i32, h: i32, r: i32) -> u32 {
+    if (tk_in_rr(s0x, s0y, x, y, w, h, r) == 0) { return 0; }
+    if (tk_in_rr(s0x + 6, s0y, x, y, w, h, r) == 0) { return 0; }
+    if (tk_in_rr(s0x, s0y + 6, x, y, w, h, r) == 0) { return 0; }
+    if (tk_in_rr(s0x + 6, s0y + 6, x, y, w, h, r) == 0) { return 0; }
+    return 1;
+}
+
+// 1 when no sample of the pixel can be inside: their box is past the
+// rectangle's bounds, or farther than the radius from its core (as tk_in_rr
+// measures). 0 is "perhaps", never a claim.
+fn tk_rr_none(s0x: i32, s0y: i32, x: i32, y: i32, w: i32, h: i32, r: i32) -> u32 {
+    if (w <= 0 || h <= 0) { return 1; }
+    let s1x: i32 = s0x + 6;
+    let s1y: i32 = s0y + 6;
+    let x8: i32 = x * 8;
+    let y8: i32 = y * 8;
+    if (s1x < x8 || s1y < y8 || s0x >= x8 + w * 8 || s0y >= y8 + h * 8) { return 1; }
+    if (r <= 0) { return 0; }
+    let r8: i32 = r * 8;
+    let lx: i32 = x8 + r8;
+    let rx: i32 = x8 + w * 8 - r8;
+    let ty: i32 = y8 + r8;
+    let by: i32 = y8 + h * 8 - r8;
+    let dx: i32 = 0;
+    let dy: i32 = 0;
+    if (s1x < lx) { dx = lx - s1x; } else if (s0x > rx) { dx = s0x - rx; }
+    if (s1y < ty) { dy = ty - s1y; } else if (s0y > by) { dy = s0y - by; }
+    if (dx * dx + dy * dy > r8 * r8) { return 1; }
+    return 0;
+}
+
+// Sixteenths of pixel (px, py) inside the shape: a rounded rectangle, less
+// the one inset t pixels when t > 0 (a ring).
+fn tk_cov(px: i32, py: i32, x: i32, y: i32, w: i32, h: i32, r: i32, t: i32) -> u32 {
+    // The shape is convex: when its four outermost samples are in, all
+    // sixteen are; when the samples' box is out of reach, none is. Only a
+    // pixel an edge crosses is sampled one by one.
+    let s0x: i32 = px * 8 + 1;
+    let s0y: i32 = py * 8 + 1;
+    if (tk_rr_none(s0x, s0y, x, y, w, h, r) == 1) { return 0; }
+    let ix: i32 = x + t;
+    let iy: i32 = y + t;
+    let iw: i32 = w - 2 * t;
+    let ih: i32 = h - 2 * t;
+    let ir: i32 = tk_imax(r - t, 0);
+    if (tk_rr_all(s0x, s0y, x, y, w, h, r) == 1) {
+        if (t <= 0 || tk_rr_none(s0x, s0y, ix, iy, iw, ih, ir) == 1) { return 16; }
+        if (tk_rr_all(s0x, s0y, ix, iy, iw, ih, ir) == 1) { return 0; }
+    }
+    let n: u32 = 0;
+    let j: i32 = 0;
+    while (j < 4) {
+        let i: i32 = 0;
+        while (i < 4) {
+            let sx: i32 = px * 8 + 2 * i + 1;
+            let sy: i32 = py * 8 + 2 * j + 1;
+            if (tk_in_rr(sx, sy, x, y, w, h, r) == 1) {
+                if (t <= 0 || tk_in_rr(sx, sy, x + t, y + t, w - 2 * t, h - 2 * t, tk_imax(r - t, 0)) == 0) {
+                    n = n + 1;
+                }
+            }
+            i = i + 1;
+        }
+        j = j + 1;
+    }
+    return n;
+}
+
+// A rounded rectangle, filled (t 0) or as a ring t pixels thick, with
+// antialiased edges. A circle is one whose radius is half its side.
+fn tk_shape(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, w: i32, h: i32, r: i32, t: i32, argb: u32) -> void {
+    if (w <= 0 || h <= 0) { return; }
+    r = tk_imin(r, tk_imin(w, h) / 2);
+    // Edges are on whole pixels, so only the corner squares (edge on a side)
+    // can cover a pixel in part: they are sampled. Elsewhere a pixel is all
+    // in or all out, and is filled as part of a run.
+    let edge: i32 = tk_imax(r, t) + 1;
+    let lx: i32 = tk_imin(x + edge, x + w);         // [x, lx): left corners
+    let rx: i32 = tk_imax(x + w - edge, lx);        // [rx, x + w): right corners
+    let y0: i32 = tk_imax(y, c.y as i32);
+    let y1: i32 = tk_imin(y + h, (c.y + c.h) as i32);
+    let x0: i32 = tk_imax(x, c.x as i32);
+    let x1: i32 = tk_imin(x + w, (c.x + c.w) as i32);
+    let py: i32 = y0;
+    while (py < y1) {
+        if (py < y + edge || py >= y + h - edge) {
+            // a corner row: its two ends sampled
+            let px: i32 = x0;
+            while (px < tk_imin(lx, x1)) { tk_blend(ui, px, py, argb, tk_cov(px, py, x, y, w, h, r, t), c); px = px + 1; }
+            px = tk_imax(rx, x0);
+            while (px < x1) { tk_blend(ui, px, py, argb, tk_cov(px, py, x, y, w, h, r, t), c); px = px + 1; }
+            // between them: the outline's top or bottom, or the inside
+            if (t <= 0 || py < y + t || py >= y + h - t) { tk_box(ui, c, lx, py, rx - lx, 1, argb); }
+        } else if (t <= 0) {
+            tk_box(ui, c, x, py, w, 1, argb);
+        } else {
+            // a ring's sides
+            tk_box(ui, c, x, py, tk_imin(t, w), 1, argb);
+            tk_box(ui, c, tk_imax(x + w - t, x + t), py, tk_imin(t, w - t), 1, argb);
+        }
+        py = py + 1;
+    }
+}
+
+// A stroke from (ax, ay) to (bx, by), in eighths of a pixel, t eighths
+// thick, with round ends.
+fn tk_seg(ui: *tk_ui, c: *ds_rect, ax: i32, ay: i32, bx: i32, by: i32, t: i32, argb: u32) -> void {
+    let half: i32 = t / 2;
+    let x0: i32 = (tk_imin(ax, bx) - half) / 8 - 1;
+    let x1: i32 = (tk_imax(ax, bx) + half) / 8 + 1;
+    let y0: i32 = (tk_imin(ay, by) - half) / 8 - 1;
+    let y1: i32 = (tk_imax(ay, by) + half) / 8 + 1;
+    // nothing is sampled where nothing may be drawn
+    x0 = tk_imax(x0, c.x as i32);
+    y0 = tk_imax(y0, c.y as i32);
+    x1 = tk_imin(x1, (c.x + c.w) as i32 - 1);
+    y1 = tk_imin(y1, (c.y + c.h) as i32 - 1);
+    let vx: i64 = (bx - ax) as i64;
+    let vy: i64 = (by - ay) as i64;
+    let ll: i64 = vx * vx + vy * vy;
+    let hh: i64 = (half as i64) * (half as i64);
+    let py: i32 = y0;
+    while (py <= y1) {
+        let px: i32 = x0;
+        while (px <= x1) {
+            let n: u32 = 0;
+            let j: i32 = 0;
+            while (j < 4) {
+                let i: i32 = 0;
+                while (i < 4) {
+                    let wx: i64 = (px * 8 + 2 * i + 1 - ax) as i64;
+                    let wy: i64 = (py * 8 + 2 * j + 1 - ay) as i64;
+                    let dot: i64 = wx * vx + wy * vy;
+                    let inside: u32 = 0;
+                    if (ll == 0 || dot <= 0) {
+                        if (wx * wx + wy * wy <= hh) { inside = 1; }
+                    } else if (dot >= ll) {
+                        let ex: i64 = wx - vx;
+                        let ey: i64 = wy - vy;
+                        if (ex * ex + ey * ey <= hh) { inside = 1; }
+                    } else {
+                        let cr: i64 = wx * vy - wy * vx;
+                        if (cr * cr <= hh * ll) { inside = 1; }
+                    }
+                    n = n + inside;
+                    i = i + 1;
+                }
+                j = j + 1;
+            }
+            tk_blend(ui, px, py, argb, n, c);
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+}
+
+// Text from (x, y), the bitmap font magnified by the ui's glyph factor.
+fn tk_text(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, argb: u32, bold: u32) -> void {
+    if (s == (0 as *u8) || ui.font == (0 as *ds_font)) { return; }
+    let f: *ds_font = ui.font;
+    let g: i32 = ui.glyph as i32;
+    let cw: i32 = (f.width as i32) * g;
+    let k: u32 = 0;
+    while (s[k] != 0) {
+        let code: u32 = s[k] as u32;
+        let gx: i32 = x + (k as i32) * cw;
+        if (gx >= ((c.x + c.w) as i32)) { return; }
+        if (code < f.count && gx + cw > (c.x as i32)) {
+            let row: u32 = 0;
+            while (row < f.height) {
+                let bits: u32 = f.bits[code * f.height + row] as u32;
+                // each run of set bits is one box
+                let col: u32 = 0;
+                while (col < f.width) {
+                    if ((bits & (0x80 >> col)) != 0) {
+                        let end: u32 = col + 1;
+                        while (end < f.width && (bits & (0x80 >> end)) != 0) { end = end + 1; }
+                        let px: i32 = gx + (col as i32) * g;
+                        let py: i32 = y + (row as i32) * g;
+                        tk_box(ui, c, px, py, ((end - col) as i32) * g + (bold as i32), g, argb);
+                        col = end;
+                    } else {
+                        col = col + 1;
+                    }
+                }
+                row = row + 1;
+            }
+        }
+        k = k + 1;
+    }
+}
+
+// ---- drawing each kind ----
+
+fn tk_on(n: *tk_node, f: u32) -> u32 {
+    if ((n.flags & f) != 0) { return 1; }
+    return 0;
+}
+
+fn tk_text_colour(ui: *tk_ui, n: *tk_node) -> u32 {
+    if (tk_on(n, TK_F_DISABLED) == 1) { return ui.theme.off_text; }
+    if (tk_on(n, TK_F_MUTED) == 1) { return ui.theme.muted; }
+    return ui.theme.text;
+}
+
+// The focus ring, in the room every focusable widget keeps round itself.
+fn tk_draw_ring(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
+    if (tk_on(n, TK_F_FOCUS) == 0 && tk_on(n, TK_F_SHOW_RING) == 0) { return; }
+    let r: i32 = tk_len(ui, TK_RADIUS + TK_RING);
+    tk_shape(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, r, tk_len(ui, TK_RING_T), ui.theme.ring);
+}
+
+fn tk_draw_button(ui: *tk_ui, n: *tk_node, i: u32, c: *ds_rect) -> void {
+    let m: i32 = tk_len(ui, TK_RING);
+    let x: i32 = (n.dx as i32) + m;
+    let y: i32 = (n.dy as i32) + m;
+    let w: i32 = (n.dw as i32) - 2 * m;
+    let h: i32 = (n.dh as i32) - 2 * m;
+    let r: i32 = tk_len(ui, TK_RADIUS);
+    let bg: u32 = ui.theme.raised;
+    let fg: u32 = ui.theme.text;
+    let edge: u32 = ui.theme.border;
+    if (tk_on(n, TK_F_DEFAULT) == 1) { bg = ui.theme.accent; fg = ui.theme.on_accent; edge = ui.theme.accent; }
+    if (tk_on(n, TK_F_HOVER) == 1) { bg = ui.theme.hover; if (tk_on(n, TK_F_DEFAULT) == 1) { bg = ds_over(ds_fade(0xFFFFFFFF, 40), ui.theme.accent); } }
+    if (tk_on(n, TK_F_PRESSED) == 1) { bg = ui.theme.pressed; fg = ui.theme.text; }
+    if (tk_on(n, TK_F_DISABLED) == 1) { bg = ui.theme.off_bg; fg = ui.theme.off_text; edge = ui.theme.off_bg; }
+    tk_shape(ui, c, x, y, w, h, r, 0, edge);
+    tk_shape(ui, c, x + 1, y + 1, w - 2, h - 2, tk_imax(r - 1, 0), 0, bg);
+    // the text, centred, clipped to the inside of the button
+    let s: *u8 = tk_text_of(ui, i);
+    if (s != (0 as *u8)) {
+        let tw: i32 = ((strlen(s) * tk_char_w(ui)) as i32);
+        let th: i32 = tk_char_h(ui) as i32;
+        let inside: ds_rect;
+        let mine: ds_rect;
+        ds_rect_set(&mine, (x + 1) as u32, (y + 1) as u32, (tk_imax(w - 2, 0)) as u32, (tk_imax(h - 2, 0)) as u32);
+        if (ds_rect_and(&inside, &mine, c) == 1) {
+            tk_text(ui, &inside, x + (w - tw) / 2, y + (h - th) / 2, s, fg, 0);
+        }
+    }
+    tk_draw_ring(ui, n, c);
+}
+
+// A control's label, to the right of its box, clipped to the widget.
+fn tk_draw_side_text(ui: *tk_ui, n: *tk_node, i: u32, c: *ds_rect, from: i32) -> void {
+    let s: *u8 = tk_text_of(ui, i);
+    if (s == (0 as *u8)) { return; }
+    let th: i32 = tk_char_h(ui) as i32;
+    let y: i32 = (n.dy as i32) + ((n.dh as i32) - th) / 2;
+    tk_text(ui, c, from + tk_len(ui, TK_TEXT_GAP), y, s, tk_text_colour(ui, n), 0);
+}
+
+fn tk_draw_check(ui: *tk_ui, n: *tk_node, i: u32, c: *ds_rect) -> void {
+    let m: i32 = tk_len(ui, TK_RING);
+    let s: i32 = tk_len(ui, TK_BOX);
+    let x: i32 = (n.dx as i32) + m;
+    let y: i32 = (n.dy as i32) + ((n.dh as i32) - s) / 2;
+    let r: i32 = tk_len(ui, TK_RADIUS);
+    let off: u32 = tk_on(n, TK_F_DISABLED);
+    let on: u32 = tk_on(n, TK_F_CHECKED) | tk_on(n, TK_F_MIXED);
+    if (n.kind == TK_RADIO) { r = s / 2; }
+    let fill: u32 = ui.theme.raised;
+    if (tk_on(n, TK_F_HOVER) == 1 || tk_on(n, TK_F_PRESSED) == 1) { fill = ui.theme.hover; }
+    if (on == 1 && off == 0) {
+        tk_shape(ui, c, x, y, s, s, r, 0, ui.theme.accent);
+    } else {
+        let edge: u32 = ui.theme.border;
+        if (off == 1) { edge = ui.theme.off_bg; fill = ui.theme.off_bg; }
+        tk_shape(ui, c, x, y, s, s, r, 0, edge);
+        tk_shape(ui, c, x + 1, y + 1, s - 2, s - 2, tk_imax(r - 1, 0), 0, fill);
+    }
+    let mark: u32 = ui.theme.on_accent;
+    if (off == 1) { mark = ui.theme.off_text; }
+    if (n.kind == TK_RADIO && tk_on(n, TK_F_CHECKED) == 1) {
+        let d: i32 = tk_imax((s * 3) / 8, 2);
+        tk_shape(ui, c, x + (s - d) / 2, y + (s - d) / 2, d, d, d / 2, 0, mark);
+    }
+    if (n.kind == TK_CHECK && tk_on(n, TK_F_MIXED) == 1) {
+        let bh: i32 = tk_imax(s / 8, 1);
+        tk_box(ui, c, x + s / 4, y + (s - bh) / 2, s - s / 2, bh, mark);
+    } else if (n.kind == TK_CHECK && tk_on(n, TK_F_CHECKED) == 1) {
+        // a tick: two strokes, in eighths of a pixel
+        let x8: i32 = x * 8;
+        let y8: i32 = y * 8;
+        let t: i32 = tk_imax(s, 8);
+        tk_seg(ui, c, x8 + s * 2, y8 + s * 4, x8 + (s * 7) / 2, y8 + (s * 11) / 2, t, mark);
+        tk_seg(ui, c, x8 + (s * 7) / 2, y8 + (s * 11) / 2, x8 + s * 6, y8 + (s * 5) / 2, t, mark);
+    }
+    tk_draw_side_text(ui, n, i, c, x + s);
+    tk_draw_ring(ui, n, c);
+}
+
+fn tk_draw_switch(ui: *tk_ui, n: *tk_node, i: u32, c: *ds_rect) -> void {
+    let m: i32 = tk_len(ui, TK_RING);
+    let w: i32 = tk_len(ui, TK_SW_W);
+    let h: i32 = tk_len(ui, TK_SW_H);
+    let x: i32 = (n.dx as i32) + m;
+    let y: i32 = (n.dy as i32) + ((n.dh as i32) - h) / 2;
+    let track: u32 = ui.theme.track;
+    if (tk_on(n, TK_F_CHECKED) == 1) { track = ui.theme.accent; }
+    if (tk_on(n, TK_F_DISABLED) == 1) { track = ui.theme.off_bg; }
+    tk_shape(ui, c, x, y, w, h, h / 2, 0, track);
+    let k: i32 = h - 2 * tk_len(ui, 2);
+    let kx: i32 = x + tk_len(ui, 2);
+    if (tk_on(n, TK_F_CHECKED) == 1) { kx = x + w - tk_len(ui, 2) - k; }
+    let knob: u32 = ui.theme.raised;
+    if (tk_on(n, TK_F_DISABLED) == 1) { knob = ui.theme.off_text; }
+    tk_shape(ui, c, kx, y + (h - k) / 2, k, k, k / 2, 0, knob);
+    tk_draw_side_text(ui, n, i, c, x + w);
+    tk_draw_ring(ui, n, c);
+}
+
+// Where a slider's knob is: its left edge in device pixels.
+fn tk_knob_x(ui: *tk_ui, n: *tk_node) -> i32 {
+    let m: i32 = tk_len(ui, TK_RING);
+    let k: i32 = tk_len(ui, TK_KNOB);
+    let run: i32 = tk_imax((n.dw as i32) - 2 * m - k, 0);
+    let span: i64 = (n.vmax - n.vmin) as i64;
+    let off: i64 = 0;
+    if (span > 0) { off = (((n.value - n.vmin) as i64) * (run as i64) + span / 2) / span; }
+    return (n.dx as i32) + m + (off as i32);
+}
+
+fn tk_draw_slider(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
+    let m: i32 = tk_len(ui, TK_RING);
+    let k: i32 = tk_len(ui, TK_KNOB);
+    let th: i32 = tk_len(ui, TK_TRACK);
+    let x: i32 = (n.dx as i32) + m;
+    let w: i32 = (n.dw as i32) - 2 * m;
+    let cy: i32 = (n.dy as i32) + (n.dh as i32) / 2;
+    let kx: i32 = tk_knob_x(ui, n);
+    let on: u32 = ui.theme.accent;
+    let knob_edge: u32 = ui.theme.border;
+    if (tk_on(n, TK_F_HOVER) == 1 || tk_on(n, TK_F_PRESSED) == 1) { knob_edge = ui.theme.accent; }
+    if (tk_on(n, TK_F_DISABLED) == 1) { on = ui.theme.off_text; knob_edge = ui.theme.off_bg; }
+    tk_shape(ui, c, x, cy - th / 2, w, th, th / 2, 0, ui.theme.track);
+    tk_shape(ui, c, x, cy - th / 2, kx + k / 2 - x, th, th / 2, 0, on);
+    tk_shape(ui, c, kx, cy - k / 2, k, k, k / 2, 0, knob_edge);
+    let fill: u32 = ui.theme.raised;
+    if (tk_on(n, TK_F_DISABLED) == 1) { fill = ui.theme.off_bg; }
+    tk_shape(ui, c, kx + 1, cy - k / 2 + 1, k - 2, k - 2, (k - 2) / 2, 0, fill);
+    tk_draw_ring(ui, n, c);
+}
+
+fn tk_draw_progress(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
+    let x: i32 = n.dx as i32;
+    let y: i32 = n.dy as i32;
+    let w: i32 = n.dw as i32;
+    let h: i32 = n.dh as i32;
+    tk_shape(ui, c, x, y, w, h, h / 2, 0, ui.theme.track);
+    let span: i64 = (n.vmax - n.vmin) as i64;
+    let fw: i32 = 0;
+    if (span > 0) { fw = ((((n.value - n.vmin) as i64) * (w as i64)) / span) as i32; }
+    let on: u32 = ui.theme.accent;
+    if (tk_on(n, TK_F_DISABLED) == 1) { on = ui.theme.off_text; }
+    if (fw > 0) { tk_shape(ui, c, x, y, fw, h, h / 2, 0, on); }
+}
+
+fn tk_draw_node(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
+    let n: *tk_node = &ui.node[i];
+    let k: u32 = n.kind;
+    if (k == TK_LABEL || k == TK_HEADING) {
+        let bold: u32 = 0;
+        if (k == TK_HEADING) { bold = 1; }
+        tk_text(ui, c, n.dx as i32, n.dy as i32, tk_text_of(ui, i), tk_text_colour(ui, n), bold);
+    }
+    else if (k == TK_BUTTON) { tk_draw_button(ui, n, i, c); }
+    else if (k == TK_CHECK || k == TK_RADIO) { tk_draw_check(ui, n, i, c); }
+    else if (k == TK_SWITCH) { tk_draw_switch(ui, n, i, c); }
+    else if (k == TK_SLIDER) { tk_draw_slider(ui, n, c); }
+    else if (k == TK_PROGRESS) { tk_draw_progress(ui, n, c); }
+}
+
+// Draw i and its children inside clip, each kept to its own box.
+fn tk_paint_node(ui: *tk_ui, i: u32, clip: *ds_rect) -> void {
+    if (tk_shown(ui, i) == 0) { return; }
+    let n: *tk_node = &ui.node[i];
+    let box: ds_rect;
+    let c: ds_rect;
+    ds_rect_set(&box, n.dx, n.dy, n.dw, n.dh);
+    if (ds_rect_and(&c, &box, clip) == 0) { return; }
+    tk_draw_node(ui, i, &c);
+    let k: u32 = n.first;
+    while (k != TK_NONE) { tk_paint_node(ui, k, &c); k = ui.node[k].next; }
+}
+
+// Draw what the damage covers, lay out first if anything asked for it. The
+// rectangles drawn go to *out (the ui's damage is then empty): their count.
+fn tk_paint(ui: *tk_ui, out: *ds_damage) -> u32 {
+    if (ui.canvas.px == 0) { out.n = 0; return 0; }
+    if (ui.relayout == 1) {
+        tk_layout(ui);
+        tk_damage_all(ui);
+    }
+    let k: u32 = 0;
+    while (k < ui.damage.n) {
+        let r: *ds_rect = &ui.damage.r[k];
+        ds_fill(&ui.canvas, r.x, r.y, r.w, r.h, ui.theme.surface);
+        tk_paint_node(ui, ui.root, r);
+        k = k + 1;
+    }
+    *out = ui.damage;
+    ds_damage_clear(&ui.damage);
+    return out.n;
+}
+
+// ---- input ----
+
+fn tk_focusable(ui: *tk_ui, i: u32) -> u32 {
+    let n: *tk_node = &ui.node[i];
+    if (tk_takes_input(n.kind) == 0 || (n.flags & TK_F_DISABLED) != 0) { return 0; }
+    let a: u32 = i;
+    while (a != TK_NONE) {
+        if ((ui.node[a].flags & TK_F_HIDDEN) != 0) { return 0; }
+        a = ui.node[a].parent;
+    }
+    return 1;
+}
+
+// The node after i in tree order (preorder), or TK_NONE past the last.
+fn tk_after(ui: *tk_ui, i: u32) -> u32 {
+    if (ui.node[i].first != TK_NONE) { return ui.node[i].first; }
+    let a: u32 = i;
+    while (a != TK_NONE) {
+        if (ui.node[a].next != TK_NONE) { return ui.node[a].next; }
+        a = ui.node[a].parent;
+    }
+    return TK_NONE;
+}
+
+fn tk_focus_set(ui: *tk_ui, i: u32) -> void {
+    if (ui.focus == i) { return; }
+    if (ui.focus != TK_NONE) {
+        ui.node[ui.focus].flags = ui.node[ui.focus].flags & ~TK_F_FOCUS;
+        tk_damage_node(ui, ui.focus);
+    }
+    ui.focus = i;
+    if (i != TK_NONE) {
+        ui.node[i].flags = ui.node[i].flags | TK_F_FOCUS;
+        tk_damage_node(ui, i);
+    }
+}
+
+// Tab: the next widget that can take the focus, in tree order, wrapping.
+fn tk_focus_next(ui: *tk_ui) -> void {
+    let start: u32 = ui.focus;
+    if (start == TK_NONE) { start = ui.root; }
+    let i: u32 = tk_after(ui, start);
+    let steps: u32 = 0;
+    while (steps <= ui.used) {
+        if (i == TK_NONE) { i = ui.root; }
+        if (tk_focusable(ui, i) == 1) { tk_focus_set(ui, i); return; }
+        i = tk_after(ui, i);
+        steps = steps + 1;
+    }
+}
+
+fn tk_focused(ui: *tk_ui) -> u32 { return tk_id(ui, ui.focus); }
+
+fn tk_focus(ui: *tk_ui, id: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || tk_focusable(ui, i) == 0) { return E_INVALID_ARGS; }
+    tk_focus_set(ui, i);
+    return 0;
+}
+
+fn tk_radio_pick(ui: *tk_ui, i: u32) -> void {
+    let k: u32 = 0;
+    while (k < ui.used) {
+        let o: *tk_node = &ui.node[k];
+        if (k != i && o.kind == TK_RADIO && o.group == ui.node[i].group && o.parent == ui.node[i].parent
+            && (o.flags & TK_F_CHECKED) != 0) {
+            o.flags = o.flags & ~TK_F_CHECKED;
+            tk_damage_node(ui, k);
+        }
+        k = k + 1;
+    }
+    let n: *tk_node = &ui.node[i];
+    if ((n.flags & TK_F_CHECKED) == 0) {
+        n.flags = n.flags | TK_F_CHECKED;
+        tk_damage_node(ui, i);
+        tk_push(ui, TK_EV_CHANGE, i, 1, 0);
+    }
+}
+
+// What pressing a widget does.
+fn tk_activate(ui: *tk_ui, i: u32) -> void {
+    let n: *tk_node = &ui.node[i];
+    if ((n.flags & TK_F_DISABLED) != 0) { return; }
+    if (n.kind == TK_BUTTON) { tk_push(ui, TK_EV_ACTIVATE, i, 0, 0); return; }
+    if (n.kind == TK_CHECK || n.kind == TK_SWITCH) {
+        // a mixed box becomes checked; otherwise it turns over
+        let was: u32 = n.flags & TK_F_CHECKED;
+        n.flags = n.flags & ~(TK_F_CHECKED | TK_F_MIXED);
+        if (was == 0) { n.flags = n.flags | TK_F_CHECKED; }
+        tk_damage_node(ui, i);
+        let v: i32 = 0;
+        if (was == 0) { v = 1; }
+        tk_push(ui, TK_EV_CHANGE, i, v, 0);
+        return;
+    }
+    if (n.kind == TK_RADIO) { tk_radio_pick(ui, i); }
+}
+
+fn tk_slider_to(ui: *tk_ui, i: u32, v: i32) -> void {
+    let n: *tk_node = &ui.node[i];
+    // snapped to the step, from the minimum
+    let off: i32 = v - n.vmin;
+    if (off < 0) { off = 0; }
+    off = ((off + n.step / 2) / n.step) * n.step;
+    let c: i32 = tk_clamp_value(n, n.vmin + off);
+    if (c == n.value) { return; }
+    n.value = c;
+    tk_damage_node(ui, i);
+    tk_push(ui, TK_EV_CHANGE, i, c, 0);
+}
+
+// The value under device x on slider i.
+fn tk_slider_at(ui: *tk_ui, i: u32, x: i32) -> i32 {
+    let n: *tk_node = &ui.node[i];
+    let m: i32 = tk_len(ui, TK_RING);
+    let k: i32 = tk_len(ui, TK_KNOB);
+    let run: i32 = tk_imax((n.dw as i32) - 2 * m - k, 1);
+    let at: i32 = x - ((n.dx as i32) + m + k / 2);
+    let span: i64 = (n.vmax - n.vmin) as i64;
+    let v: i64 = ((at as i64) * span + (run as i64) / 2) / (run as i64);
+    return n.vmin + (v as i32);
+}
+
+// The next radio of i's group in its parent, forward or back, wrapping.
+fn tk_radio_step(ui: *tk_ui, i: u32, back: u32) -> u32 {
+    let p: u32 = ui.node[i].parent;
+    let best: u32 = TK_NONE;
+    let first: u32 = TK_NONE;
+    let last: u32 = TK_NONE;
+    let seen: u32 = 0;
+    let c: u32 = ui.node[p].first;
+    while (c != TK_NONE) {
+        if (ui.node[c].kind == TK_RADIO && ui.node[c].group == ui.node[i].group && tk_focusable(ui, c) == 1) {
+            if (first == TK_NONE) { first = c; }
+            if (c == i) { seen = 1; }
+            else if (back == 1 && seen == 0) { best = c; }
+            else if (back == 0 && seen == 1 && best == TK_NONE) { best = c; }
+            last = c;
+        }
+        c = ui.node[c].next;
+    }
+    if (best != TK_NONE) { return best; }
+    if (back == 1) { return last; }
+    return first;
+}
+
+// A key: 1 if a widget or the ui took it, else 0 (and the app is told).
+fn tk_key(ui: *tk_ui, code: u32) -> u32 {
+    if (code == TK_KEY_TAB) { tk_focus_next(ui); return 1; }
+    let f: u32 = ui.focus;
+    if (f != TK_NONE) {
+        let n: *tk_node = &ui.node[f];
+        if (code == TK_KEY_SPACE && n.kind != TK_SLIDER) { tk_activate(ui, f); return 1; }
+        if ((code == TK_KEY_ENTER || code == TK_KEY_NL) && n.kind == TK_BUTTON) { tk_activate(ui, f); return 1; }
+        if (n.kind == TK_SLIDER) {
+            if (code == TK_KEY_LEFT || code == TK_KEY_DOWN) { tk_slider_to(ui, f, n.value - n.step); return 1; }
+            if (code == TK_KEY_RIGHT || code == TK_KEY_UP) { tk_slider_to(ui, f, n.value + n.step); return 1; }
+            if (code == TK_KEY_HOME) { tk_slider_to(ui, f, n.vmin); return 1; }
+            if (code == TK_KEY_END) { tk_slider_to(ui, f, n.vmax); return 1; }
+        }
+        if (n.kind == TK_RADIO) {
+            let back: u32 = 2;
+            if (code == TK_KEY_LEFT || code == TK_KEY_UP) { back = 1; }
+            if (code == TK_KEY_RIGHT || code == TK_KEY_DOWN) { back = 0; }
+            if (back != 2) {
+                let to: u32 = tk_radio_step(ui, f, back);
+                if (to != TK_NONE) { tk_focus_set(ui, to); tk_radio_pick(ui, to); }
+                return 1;
+            }
+        }
+    }
+    if (code == TK_KEY_ENTER || code == TK_KEY_NL) {
+        // the dialog manager's rule: Enter presses the default button
+        let k: u32 = 0;
+        while (k < ui.used) {
+            if (ui.node[k].kind == TK_BUTTON && (ui.node[k].flags & TK_F_DEFAULT) != 0 && tk_focusable(ui, k) == 1) {
+                tk_activate(ui, k);
+                return 1;
+            }
+            k = k + 1;
+        }
+    }
+    tk_push(ui, TK_EV_KEY, TK_NONE, 0, code);
+    return 0;
+}
+
+// The widget that takes input under device (x, y): the last drawn wins.
+fn tk_hit(ui: *tk_ui, i: u32, x: i32, y: i32) -> u32 {
+    if (tk_shown(ui, i) == 0) { return TK_NONE; }
+    let n: *tk_node = &ui.node[i];
+    if (x < (n.dx as i32) || y < (n.dy as i32) || x >= ((n.dx + n.dw) as i32) || y >= ((n.dy + n.dh) as i32)) { return TK_NONE; }
+    let found: u32 = TK_NONE;
+    if (tk_takes_input(n.kind) == 1 && (n.flags & TK_F_DISABLED) == 0) { found = i; }
+    let c: u32 = n.first;
+    while (c != TK_NONE) {
+        let h: u32 = tk_hit(ui, c, x, y);
+        if (h != TK_NONE) { found = h; }
+        c = ui.node[c].next;
+    }
+    return found;
+}
+
+fn tk_set_bit(ui: *tk_ui, i: u32, f: u32, on: u32) -> void {
+    if (i == TK_NONE) { return; }
+    let old: u32 = ui.node[i].flags;
+    let nf: u32 = old & ~f;
+    if (on == 1) { nf = nf | f; }
+    if (nf == old) { return; }
+    ui.node[i].flags = nf;
+    tk_damage_node(ui, i);
+}
+
+// The pointer, in device pixels of the canvas, with its buttons (bit 0 the
+// left). A press captures the widget under it; it is pressed only if the
+// button comes up over that widget still.
+fn tk_pointer(ui: *tk_ui, x: i32, y: i32, buttons: u32) -> void {
+    let hit: u32 = tk_hit(ui, ui.root, x, y);
+    if (ui.capture == TK_NONE && hit != ui.hover) {
+        tk_set_bit(ui, ui.hover, TK_F_HOVER, 0);
+        ui.hover = hit;
+        tk_set_bit(ui, hit, TK_F_HOVER, 1);
+    }
+    let was: u32 = ui.buttons & 1;
+    let now: u32 = buttons & 1;
+    ui.buttons = buttons;
+    if (was == 0 && now == 1 && hit != TK_NONE) {
+        ui.capture = hit;
+        tk_set_bit(ui, hit, TK_F_PRESSED, 1);
+        tk_focus_set(ui, hit);
+        if (ui.node[hit].kind == TK_SLIDER) { tk_slider_to(ui, hit, tk_slider_at(ui, hit, x)); }
+        return;
+    }
+    let cap: u32 = ui.capture;
+    if (cap == TK_NONE) { return; }
+    if (now == 1) {
+        if (ui.node[cap].kind == TK_SLIDER) { tk_slider_to(ui, cap, tk_slider_at(ui, cap, x)); }
+        // pressed only while over itself
+        let over: u32 = 0;
+        if (hit == cap) { over = 1; }
+        tk_set_bit(ui, cap, TK_F_PRESSED, over);
+        return;
+    }
+    // released
+    ui.capture = TK_NONE;
+    tk_set_bit(ui, cap, TK_F_PRESSED, 0);
+    if (hit == cap && ui.node[cap].kind != TK_SLIDER) { tk_activate(ui, cap); }
+    if (hit != ui.hover) {
+        tk_set_bit(ui, ui.hover, TK_F_HOVER, 0);
+        ui.hover = hit;
+        tk_set_bit(ui, hit, TK_F_HOVER, 1);
+    }
+}
+
+// ---- for tests and the gallery's witness ----
+
+// FNV-1a over a surface's pixels, row by row.
+fn tk_surface_hash(s: *ds_surface) -> u32 {
+    let h: u32 = 2166136261;
+    let y: u32 = 0;
+    while (y < s.height) {
+        let row: *u32 = ds_row(s, y);
+        let x: u32 = 0;
+        while (x < s.width) {
+            // a pixel per step, not a byte: four times the speed, and only
+            // ever compared with itself
+            h = (h ^ row[x]) * 16777619;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return h;
+}
+
+// Is every node's device box inside its parent's? 1 if so.
+fn tk_boxes_nest(ui: *tk_ui) -> u32 {
+    let k: u32 = 0;
+    while (k < ui.used) {
+        let n: *tk_node = &ui.node[k];
+        if (n.parent != TK_NONE && tk_shown(ui, k) == 1) {
+            let p: *tk_node = &ui.node[n.parent];
+            if (n.dw > 0 && n.dh > 0) {
+                if (n.dx < p.dx || n.dy < p.dy || n.dx + n.dw > p.dx + p.dw || n.dy + n.dh > p.dy + p.dh) { return 0; }
+            }
+        }
+        k = k + 1;
+    }
+    return 1;
+}
+
+// A node's device box, by id: 0, or E_INVALID_ARGS.
+fn tk_box_of(ui: *tk_ui, id: u32, r: *ds_rect) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    ds_rect_set(r, ui.node[i].dx, ui.node[i].dy, ui.node[i].dw, ui.node[i].dh);
+    return 0;
+}

@@ -1,0 +1,226 @@
+# Step 2.8a1, the toolkit's core, its first widgets and the widget gallery,
+# run by `cxk test sabotage`. Each must turn red exactly the self-tests named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds at
+# most one sabotage per test. The gallery's test compares the program against
+# the same toolkit drawing with no window, so a sabotage of the toolkit itself
+# reaches both sides alike and leaves it green: only what is the window's own
+# (the back buffer's age) turns it red.
+
+# ---- layout and damage ----
+
+[edges-as-widths]
+# a box's device width rounded on its own: at 125 % its right edge drifts
+expect = x: toolkit: layout at every scale @ failed at step 4012
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    n.dw = tk_dev(ui, x + w) - x0;
+===
+    n.dw = tk_dev(ui, w);
+>>>
+
+[damage-everything]
+# any change repaints the whole canvas
+expect = x: toolkit: damage is what changed @ failed at step 4103
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    ds_damage_add(&ui.damage, n.dx, n.dy, n.dw, n.dh);
+}
+===
+    ds_damage_all(&ui.damage);
+}
+>>>
+
+# ---- focus ----
+
+[focus-takes-disabled]
+expect = x: toolkit: focus order @ failed at step 4203
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    if (tk_takes_input(n.kind) == 0 || (n.flags & TK_F_DISABLED) != 0) { return 0; }
+===
+    if (tk_takes_input(n.kind) == 0) { return 0; }
+>>>
+
+[focus-in-hidden]
+# only the widget's own hidden flag counts, not a parent's
+expect = x: toolkit: focus order @ failed at step 4203
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+        if ((ui.node[a].flags & TK_F_HIDDEN) != 0) { return 0; }
+===
+        if (a == i && (ui.node[a].flags & TK_F_HIDDEN) != 0) { return 0; }
+>>>
+
+# ---- the pointer and the keys ----
+
+[release-anywhere]
+# a press let go away from its widget still presses it
+expect = x: toolkit: pointer and keys @ failed at step 4306
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    if (hit == cap && ui.node[cap].kind != TK_SLIDER) { tk_activate(ui, cap); }
+===
+    if (ui.node[cap].kind != TK_SLIDER) { tk_activate(ui, cap); }
+>>>
+
+[radios-not-exclusive]
+expect = x: toolkit: pointer and keys @ failed at step 4314
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+        if (k != i && o.kind == TK_RADIO && o.group == ui.node[i].group && o.parent == ui.node[i].parent
+===
+        if (k != i && o.kind == TK_RADIO && o.group == ui.node[i].group + 99 && o.parent == ui.node[i].parent
+>>>
+
+[slider-past-max]
+expect = x: toolkit: pointer and keys @ failed at step 4320
+group = g3
+edit = os/std/toolkit.xfxn
+<<<
+    if (v > n.vmax) { v = n.vmax; }
+===
+    if (v > n.vmax + 1000) { v = n.vmax; }
+>>>
+
+# ---- ids and drawing ----
+
+[no-generation]
+# an id from before tk_reset reaches the new widget in its slot
+expect = x: toolkit: ids, text and the pool @ failed at step 4406
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    if (ui.node[i].gen != (id >> 16)) { return TK_NONE; }
+===
+    if (ui.node[i].gen == 0xFFFFFFFF) { return TK_NONE; }
+>>>
+
+[unclipped-widgets]
+# a widget draws within what its parent may draw, not within its own box
+expect = x: toolkit: what is drawn @ failed at step 4522
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    tk_draw_node(ui, i, &c);
+===
+    tk_draw_node(ui, i, clip);
+>>>
+
+[font-past-end]
+# a font whose glyphs reach one byte past what was read is taken
+expect = x: toolkit: layout at every scale @ failed at step 4001
+expect = x: toolkit: what is drawn @ failed at step 4501
+group = g2
+edit = os/std/display.xfxn
+<<<
+    if (count == 0 || count > 256 || 24 + count * height > n) { return E_INVALID_ARGS; }
+===
+    if (count == 0 || count > 256 || 24 + count * height > n + 1) { return E_INVALID_ARGS; }
+>>>
+
+[ring-rows-filled]
+# a ring's corner rows filled right across, as a filled shape's are
+expect = x: toolkit: shapes as if every pixel sampled @ failed at step 4702
+group = g3
+edit = os/std/toolkit.xfxn
+<<<
+            if (t <= 0 || py < y + t || py >= y + h - t) { tk_box(ui, c, lx, py, rx - lx, 1, argb); }
+===
+            tk_box(ui, c, lx, py, rx - lx, 1, argb);
+>>>
+
+[ring-sides-thick]
+# a ring's sides one pixel too thick
+expect = x: toolkit: shapes as if every pixel sampled @ failed at step 4702
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+            tk_box(ui, c, x, py, tk_imin(t, w), 1, argb);
+===
+            tk_box(ui, c, x, py, tk_imin(t + 1, w), 1, argb);
+>>>
+
+# ---- the window ----
+
+[stale-back-buffer]
+# only this frame's damage is copied; the buffer is two frames old
+# (not with damage-everything: copying the whole canvas each commit hides it)
+expect = x: gallery: the window holds what was drawn @ failed at step 4605
+group = g3
+edit = os/std/toolkit_window.xfxn
+<<<
+    tk_win_copy(tw, &both);
+===
+    tk_win_copy(tw, &d);
+>>>
+
+[no-frame-offscreen]
+# a commit that changes nothing on the screen gets no frame: the gallery,
+# larger than the test's screen, waits forever after a Tab wholly off it
+expect = x: gallery: the window holds what was drawn @ failed at step 4605
+group = g2
+edit = os/std/dserver.xfxn
+<<<
+    if (s.comp.damage.n == 0) { wm_frames_done(&s.w); return; }
+===
+    if (s.comp.damage.n == 0) { return; }
+>>>
+
+# ---- coverage's shortcuts (tt_cov samples all sixteen, tk_cov need not) ----
+
+[cov-all-one-corner]
+# "all in" decided by one sample: an edge pixel taken as covered
+expect = x: toolkit: shapes as if every pixel sampled @ failed at step 4701
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+    if (tk_in_rr(s0x + 6, s0y + 6, x, y, w, h, r) == 0) { return 0; }
+    return 1;
+===
+    return 1;
+>>>
+
+[cov-none-without-radius]
+# "none in" claimed for any pixel off the core: a curve's edge left empty
+expect = x: toolkit: shapes as if every pixel sampled @ failed at step 4701
+expect = x: toolkit: what is drawn @ failed at step 4516
+group = g4
+edit = os/std/toolkit.xfxn
+<<<
+    if (dx * dx + dy * dy > r8 * r8) { return 1; }
+===
+    if (dx * dx + dy * dy > 0) { return 1; }
+>>>
+
+# ---- the screen, two pixels a store ----
+
+[present-keeps-alpha]
+# the second pixel of each pair reaches an XRGB screen with its alpha
+expect = x: display: reference frames, both formats @ failed at step 82
+expect = x: display: only the damage is presented @ failed at step 94
+expect = x: layers: off the edges, faded, turned @ failed at step 420
+group = g5
+edit = os/std/display.xfxn
+<<<
+            while (i < pairs) { d8[i] = s8[i] & 0x00FFFFFF00FFFFFF; i = i + 1; }
+===
+            while (i < pairs) { d8[i] = s8[i] & 0x00FFFFFFFFFFFFFF; i = i + 1; }
+>>>
+
+[present-drops-odd]
+# an odd width's last pixel never presented
+expect = x: display: only the damage is presented @ failed at step 97
+expect = x: windows: a commit's damage, bounded @ failed at step 188
+group = g1
+edit = os/std/display.xfxn
+<<<
+            if ((r.w & 1) == 1) { d[r.w - 1] = s[r.x + r.w - 1] & 0x00FFFFFF; }
+===
+            // sabotaged: the odd pixel dropped
+>>>

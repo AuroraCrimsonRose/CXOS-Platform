@@ -1,0 +1,487 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/toolkit_tests.xfxn - the toolkit's tests with no window (roadmap 2.8a1).
+// Aurora Tejeda / CATX Systems
+//
+// Imported by xtest.xfxn, which runs each. A ui is driven here as a window
+// would drive it, by tk_key and tk_pointer, and read back from its tree and
+// its canvas. The gallery's own test, through the display server, is in
+// xtest.xfxn (it needs the server's helpers there). Codes 4000-4699.
+
+import "toolkit.xfxn";
+
+global tt_ui: tk_ui;
+global tt_fontbuf: [2072]u8;    // 24 + 128 glyphs x 16 rows
+global tt_font: ds_font;
+
+// A font whose every glyph is a solid 8x16 block, so where text went is
+// plain to see; made through ds_font_parse, which must also refuse bad
+// ones. 0, or the step that failed.
+fn tt_make_font() -> i32 {
+    let p: *u8 = &tt_fontbuf[0];
+    memzero(p, 2072);
+    p[0] = 88; p[1] = 70; p[2] = 78; p[3] = 84;     // XFNT
+    p[6] = 1; p[7] = 1; p[8] = 8; p[9] = 16; p[10] = 128; p[11] = 0;
+    let k: u32 = 24;
+    while (k < 2072) { p[k] = 0xFF; k = k + 1; }
+    // the glyphs reach past what was read: refused
+    if (ds_font_parse(&tt_font, p, 2071) != E_INVALID_ARGS) { return 1; }
+    p[8] = 9;
+    if (ds_font_parse(&tt_font, p, 2072) != E_INVALID_ARGS) { return 2; }
+    p[8] = 8;
+    p[0] = 89;
+    if (ds_font_parse(&tt_font, p, 2072) != E_INVALID_ARGS) { return 3; }
+    p[0] = 88;
+    if (ds_font_parse(&tt_font, p, 2072) != 0 || tt_font.width != 8 || tt_font.count != 128) { return 4; }
+    return 0;
+}
+
+// A ui at scale q with a canvas fitted to its tree, laid out, not drawn.
+fn tt_place(q: u32) -> i32 {
+    tk_set_scale(&tt_ui, q);
+    let w: u32 = 0;
+    let h: u32 = 0;
+    tk_fit(&tt_ui, &w, &h);
+    if (tk_size(&tt_ui, w, h) != 0) { return 1; }
+    tk_layout(&tt_ui);
+    return 0;
+}
+
+// A ui at scale q with a canvas fitted to its tree, drawn.
+fn tt_show(q: u32) -> i32 {
+    tk_set_scale(&tt_ui, q);
+    let w: u32 = 0;
+    let h: u32 = 0;
+    tk_fit(&tt_ui, &w, &h);
+    if (tk_size(&tt_ui, w, h) != 0) { return 1; }
+    let d: ds_damage;
+    tk_paint(&tt_ui, &d);
+    return 0;
+}
+
+fn tt_paint_count() -> u32 {
+    let d: ds_damage;
+    return tk_paint(&tt_ui, &d);
+}
+
+// Every box's device edges are its logical edges, each rounded on its own.
+fn tt_edges_ok(ui: *tk_ui) -> u32 {
+    let k: u32 = 0;
+    while (k < ui.used) {
+        let n: *tk_node = &ui.node[k];
+        if ((n.flags & TK_F_HIDDEN) == 0) {
+            if (n.dx != tk_dev(ui, n.x) || n.dx + n.dw != tk_dev(ui, n.x + n.w)) { return 0; }
+            if (n.dy != tk_dev(ui, n.y) || n.dy + n.dh != tk_dev(ui, n.y + n.h)) { return 0; }
+        }
+        k = k + 1;
+    }
+    return 1;
+}
+
+// 4000: layout at 100, 125, 150 and 200 %: boxes meet edge to edge in
+// pixels, nest in their parents, and a grower takes exactly what is left.
+fn tt_layout(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 4000 + rc; }
+    let scales: [4]u32;
+    scales[0] = 4; scales[1] = 5; scales[2] = 6; scales[3] = 8;
+    let s: u32 = 0;
+    while (s < 4) {
+        tk_init(&tt_ui, scales[s], &tt_font);
+        let root: u32 = tk_root(&tt_ui);
+        tk_set_spacing(&tt_ui, root, 1, 1);
+        tk_set_min(&tt_ui, root, 301, 0);
+        let row: u32 = tk_add(&tt_ui, root, TK_ROW, 0 as *u8);
+        tk_set_spacing(&tt_ui, row, 1, 0);
+        tk_set_flags(&tt_ui, row, TK_F_FILL, 0);
+        let a: u32 = tk_add(&tt_ui, row, TK_BUTTON, "A");
+        let b: u32 = tk_add(&tt_ui, row, TK_CHECK, "BB");
+        let c: u32 = tk_add(&tt_ui, row, TK_BUTTON, "CCC");
+        tk_set_flags(&tt_ui, c, TK_F_GROW, 0);
+        let g: u32 = tk_add(&tt_ui, root, TK_GRID, 0 as *u8);
+        tk_set_cols(&tt_ui, g, 3);
+        tk_set_spacing(&tt_ui, g, 1, 1);
+        let k: u32 = 0;
+        while (k < 7) { tk_add(&tt_ui, g, TK_SWITCH, "s"); k = k + 1; }
+        if (a == 0 || b == 0 || c == 0 || g == 0) { return 4010; }
+        if (tt_place(scales[s]) != 0) { return 4011; }
+        if (tt_edges_ok(&tt_ui) == 0) { return 4012; }
+        if (tk_boxes_nest(&tt_ui) == 0) { return 4013; }
+        let ia: u32 = tk_index(&tt_ui, a);
+        let ib: u32 = tk_index(&tt_ui, b);
+        let ic: u32 = tk_index(&tt_ui, c);
+        let ir: u32 = tk_index(&tt_ui, row);
+        // the gap between neighbours is the spacing step, in logical units
+        if (tt_ui.node[ib].x != tt_ui.node[ia].x + tt_ui.node[ia].w + tk_sp(1)) { return 4014; }
+        // the grower ends where its row does
+        if (tt_ui.node[ic].x + tt_ui.node[ic].w != tt_ui.node[ir].x + tt_ui.node[ir].w) { return 4015; }
+        if (tt_ui.node[ic].w <= tt_ui.node[ic].pw) { return 4016; }
+        // the root covers the canvas it was fitted to: the canvas in logical
+        // units is rounded up, so it may reach one pixel past (clipped), never short
+        let rw: u32 = tt_ui.node[tt_ui.root].dw;
+        if (rw < tt_ui.canvas.width || rw > tt_ui.canvas.width + 1) { return 4017; }
+        tk_free(&tt_ui);
+        s = s + 1;
+    }
+    return 0;
+}
+
+// 4100: damage is the box of what changed, coalesced, and nothing else.
+fn tt_damage(arg: u64) -> i32 {
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    let root: u32 = tk_root(&tt_ui);
+    tk_set_spacing(&tt_ui, root, 2, 2);
+    let k: u32 = tk_add(&tt_ui, root, TK_CHECK, "Check");
+    let b: u32 = tk_add(&tt_ui, root, TK_BUTTON, "Button");
+    if (k == 0 || b == 0 || tt_show(4) != 0) { return 4100; }
+    if (tt_paint_count() != 0) { return 4101; }             // nothing changed
+    let kb: ds_rect;
+    tk_box_of(&tt_ui, k, &kb);
+    tk_set_flags(&tt_ui, k, TK_F_CHECKED, 0);
+    tk_set_flags(&tt_ui, k, 0, TK_F_CHECKED);
+    tk_set_flags(&tt_ui, k, TK_F_CHECKED, 0);
+    let d: ds_damage;
+    if (tk_paint(&tt_ui, &d) != 1) { return 4102; }
+    if (d.r[0].x != kb.x || d.r[0].y != kb.y || d.r[0].w != kb.w || d.r[0].h != kb.h) { return 4103; }
+    // the same state again: no damage
+    tk_set_flags(&tt_ui, k, TK_F_CHECKED, 0);
+    if (tt_paint_count() != 0) { return 4104; }
+    // the pointer over the button: its box alone
+    let bb: ds_rect;
+    tk_box_of(&tt_ui, b, &bb);
+    tk_pointer(&tt_ui, (bb.x + 5) as i32, (bb.y + 5) as i32, 0);
+    if (tk_paint(&tt_ui, &d) != 1 || d.r[0].y != bb.y || d.r[0].h != bb.h) { return 4105; }
+    if ((tk_flags(&tt_ui, b) & TK_F_HOVER) == 0) { return 4106; }
+    // the theme: all of it
+    tk_set_dark(&tt_ui, 1);
+    if (tk_paint(&tt_ui, &d) != 1 || d.r[0].w != tt_ui.canvas.width || d.r[0].h != tt_ui.canvas.height) { return 4107; }
+    if (ds_pixel(&tt_ui.canvas, 0, 0) != tt_ui.theme.surface) { return 4108; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 4200: Tab goes through what can take the focus, in tree order, skipping
+// what is disabled or hidden (itself or a parent), and wraps.
+fn tt_focus(arg: u64) -> i32 {
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    let root: u32 = tk_root(&tt_ui);
+    tk_add(&tt_ui, root, TK_LABEL, "label");
+    let a: u32 = tk_add(&tt_ui, root, TK_BUTTON, "A");
+    let b: u32 = tk_add(&tt_ui, root, TK_BUTTON, "B");
+    tk_set_flags(&tt_ui, b, TK_F_DISABLED, 0);
+    let hid: u32 = tk_add(&tt_ui, root, TK_COLUMN, 0 as *u8);
+    tk_add(&tt_ui, hid, TK_BUTTON, "C");
+    tk_set_flags(&tt_ui, hid, TK_F_HIDDEN, 0);
+    let d: u32 = tk_add(&tt_ui, root, TK_CHECK, "D");
+    let e: u32 = tk_add(&tt_ui, root, TK_SLIDER, "E");
+    tk_add(&tt_ui, root, TK_PROGRESS, "F");
+    if (e == 0 || tt_show(4) != 0) { return 4200; }
+    if (tk_focused(&tt_ui) != 0) { return 4201; }
+    tk_key(&tt_ui, TK_KEY_TAB);
+    if (tk_focused(&tt_ui) != a) { return 4202; }
+    tk_key(&tt_ui, TK_KEY_TAB);
+    if (tk_focused(&tt_ui) != d) { return 4203; }          // not B, not C
+    tk_key(&tt_ui, TK_KEY_TAB);
+    if (tk_focused(&tt_ui) != e) { return 4204; }
+    tk_key(&tt_ui, TK_KEY_TAB);
+    if (tk_focused(&tt_ui) != a) { return 4205; }          // wrapped
+    if ((tk_flags(&tt_ui, a) & TK_F_FOCUS) == 0) { return 4206; }
+    // a focused widget that is turned off loses the focus
+    tk_set_flags(&tt_ui, a, TK_F_DISABLED, 0);
+    if (tk_focused(&tt_ui) != 0 || (tk_flags(&tt_ui, a) & TK_F_FOCUS) != 0) { return 4207; }
+    // an app cannot set the focus flag itself
+    tk_set_flags(&tt_ui, d, TK_F_FOCUS, 0);
+    if ((tk_flags(&tt_ui, d) & TK_F_FOCUS) != 0) { return 4208; }
+    // nothing that can take it: Tab leaves it nowhere
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    tk_add(&tt_ui, tk_root(&tt_ui), TK_LABEL, "only");
+    tk_key(&tt_ui, TK_KEY_TAB);
+    if (tk_focused(&tt_ui) != 0) { return 4209; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+fn tt_centre(id: u32, x: *i32, y: *i32) -> void {
+    let r: ds_rect;
+    tk_box_of(&tt_ui, id, &r);
+    *x = (r.x + r.w / 2) as i32;
+    *y = (r.y + r.h / 2) as i32;
+}
+
+fn tt_click(id: u32) -> void {
+    let x: i32 = 0;
+    let y: i32 = 0;
+    tt_centre(id, &x, &y);
+    tk_pointer(&tt_ui, x, y, 1);
+    tk_pointer(&tt_ui, x, y, 0);
+}
+
+// The next event of the app, or kind TK_EV_NONE.
+fn tt_event(ev: *tk_event) -> void {
+    if (tk_next(&tt_ui, ev) == 0) { ev.kind = TK_EV_NONE; ev.id = 0; }
+}
+
+// 4300: the pointer and the keys press widgets as they should.
+fn tt_pointer(arg: u64) -> i32 {
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    let root: u32 = tk_root(&tt_ui);
+    tk_set_spacing(&tt_ui, root, 2, 2);
+    let b: u32 = tk_add(&tt_ui, root, TK_BUTTON, "Press");
+    let off: u32 = tk_add(&tt_ui, root, TK_BUTTON, "Off");
+    tk_set_flags(&tt_ui, off, TK_F_DISABLED, 0);
+    let k: u32 = tk_add(&tt_ui, root, TK_CHECK, "Check");
+    let row: u32 = tk_add(&tt_ui, root, TK_ROW, 0 as *u8);
+    let r1: u32 = tk_add(&tt_ui, row, TK_RADIO, "1");
+    let r2: u32 = tk_add(&tt_ui, row, TK_RADIO, "2");
+    let r3: u32 = tk_add(&tt_ui, row, TK_RADIO, "3");
+    let other: u32 = tk_add(&tt_ui, row, TK_RADIO, "x");
+    tk_set_group(&tt_ui, r1, 1); tk_set_group(&tt_ui, r2, 1); tk_set_group(&tt_ui, r3, 1);
+    tk_set_group(&tt_ui, other, 2);
+    tk_set_flags(&tt_ui, r1, TK_F_CHECKED, 0);
+    tk_set_flags(&tt_ui, other, TK_F_CHECKED, 0);
+    let s: u32 = tk_add(&tt_ui, root, TK_SLIDER, "Slide");
+    tk_set_range(&tt_ui, s, 0, 100, 10);
+    tk_set_value(&tt_ui, s, 50);
+    if (s == 0 || tt_show(4) != 0) { return 4300; }
+    let ev: tk_event;
+
+    // a press and a release over it: pressed once
+    tt_click(b);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_ACTIVATE || ev.id != b) { return 4301; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_NONE) { return 4302; }
+    if ((tk_flags(&tt_ui, b) & TK_F_PRESSED) != 0 || tk_focused(&tt_ui) != b) { return 4303; }
+    // pressed, then let go somewhere else: not pressed, and not drawn pressed
+    let x: i32 = 0;
+    let y: i32 = 0;
+    tt_centre(b, &x, &y);
+    tk_pointer(&tt_ui, x, y, 1);
+    if ((tk_flags(&tt_ui, b) & TK_F_PRESSED) == 0) { return 4304; }
+    tk_pointer(&tt_ui, 0, (tt_ui.canvas.height - 1) as i32, 1);
+    if ((tk_flags(&tt_ui, b) & TK_F_PRESSED) != 0) { return 4305; }
+    tk_pointer(&tt_ui, 0, (tt_ui.canvas.height - 1) as i32, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_NONE) { return 4306; }
+    // a disabled one does nothing
+    tt_click(off);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_NONE) { return 4307; }
+    // Space and Enter on the focused button
+    tk_key(&tt_ui, TK_KEY_SPACE);
+    tk_key(&tt_ui, TK_KEY_ENTER);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_ACTIVATE || ev.id != b) { return 4308; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_ACTIVATE) { return 4309; }
+
+    // a check box turns over; a mixed one becomes checked
+    tt_click(k);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_CHANGE || ev.id != k || ev.value != 1) { return 4310; }
+    tt_click(k);
+    tt_event(&ev);
+    if (ev.value != 0 || (tk_flags(&tt_ui, k) & TK_F_CHECKED) != 0) { return 4311; }
+    tk_set_flags(&tt_ui, k, TK_F_MIXED, 0);
+    tt_click(k);
+    tt_event(&ev);
+    if ((tk_flags(&tt_ui, k) & (TK_F_CHECKED | TK_F_MIXED)) != TK_F_CHECKED) { return 4312; }
+
+    // radios: one of a group, the other group untouched
+    tt_click(r2);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_CHANGE || ev.id != r2) { return 4313; }
+    if ((tk_flags(&tt_ui, r1) & TK_F_CHECKED) != 0 || (tk_flags(&tt_ui, r2) & TK_F_CHECKED) == 0) { return 4314; }
+    if ((tk_flags(&tt_ui, other) & TK_F_CHECKED) == 0) { return 4315; }
+    // the arrows move the choice within the group, wrapping, never to x
+    tk_key(&tt_ui, TK_KEY_RIGHT);
+    if ((tk_flags(&tt_ui, r3) & TK_F_CHECKED) == 0 || (tk_flags(&tt_ui, r2) & TK_F_CHECKED) != 0) { return 4316; }
+    tk_key(&tt_ui, TK_KEY_RIGHT);
+    if ((tk_flags(&tt_ui, r1) & TK_F_CHECKED) == 0 || tk_focused(&tt_ui) != r1) { return 4317; }
+    if ((tk_flags(&tt_ui, other) & TK_F_CHECKED) == 0) { return 4318; }
+    while (tk_next(&tt_ui, &ev) == 1) { }
+
+    // a slider: the pointer sets it, the keys step it, both ends hold
+    let sb: ds_rect;
+    tk_box_of(&tt_ui, s, &sb);
+    tt_centre(s, &x, &y);
+    tk_pointer(&tt_ui, sb.x as i32, y, 1);
+    tk_pointer(&tt_ui, sb.x as i32, y, 0);
+    if (tk_value(&tt_ui, s) != 0) { return 4319; }
+    tk_pointer(&tt_ui, (sb.x + sb.w - 1) as i32, y, 1);
+    tk_pointer(&tt_ui, (sb.x + sb.w - 1) as i32, y, 0);
+    if (tk_value(&tt_ui, s) != 100) { return 4320; }
+    while (tk_next(&tt_ui, &ev) == 1) { }
+    tk_key(&tt_ui, TK_KEY_RIGHT);
+    if (tk_value(&tt_ui, s) != 100) { return 4321; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_NONE) { return 4322; }             // no change, no event
+    tk_key(&tt_ui, TK_KEY_LEFT);
+    tt_event(&ev);
+    if (tk_value(&tt_ui, s) != 90 || ev.kind != TK_EV_CHANGE || ev.value != 90) { return 4323; }
+    tk_key(&tt_ui, TK_KEY_HOME);
+    tk_key(&tt_ui, TK_KEY_LEFT);
+    if (tk_value(&tt_ui, s) != 0) { return 4324; }
+    // a key nothing takes goes to the app
+    while (tk_next(&tt_ui, &ev) == 1) { }
+    if (tk_key(&tt_ui, 113) != 0) { return 4325; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_KEY || ev.code != 113) { return 4326; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 4400: ids from before a reset are refused; text is the ui's own copy;
+// only containers take children.
+fn tt_ids(arg: u64) -> i32 {
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    let mine: [8]u8;
+    strcopy(&mine[0], "Name", 8);
+    let b: u32 = tk_add(&tt_ui, tk_root(&tt_ui), TK_BUTTON, &mine[0]);
+    if (b == 0) { return 4400; }
+    mine[0] = 88;
+    let nm: *u8 = tk_name(&tt_ui, b);
+    if (nm == (0 as *u8) || nm[0] != 78) { return 4401; }          // still "Name"
+    if (tk_add(&tt_ui, b, TK_LABEL, "x") != 0) { return 4402; }    // a button is no container
+    if (tk_add(&tt_ui, tk_root(&tt_ui), 99, "x") != 0) { return 4403; }
+    if (tk_role(&tt_ui, b) != TK_ROLE_BUTTON) { return 4404; }
+    tk_reset(&tt_ui);
+    let again: u32 = tk_add(&tt_ui, tk_root(&tt_ui), TK_CHECK, "New");
+    // the same slot, another generation
+    if (again == 0 || (again & 0xFFFF) != (b & 0xFFFF) || again == b) { return 4405; }
+    if (tk_set_flags(&tt_ui, b, TK_F_CHECKED, 0) != E_INVALID_ARGS) { return 4406; }
+    if ((tk_flags(&tt_ui, again) & TK_F_CHECKED) != 0) { return 4407; }
+    if (tk_index(&tt_ui, 0) != TK_NONE || tk_index(&tt_ui, 0x10000 | 200) != TK_NONE) { return 4408; }
+    // the pool runs out cleanly
+    let n: u32 = 0;
+    while (tk_add(&tt_ui, tk_root(&tt_ui), TK_LABEL, 0 as *u8) != 0) { n = n + 1; }
+    if (tt_ui.used != TK_NODES_MAX) { return 4409; }
+    return 0;
+}
+
+// The reference: every one of a pixel's sixteen samples looked at, no
+// shortcut (tk_cov takes some; this is what they must agree with).
+fn tt_cov(px: i32, py: i32, x: i32, y: i32, w: i32, h: i32, r: i32, t: i32) -> u32 {
+    let n: u32 = 0;
+    let j: i32 = 0;
+    while (j < 4) {
+        let i: i32 = 0;
+        while (i < 4) {
+            let sx: i32 = px * 8 + 2 * i + 1;
+            let sy: i32 = py * 8 + 2 * j + 1;
+            if (tk_in_rr(sx, sy, x, y, w, h, r) == 1) {
+                if (t <= 0 || tk_in_rr(sx, sy, x + t, y + t, w - 2 * t, h - 2 * t, tk_imax(r - t, 0)) == 0) {
+                    n = n + 1;
+                }
+            }
+            i = i + 1;
+        }
+        j = j + 1;
+    }
+    return n;
+}
+
+// One shape drawn with tk_shape over a plain canvas, every pixel held to
+// what sampling all of it gives: 1 if they agree.
+fn tt_shape_ok(x: i32, y: i32, w: i32, h: i32, r: i32, t: i32, clip: *ds_rect) -> u32 {
+    let bg: u32 = 0xFF102030;
+    let fg: u32 = 0xFFE0C040;
+    ds_fill(&tt_ui.canvas, 0, 0, tt_ui.canvas.width, tt_ui.canvas.height, bg);
+    tk_shape(&tt_ui, clip, x, y, w, h, r, t, fg);
+    let rr: i32 = tk_imin(r, tk_imin(w, h) / 2);
+    let py: u32 = 0;
+    while (py < tt_ui.canvas.height) {
+        let px: u32 = 0;
+        while (px < tt_ui.canvas.width) {
+            let want: u32 = bg;
+            let inclip: u32 = 0;
+            if (px >= clip.x && py >= clip.y && px < clip.x + clip.w && py < clip.y + clip.h) { inclip = 1; }
+            if (inclip == 1 && w > 0 && h > 0) {
+                let cov: u32 = tt_cov(px as i32, py as i32, x, y, w, h, rr, t);
+                if (cov >= 16) { want = fg; }
+                else if (cov > 0) { want = ds_over(ds_fade(fg, (cov * 255) / 16), bg); }
+            }
+            if (ds_pixel(&tt_ui.canvas, px, py) != want) { return 0; }
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+    return 1;
+}
+
+// 4700: shapes are drawn as sampling every pixel would draw them, though
+// only their corners are sampled: filled, rings, circles, ones too small
+// for their radius or ring, and cut by a clip.
+fn tt_shapes(arg: u64) -> i32 {
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    if (tk_size(&tt_ui, 48, 40) != 0) { return 4700; }
+    let all: ds_rect;
+    ds_rect_set(&all, 0, 0, 48, 40);
+    let cut: ds_rect;
+    ds_rect_set(&cut, 7, 5, 19, 13);
+    if (tt_shape_ok(2, 3, 30, 20, 4, 0, &all) == 0) { return 4701; }       // filled
+    if (tt_shape_ok(2, 3, 30, 20, 4, 2, &all) == 0) { return 4702; }       // a ring
+    if (tt_shape_ok(5, 5, 16, 16, 8, 0, &all) == 0) { return 4703; }       // a circle
+    if (tt_shape_ok(5, 5, 16, 16, 8, 3, &all) == 0) { return 4704; }       // a round ring
+    if (tt_shape_ok(1, 1, 40, 6, 9, 0, &all) == 0) { return 4705; }        // radius past half
+    if (tt_shape_ok(1, 1, 5, 30, 1, 3, &all) == 0) { return 4706; }        // ring wider than half
+    if (tt_shape_ok(3, 2, 34, 30, 0, 2, &all) == 0) { return 4707; }       // square corners
+    if (tt_shape_ok(2, 3, 30, 20, 5, 2, &cut) == 0) { return 4708; }       // clipped
+    if (tt_shape_ok(40, 30, 20, 20, 4, 0, &all) == 0) { return 4709; }     // past the canvas
+    if (tt_shape_ok(2, 3, 30, 20, 1, 6, &all) == 0) { return 4710; }       // ring thicker than its radius
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 4500: what is drawn: text kept to its widget's box, the states' colours,
+// dark.
+fn tt_paint(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 4500 + rc; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    tk_set_spacing(&tt_ui, root, 0, 4);         // 16 logical units round
+    let b: u32 = tk_add(&tt_ui, root, TK_BUTTON, "Far too long a label for it");
+    let k: u32 = tk_add(&tt_ui, root, TK_CHECK, "On");
+    tk_set_flags(&tt_ui, k, TK_F_CHECKED, 0);
+    // a label clips nothing itself: its box, from the tree, is all that cuts it
+    let lab: u32 = tk_add(&tt_ui, root, TK_LABEL, "A label longer than its box");
+    if (k == 0 || lab == 0) { return 4510; }
+    // a canvas narrower than the button asks: it is cut to what there is
+    if (tk_size(&tt_ui, 100, 200) != 0) { return 4511; }
+    let d: ds_damage;
+    tk_paint(&tt_ui, &d);
+    let bb: ds_rect;
+    tk_box_of(&tt_ui, b, &bb);
+    if (bb.x != 16 || bb.x + bb.w != 84) { return 4512; }
+    let cy: u32 = bb.y + bb.h / 2;
+    // its text reaches the box's inside edge and goes no further
+    if (ds_pixel(&tt_ui.canvas, bb.x + bb.w - 6, cy) != tt_ui.theme.text) { return 4513; }
+    if (ds_pixel(&tt_ui.canvas, bb.x + bb.w + 2, cy) != tt_ui.theme.surface) { return 4514; }
+    if (ds_pixel(&tt_ui.canvas, 98, cy) != tt_ui.theme.surface) { return 4515; }
+    // a checked box is the accent, inside its corner
+    let kb: ds_rect;
+    tk_box_of(&tt_ui, k, &kb);
+    let s: u32 = tk_dev(&tt_ui, TK_BOX);
+    let bx: u32 = kb.x + tk_dev(&tt_ui, TK_RING);
+    let by: u32 = kb.y + (kb.h - s) / 2;
+    if (ds_pixel(&tt_ui.canvas, bx + 2, by + 2) != tt_ui.theme.accent) { return 4516; }
+    // the ring only once it has the focus
+    if (ds_pixel(&tt_ui.canvas, kb.x + kb.w / 2, kb.y) != tt_ui.theme.surface) { return 4517; }
+    tk_focus(&tt_ui, k);
+    tk_paint(&tt_ui, &d);
+    if (ds_pixel(&tt_ui.canvas, kb.x + kb.w / 2, kb.y) != tt_ui.theme.ring) { return 4518; }
+    // unchecked: the accent is gone
+    tk_key(&tt_ui, TK_KEY_SPACE);
+    tk_paint(&tt_ui, &d);
+    if (ds_pixel(&tt_ui.canvas, bx + 2, by + 2) == tt_ui.theme.accent) { return 4519; }
+    tk_set_dark(&tt_ui, 1);
+    tk_paint(&tt_ui, &d);
+    if (ds_pixel(&tt_ui.canvas, 2, 2) != 0xFF1E2126) { return 4520; }
+    let lb: ds_rect;
+    tk_box_of(&tt_ui, lab, &lb);
+    if (lb.w == 0 || ds_pixel(&tt_ui.canvas, lb.x + 2, lb.y + 2) != tt_ui.theme.text) { return 4521; }
+    if (ds_pixel(&tt_ui.canvas, lb.x + lb.w + 2, lb.y + 2) != tt_ui.theme.surface) { return 4522; }
+    tk_free(&tt_ui);
+    return 0;
+}

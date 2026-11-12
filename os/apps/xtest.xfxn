@@ -24,6 +24,8 @@ import "display.xfxn";
 import "dserver.xfxn";
 import "bochsdrv.xfxn";
 import "virtiogpu.xfxn";
+import "toolkit_tests.xfxn";
+import "gallery_pages.xfxn";
 
 const MS: u64 = 1000000;
 
@@ -806,7 +808,7 @@ fn d_frames(arg: u64) -> i32 {
     return dsx_frame(SCREEN_RGB565, 0x3333, 0xF800, 0x9989, 0xFFFF, 0xF343F115, 85);
 }
 
-// 90-94: after a frame, only the damage reaches the screen: everything else
+// 90-95, 97: after a frame, only the damage reaches the screen: everything else
 // keeps the poison written over it
 fn d_damage_only(arg: u64) -> i32 {
     let c: ds_comp;
@@ -837,6 +839,12 @@ fn d_damage_only(arg: u64) -> i32 {
     ds_compose(&c);
     ds_present(&c, &sc);
     if (rc == 0 && ds_screen_pixel(&sc, 10, 30) != 0x0099334C) { rc = 95; }
+    // 97: an odd width (pixels go two a store): the white tip one left, so
+    // three columns, 61-63, still poisoned until now
+    ds_layer_move(&c, 2, 61, 46);
+    ds_compose(&c);
+    ds_present(&c, &sc);
+    if (rc == 0 && (ds_screen_pixel(&sc, 61, 46) != 0x00FFFFFF || ds_screen_pixel(&sc, 63, 47) != 0x00FFFFFF)) { rc = 97; }
     dsx_scene_free(&c, &sc);
     return rc;
 }
@@ -3039,6 +3047,140 @@ fn v_sim(arg: u64) -> i32 {
     return rc;
 }
 
+// ---- the toolkit's witness: the gallery, through the server (2.8a1) ----
+
+global gx_ui: tk_ui;
+// how long a key may take to reach the window: the slowest, a new scale,
+// takes about 25 s under icount (a full canvas, drawn on both sides)
+const GX_KEY_MS: u64 = 60000;
+
+// The gallery's window, shown and the client's own: its index, or WM_NONE.
+fn gx_window() -> u32 {
+    let i: u32 = 0;
+    while (i < WM_WIN_MAX) {
+        let win: *wm_win = &wx.w.win[i];
+        if (win.used == 1 && win.ghost == 0 && win.cur != WM_NONE) { return i; }
+        i = i + 1;
+    }
+    return WM_NONE;
+}
+
+// Turn the loop until the gallery's window holds exactly what the headless
+// ui drew: 1, or 0 after ms.
+fn gx_matches(ms: u64) -> u32 {
+    // a window is looked at once per commit, and compared until the first
+    // pixel that differs: looking more takes the CPU the gallery draws with
+    let seen_win: u32 = WM_NONE;
+    let seen_commits: u32 = 0;
+    let t0: u64 = time_now_ms();
+    while (time_now_ms() - t0 < ms) {
+        dsv_step(&wx);
+        let i: u32 = gx_window();
+        if (i != WM_NONE) {
+            let win: *wm_win = &wx.w.win[i];
+            if (i != seen_win || win.commits != seen_commits) {
+                seen_win = i; seen_commits = win.commits;
+                if (win.w == gx_ui.canvas.width && win.h == gx_ui.canvas.height
+                    && gx_same(&win.buf[win.cur], &gx_ui.canvas) == 1) { return 1; }
+            }
+        }
+    }
+    return 0;
+}
+
+// 1 if two surfaces of one size hold the same pixels: two at a time
+fn gx_same(a: *ds_surface, b: *ds_surface) -> u32 {
+    let pairs: u32 = b.width >> 1;
+    let y: u32 = 0;
+    while (y < b.height) {
+        let ra: *u32 = ds_row(a, y);
+        let rb: *u32 = ds_row(b, y);
+        let a8: *u64 = ra as *u64;
+        let b8: *u64 = rb as *u64;
+        let x: u32 = 0;
+        while (x < pairs) {
+            if (a8[x] != b8[x]) { return 0; }
+            x = x + 1;
+        }
+        if ((b.width & 1) == 1 && ra[b.width - 1] != rb[b.width - 1]) { return 0; }
+        y = y + 1;
+    }
+    return 1;
+}
+
+// A key, to the gallery and to the headless ui alike, as gallery.xfxn
+// handles it.
+fn gx_key(code: u32) -> void {
+    wm_key(&wx.w, code);
+    tk_key(&gx_ui, code);
+    let ev: tk_event;
+    while (tk_next(&gx_ui, &ev) == 1) {
+        if (ev.kind == TK_EV_KEY && gp_key(&gx_ui, ev.code) == 1) {
+            let w: u32 = 0;
+            let h: u32 = 0;
+            tk_fit(&gx_ui, &w, &h);
+            tk_size(&gx_ui, w, h);
+        }
+    }
+    let d: ds_damage;
+    tk_paint(&gx_ui, &d);
+}
+
+// 4600: the gallery, a real program, draws in its window exactly what the
+// toolkit draws with no window, after each key: focus (each Tab alone, to
+// catch a back buffer copied without the frame before's damage), a radio moved
+// twice, dark, two keys with the window off the screen, and a new scale (a
+// window opened again at another size).
+fn gx_gallery(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 4600; }
+    let blob: [16]u8;
+    let n: u32 = strcopy(&blob[0], "gallery", 16) + 1;
+    if (dsv_launch(&wx, "/Shared/Programs/gallery.xuex", &blob[0], n) < 0) { wx_down(); return 4601; }
+    // the test's server has no font: nor has the replay
+    tk_init(&gx_ui, 4, 0 as *ds_font);
+    if (gp_build(&gx_ui) != 0) { wx_down(); return 4602; }
+    let w: u32 = 0;
+    let h: u32 = 0;
+    tk_fit(&gx_ui, &w, &h);
+    if (tk_size(&gx_ui, w, h) != 0) { wx_down(); return 4603; }
+    let d: ds_damage;
+    tk_paint(&gx_ui, &d);
+    let rc: i32 = 0;
+    if (gx_matches(120000) == 0) { rc = 4604; }
+    let k: u32 = 0;
+    // each Tab its own frame: one whose damage misses the frame before's
+    // shows a back buffer given only its own damage keeping an old ring
+    while (rc == 0 && k < 10) {
+        gx_key(TK_KEY_TAB);
+        if (gx_matches(GX_KEY_MS) == 0) { rc = 4605; }
+        k = k + 1;
+    }
+    if (rc == 0) { gx_key(TK_KEY_RIGHT); if (gx_matches(GX_KEY_MS) == 0) { rc = 4606; } }
+    if (rc == 0) { gx_key(TK_KEY_RIGHT); if (gx_matches(GX_KEY_MS) == 0) { rc = 4607; } }
+    if (rc == 0) { gx_key(100); if (gx_matches(GX_KEY_MS) == 0) { rc = 4608; } }
+    // off the screen: a commit there changes nothing shown and must still
+    // get its frame, or the second key's commit never comes
+    if (rc == 0) {
+        let i: u32 = gx_window();
+        if (i == WM_NONE) { rc = 4609; }
+        else {
+            wm_move(&wx.w, i, 2000, 2000);
+            gx_key(TK_KEY_TAB);
+            if (gx_matches(GX_KEY_MS) == 0) { rc = 4610; }
+            else { gx_key(TK_KEY_TAB); if (gx_matches(GX_KEY_MS) == 0) { rc = 4611; } }
+        }
+    }
+    if (rc == 0) {
+        let was: u32 = gx_ui.canvas.width;
+        gx_key(50);
+        if (gx_ui.canvas.width == was) { rc = 4612; }
+        else if (gx_matches(GX_KEY_MS) == 0) { rc = 4613; }
+    }
+    tk_free(&gx_ui);
+    wx_down();
+    return rc;
+}
+
 fn all() -> void {
     test_run("threads: create refusals",               t_create_refused,           30000);
     test_run("threads: workers joined with codes",     t_workers_joined,           30000);
@@ -3095,6 +3237,14 @@ fn all() -> void {
     test_run("animation: the loop runs, then stops",   a_loop,                     120000);
     test_run("bochs: the driver on a simulated device",   b_sim,                      30000);
     test_run("virtio-gpu: the driver on a simulated device", v_sim,                  30000);
+    test_run("toolkit: layout at every scale",          tt_layout,                  30000);
+    test_run("toolkit: damage is what changed",         tt_damage,                  30000);
+    test_run("toolkit: focus order",                    tt_focus,                   30000);
+    test_run("toolkit: pointer and keys",               tt_pointer,                 30000);
+    test_run("toolkit: ids, text and the pool",         tt_ids,                     30000);
+    test_run("toolkit: what is drawn",                  tt_paint,                   30000);
+    test_run("toolkit: shapes as if every pixel sampled", tt_shapes,                60000);
+    test_run("gallery: the window holds what was drawn", gx_gallery,                300000);
 }
 
 fn _start() -> void { test_main(all); }

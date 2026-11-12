@@ -2,7 +2,7 @@
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
 > **Status: DESIGNED 2026-11-11 (roadmap 2.8a), building in 2.8a1-2.8a5.**
-> One client toolkit in `os/std` (`tk*.xfxn`) that every base app draws
+> One client toolkit in `os/std` (`toolkit.xfxn`, `toolkit_window.xfxn`; its functions are `tk_`, X having one namespace) that every base app draws
 > with: a retained widget tree in logical units, damage per widget, the
 > whole base widget set, a gallery as witness. The decisions behind it are
 > in the roadmap's Phase 2 item 8; this document is how.

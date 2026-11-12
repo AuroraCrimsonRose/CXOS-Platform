@@ -166,6 +166,7 @@ struct wm_win {
     flags: u32,
     cur: u32,           // the buffer on the screen: 0, 1 or WM_NONE
     want_frame: u32,    // committed since the last frame was told
+    commits: u32,       // how many it has made
     lease: [2]i32,      // what keeps a shown buffer unwritable; 0 if none
     buf: [2]ds_surface, // the client's, mapped read-only; .mem is our handle
     frame: ds_surface,  // server-drawn; the content's area is transparent
@@ -951,6 +952,7 @@ fn wm_commit(w: *wm, i: u32, b: u32, lease: i32, rects: *ds_rect, n: u32) -> u32
     win.lease[b] = lease;
     win.cur = b;
     win.want_frame = 1;
+    win.commits = win.commits + 1;
     wm_restack(w);
     let ox: u32 = win.x + WM_EDGE;
     let oy: u32 = win.y + WM_TITLE_H;

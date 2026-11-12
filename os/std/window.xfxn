@@ -20,6 +20,7 @@
 import "wm.xfxn";
 
 const WIN_SLOT: u32 = 3;
+const WIN_FONT_SLOT: u32 = 4;       // the server's font, a memory object to map read-only
 
 const DS_OP_WINDOW_NEW: u32 = 1;   // w, h, flags, title; handles: the two buffers
 const DS_OP_COMMIT: u32 = 2;       // win, buffer, nrects, rects; handle: the lease

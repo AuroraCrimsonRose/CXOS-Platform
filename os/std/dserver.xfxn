@@ -92,8 +92,16 @@ fn dsv_launch(s: *dsv, path: *u8, args: *u8, args_len: u32) -> i32 {
     if (c == WM_NONE) { return E_NO_RESOURCES; }
     let send: i32 = ep_mint(s.ep, (c + 1) as u64, HRIGHT_SEND);
     if (send <= 0) { s.w.client[c].used = 0; return send; }
-    let sh: spawn_handle;
-    sh.handle = send; sh.op = IPC_HANDLE_MOVE; sh.rights = IPC_RIGHTS_SAME; sh.slot = WIN_SLOT;
+    // the connection, and the server's font, shared read-only: a client
+    // draws its own text (system/CX_TOOLKIT.md §2) and needs no GRANT_DISK
+    let sh: [2]spawn_handle;
+    sh[0].handle = send; sh[0].op = IPC_HANDLE_MOVE; sh[0].rights = IPC_RIGHTS_SAME; sh[0].slot = WIN_SLOT;
+    let nh: u32 = 1;
+    if (s.font.bits != (0 as *u8) && s.font.mem > 0) {
+        sh[1].handle = s.font.mem; sh[1].op = IPC_HANDLE_COPY;
+        sh[1].rights = HRIGHT_MAP | HRIGHT_INSPECT; sh[1].slot = WIN_FONT_SLOT;
+        nh = 2;
+    }
     let a: spawn_args;
     memzero((&a) as *u8, sizeof a);
     a.name = path as u64;
@@ -101,8 +109,8 @@ fn dsv_launch(s: *dsv, path: *u8, args: *u8, args_len: u32) -> i32 {
     a.caps = GRANT_CONSOLE;
     a.args = args as u64;
     a.args_len = args_len as u64;
-    a.handles = (&sh) as u64;
-    a.handle_count = 1;
+    a.handles = (&sh[0]) as u64;
+    a.handle_count = nh;
     let ph: i32 = exec_path(path, &a);
     if (ph <= 0) { handle_close(send); s.w.client[c].used = 0; return ph; }
     let rc: i32 = queue_register(s.queue, ph, SIGNAL_PROCESS_ENDED, DSV_KEY_PROC + (c as u64));
@@ -315,7 +323,10 @@ fn dsv_read_input(s: *dsv) -> void {
 }
 
 fn dsv_compose(s: *dsv) -> void {
-    if (s.comp.damage.n == 0) { return; }
+    // a commit that changed nothing on the screen (off it, minimised, on
+    // another workspace) is as shown as it will be: its frame is done, or
+    // its client waits for one forever
+    if (s.comp.damage.n == 0) { wm_frames_done(&s.w); return; }
     ds_compose(&s.comp);
     s.pixels = s.pixels + ds_present(&s.comp, &s.screen);
     s.frames = s.frames + 1;
