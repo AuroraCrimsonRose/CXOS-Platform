@@ -24,7 +24,7 @@ const WIN_FONT_SLOT: u32 = 4;       // the server's font, a memory object to map
 
 const DS_OP_WINDOW_NEW: u32 = 1;   // w, h, flags, title; handles: the two buffers
 const DS_OP_COMMIT: u32 = 2;       // win, buffer, nrects, rects; handle: the lease
-const DS_OP_WAIT: u32 = 3;         // answered when an event is ready
+const DS_OP_WAIT: u32 = 3;         // answered when an event is ready; flags: at most this many ms (0: no limit), then WM_EV_TIMER
 const DS_OP_WINDOW_CLOSE: u32 = 4; // win
 const DS_OP_LAYER_NEW: u32 = 5;    // win, layer (the parent), w, h, flags; handles: the buffer, its lease
 const DS_OP_LAYER_SET: u32 = 6;    // win, layer, props
@@ -215,11 +215,16 @@ fn win_commit(w: *win) -> i32 { return win_commit_rects(w, 0 as *ds_rect, 0); }
 
 // The next event, blocking until there is one. 0 or an error (E_PEER_CLOSED:
 // the server has gone).
-fn win_wait(w: *win, ev: *wm_event) -> i32 {
+fn win_wait(w: *win, ev: *wm_event) -> i32 { return win_wait_ms(w, ev, 0); }
+
+// The same, for at most ms milliseconds (0: no limit): then the event is
+// WM_EV_TIMER.
+fn win_wait_ms(w: *win, ev: *wm_event, ms: u32) -> i32 {
     let req: ds_req;
     let rep: ds_rep;
     memzero((&req) as *u8, sizeof req);
     req.op = DS_OP_WAIT;
+    req.flags = ms;
     let rc: i32 = win_call(w, &req, &rep, 0 as *ipc_handle, 0);
     if (rc != 0) { return rc; }
     *ev = rep.ev;

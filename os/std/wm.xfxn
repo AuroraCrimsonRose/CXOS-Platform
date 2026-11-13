@@ -140,6 +140,7 @@ const WM_EV_POINTER: u32 = 2;       // a, b: in the window; c: buttons
 const WM_EV_FOCUS: u32 = 3;         // a: 1 gained, 0 lost
 const WM_EV_CLOSE: u32 = 4;         // its close box was pressed
 const WM_EV_FRAME: u32 = 5;         // what it committed is on the screen: draw the next
+const WM_EV_TIMER: u32 = 6;         // a timed wait ran out with nothing else to give (2.8a3)
 
 struct wm_event {
     kind: u32,
@@ -153,6 +154,7 @@ struct wm_event {
 struct wm_client {
     used: u32,
     waiter: i32,        // the reply token of its waiting call, or 0
+    wake_at: u64,       // when that call is answered with WM_EV_TIMER if nothing came; 0 never
     head: u32,
     n: u32,
     since: u64,         // when the oldest event still unread became that
@@ -1101,11 +1103,14 @@ fn wm_repaint_client(w: *wm, c: u32) -> void {
     }
 }
 
-// A client has called for its next event, with this reply token.
-fn wm_wait(w: *wm, c: u32, token: i32) -> void {
+// A client has called for its next event, with this reply token, for at
+// most ms milliseconds (0: for as long as it takes).
+fn wm_wait(w: *wm, c: u32, token: i32, ms: u32) -> void {
     let cl: *wm_client = &w.client[c];
     if (cl.waiter > 0) { handle_close(cl.waiter); }
     cl.waiter = token;
+    cl.wake_at = 0;
+    if (ms > 0) { cl.wake_at = w.now + (ms as u64); }
     cl.since = w.now;
     if (cl.hung == 1) { cl.hung = 0; wm_repaint_client(w, c); }
 }
@@ -1276,6 +1281,11 @@ fn wm_tick(w: *wm, now: u64) -> void {
         if (cl.used == 1 && cl.hung == 0 && cl.n > 0 && cl.waiter == 0 && cl.ask == 0 && now - cl.since >= WM_HANG_MS) {
             cl.hung = 1;
             wm_repaint_client(w, c);
+        }
+        // a timed wait that has run out is answered with nothing
+        if (cl.used == 1 && cl.waiter > 0 && cl.n == 0 && cl.wake_at != 0 && now >= cl.wake_at) {
+            cl.wake_at = 0;
+            wm_push(w, c, WM_EV_TIMER, WM_NONE, 0, 0, 0);
         }
         c = c + 1;
     }

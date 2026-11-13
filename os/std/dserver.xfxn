@@ -297,7 +297,7 @@ fn dsv_receive(s: *dsv) -> void {
         let req: *ds_req = (&dsv_inbox[0]) as *ds_req;
         if (req.op == DS_OP_WAIT) {
             dsv_close_handles(count, 0);
-            wm_wait(&s.w, c, info.reply);
+            wm_wait(&s.w, c, info.reply, req.flags);
             return;
         }
         if (req.op == DS_OP_WINDOW_NEW) { rep.status = dsv_window_new(s, c, req, &rep, count); }

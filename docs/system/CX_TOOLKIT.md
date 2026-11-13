@@ -137,6 +137,18 @@ into a plain `ds_surface` with events fed by the caller: the self-tests
 drive widgets that way with no server, and the gallery under the server is
 the end-to-end test.
 
+**What waits on the time (2.8a3).** The ui keeps no clock of its own: the
+loop gives it the time (`tk_tick(ui, now_ms)`) and asks how long until it
+has something to do (`tk_due`: 0 now, `TK_NONE` never), and waits that
+long and no longer. `DS_OP_WAIT` takes a timeout in ms in its flags (0
+for none); the server's tick hands a waiter whose time ran out with no
+event `WM_EV_TIMER` once (`wm_client.wake_at`, cleared when it fires and
+set again by the next wait; a wait an event answered is no longer one). Only the tooltip waits on the time today; a caret's blink
+and key repeat in an app would go the same way. This is Serenity's
+`Core::Timer` folded into the one wait the loop already makes, without a
+second thread or a timer object (`Application.cpp`'s tooltip timers are
+Core timers).
+
 ## 7. Events, focus, keyboard
 
 - **Pointer:** hit-test the tree top down (last child drawn on top wins);
@@ -217,7 +229,7 @@ setting and can be forced per ui (the gallery does).
 |---|---|---|
 | **2.8a1** | the core (tree, layout, scale, damage, loop, focus, theme), and label, button, check box, radio, switch, slider, progress bar; gallery v1 | headless self-tests in `xtest` (layout at three scales, damage, focus order, activation by pointer and key) and the gallery under displayd; `2.8a1.sab` |
 | **2.8a2** | key events with codes and modifiers (ABI); commands and keybinds (registered, clashes refused, the three fixed keys); text field with selection, the clipboard (read only on a paste), the input-method interface with a dead-key method | key and clash tests; composition test |
-| **2.8a3** | scroll view, list, tree, table, tabs, menu and context menu, tooltip, the dialog with standard buttons, the text grid | gallery pages |
+| **2.8a3** | scroll view, list, tree, table, tabs, menu and context menu, tooltip, the dialog with standard buttons, the text grid; the server's timed wait | headless tests of each, the gallery's pages replayed; `2.8a3.sab` |
 | **2.8a4** | localisation: message keys, `cxk` string tables (a Fluent subset), CLDR plural rules, the pseudo-locale, our UAX #9 run against Unicode's conformance files, mirrored layouts | pseudo-locale gallery boot |
 | **2.8a5** | the inspector and the automation API over the tree; boot checks (an interactive widget with no name, one focus cannot reach, clipped text, two commands on one key); high contrast; `gui.xfxn` retired | each check sabotaged |
 
@@ -274,6 +286,78 @@ setting and can be forced per ui (the gallery does).
   copying and pasting through the server (4614-4624), the kernel's
   (`test_ps2kbd.c` in the host tests, the input handle's steps 18 and 19),
   and `tests/sabotage/2.8a2.sab`.
+
+**2.8a3, as built (2026-11-13).**
+
+- **Scroll view** (`TK_SCROLL`): one child, laid out at the size it asks
+  for and seen through the view's box, less a bar on each axis it needs
+  (`TK_BAR`, 10). A bar's thumb drags; a press on its track pages. The
+  view is a focus stop only when nothing in it can take the focus (a
+  page of text); then the arrows, Page Up and Down, Home and End scroll
+  it. Positions are logical and clamped to the content. The focus
+  going somewhere out of sight scrolls every view round it until it is in
+  sight, at the next paint (`tk_reveal_now`, Serenity's
+  `AbstractScrollableWidget::scroll_into_view`). `tk_scroll_by`,
+  `tk_scroll_pos`.
+- **List, tree, table** (`TK_LIST`, `TK_TREE`, `TK_TABLE`, rows of
+  `TK_ITEM`): one focus stop each, a chosen row (`tk_select` without an
+  event, `tk_selected`). Up, Down, Home, End, Page Up and Down choose,
+  stepping past disabled rows and stopping at the ends; a choice by key or
+  press is `TK_EV_CHANGE` (value the row's place, code its id); Enter is
+  `TK_EV_ACTIVATE`. A tree's items nest; a closed item's children are not
+  rows. On a tree, as `TreeView::keydown_event` (LibGUI/TreeView.cpp):
+  Right opens a closed item or goes to its first child, Left closes an
+  open one or goes to its parent, Enter and Space open or close; a press
+  on the disclosure does too, and the app hears `TK_EV_EXPAND`. A table's
+  first item is its header (its items the cells), never chosen.
+- **Tabs** (`TK_TABS`): its children are the pages, a page's text its
+  tab's; one page shows. Left, Right, Home, End on the focused tabs, not
+  wrapping (`TabWidget::keydown_event`); Ctrl+Tab and Ctrl+Shift+Tab from
+  anywhere in it, wrapping. The focus in a page turned away goes to the
+  tabs.
+- **Menus** (`TK_MENUBAR`, `TK_MENU`, `TK_MENUITEM`; an item with no text
+  is a separator): F10 opens the bar's first menu with its first item lit;
+  Up and Down wrap past separators and disabled items; Left and Right go
+  to the menu beside; Enter and Space choose; Esc, F10 or Alt close
+  (Serenity's WindowServer `MenuManager`). An item runs its command
+  (2.8a2) if it has one, so a menu item and a key are one action, and
+  shows the command's key; else the app hears `TK_EV_ACTIVATE`. A press
+  outside closes every menu and goes no further. A **context menu** is a
+  `TK_MENU` not in a bar, given to a widget by `tk_set_context`: a right
+  press on it or what it holds, Shift+F10 or the Menu key on the focus;
+  `tk_popup` opens one anywhere.
+- **Tooltips** (`tk_set_tip`, also the widget's accessible description):
+  the pointer still over a widget with one for 700 ms shows it under the
+  widget (above if there is no room); moving to another while one is up
+  switches at once; a press, a key or moving off hides it (Serenity's
+  `Application` tooltip show timer). A focus moved by key to a widget with
+  a tip shows it at once, so the keyboard reads it too.
+- **Dialogs** (`tk_dialog(ui, title, text, buttons)`, `TK_DLG_*`): a
+  heading, a text, a body for the app's widgets (`tk_dialog_body`), and
+  the buttons asked for, Discard alone at the left and the rest at the
+  right, OK last, as Haiku's `BAlert` (src/kits/interface/Alert.cpp) puts
+  its default last and Serenity's `MessageBox` names its standard ones.
+  Enter presses OK, else Yes, else Close, else the last; Esc Cancel, else
+  Close. Open (`tk_dialog_open`), the menus close, what is under it is
+  dimmed and out of reach of the pointer and Tab, the app's own commands
+  wait (a field in it keeps copy and paste), and the focus goes to its
+  body's first widget, else its default. A button closes it and the app
+  hears `TK_EV_DIALOG` with the button; closing gives the focus back.
+- **Text grid** (`TK_TEXTGRID`): up to 255 by 255 character cells, all
+  grids' cells together at most 4096 a ui; a cell is a code point and
+  two colours, the theme's or one of 16 (`tk_palette`). Put, write UTF-8
+  along a row, clear, scroll up, a cursor drawn reversed. The terminal
+  (2.8b) is built on it.
+- **The gallery** is three pages in tabs (Controls; Collections, a list,
+  a tree and a table each larger than its view; Menus and dialogs, with a
+  tooltip, a text grid and a dialog), a menu bar whose Edit menu is the
+  standard commands and whose View menu is the gallery's, and a context
+  menu on the last two pages.
+- **Witness:** the headless tests (`tt_scroll` 5300, `tt_list` 5400 and
+  5600, `tt_tree` 5500, `tt_tabs` 5700, `tt_menus` 5800, `tt_tips` 5900,
+  `tt_dialog` 6000, `tt_textgrid` 6100), the server's timed wait
+  (`w_timed` 6200), the gallery replay through the pages, a menu, a
+  tooltip and the dialog (4625-4641), and `tests/sabotage/2.8a3.sab`.
 
 The gallery (`os/apps/gallery.xfxn`) shows every widget in every state
 (normal, hovered, pressed, focused, disabled, checked, mixed), light and

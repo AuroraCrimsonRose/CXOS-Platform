@@ -49,7 +49,7 @@ _Static_assert(USER_STACK_TOP == USER_ARGS_BASE, "the argument page sits on the 
 _Static_assert(SYSPAGE_VIRT + 0x2000u == USER_STACK_TOP - USER_STACK_PAGES * 0x1000u,
                "one unmapped guard page between the stack and the system page");
 _Static_assert(USER_IMAGE_END < SYSPAGE_VIRT - 0x1000u, "images stay below the system page");
-#define PROC_MAX_IMAGE    (1u << 20)   /* 1 MiB cap on an image */
+#define PROC_MAX_IMAGE    (2u << 20)   /* 2 MiB cap on an image (xtest passed 1 MiB at 2.8a3) */
 
 /* The record proc_start hands the new thread (thread_set_arg) for its
    trampoline, which runs later, on that thread, in its own address space. */

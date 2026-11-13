@@ -12,6 +12,7 @@
 
 import "toolkit.xfxn";
 import "window.xfxn";
+import "time.xfxn";
 
 struct tk_win {
     w: win,
@@ -157,9 +158,16 @@ fn tk_win_next(tw: *tk_win, ev: *tk_event) -> void {
         let rc: i32 = tk_win_flush(tw);
         if (rc != 0) { ev.kind = TK_EV_GONE; ev.id = 0; ev.value = rc; ev.code = 0; return; }
         let we: wm_event;
-        rc = win_wait(&tw.w, &we);
+        // what waits on the time (a tooltip) bounds the wait
+        tk_tick(tw.ui, time_now_ms());
+        let due: u32 = tk_due(tw.ui);
+        let ms: u32 = 0;
+        if (due != TK_NONE) { ms = due + 1; }
+        rc = 0;
+        if (due != 0) { rc = win_wait_ms(&tw.w, &we, ms); } else { we.kind = WM_EV_TIMER; }
         if (rc != 0) { ev.kind = TK_EV_GONE; ev.id = 0; ev.value = rc; ev.code = 0; return; }
-        if (we.kind == WM_EV_FRAME) { tw.in_flight = 0; }
+        if (we.kind == WM_EV_TIMER) { tk_tick(tw.ui, time_now_ms()); }
+        else if (we.kind == WM_EV_FRAME) { tw.in_flight = 0; }
         else if (we.kind == WM_EV_CLOSE) { ev.kind = TK_EV_CLOSE; ev.id = 0; ev.value = 0; ev.code = 0; return; }
         else if (we.kind == WM_EV_KEY) {
             tk_key(tw.ui, we.a as u32, we.b as u32, we.c as u32);

@@ -6,7 +6,7 @@
 // Imported by xtest.xfxn, which runs each. A ui is driven here as a window
 // would drive it, by tk_key and tk_pointer, and read back from its tree and
 // its canvas. The gallery's own test, through the display server, is in
-// xtest.xfxn (it needs the server's helpers there). Codes 4000-4699.
+// xtest.xfxn (it needs the server's helpers there). Codes 4000-5099 and 5300-6199.
 
 import "toolkit.xfxn";
 
@@ -888,6 +888,489 @@ fn tt_dead(arg: u64) -> i32 {
     if (tk_focused(&tt_ui) != g || tt_text_is(f, "") == 0 || tt_ui.field[0].dead != 0) { return 5012; }
     tt_type("u");
     if (tt_text_is(g, "u") == 0) { return 5013; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// ---- 2.8a3: scroll views, rows, tabs, menus, tooltips, dialogs, text grids ----
+
+fn tt_repaint() -> void {
+    let d: ds_damage;
+    tk_paint(&tt_ui, &d);
+}
+
+// Is a's box inside b's? 1 if so.
+fn tt_inside(a: u32, b: u32) -> u32 {
+    let ra: ds_rect;
+    let rb: ds_rect;
+    tk_box_of(&tt_ui, a, &ra);
+    tk_box_of(&tt_ui, b, &rb);
+    let ax: i32 = ra.x as i32; let ay: i32 = ra.y as i32;
+    let bx: i32 = rb.x as i32; let by: i32 = rb.y as i32;
+    if (ax < bx || ay < by || ax + (ra.w as i32) > bx + (rb.w as i32) || ay + (ra.h as i32) > by + (rb.h as i32)) { return 0; }
+    return 1;
+}
+
+// The canvas at (x, y).
+fn tt_pix(x: i32, y: i32) -> u32 {
+    let row: *u32 = ds_row(&tt_ui.canvas, y as u32);
+    return row[x as u32];
+}
+
+// The pointer over a widget, no button held.
+fn tt_hover(id: u32) -> void {
+    let x: i32 = 0;
+    let y: i32 = 0;
+    tt_centre(id, &x, &y);
+    tk_pointer(&tt_ui, x, y, 0);
+}
+
+// 5300: a scroll view scrolls within its content, no further; the focus
+// going to a widget out of sight brings it into the view.
+fn tt_scroll(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 5300; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    let s: u32 = tk_add(&tt_ui, root, TK_SCROLL, 0 as *u8);
+    tk_set_min(&tt_ui, s, 120, 60);
+    let col: u32 = tk_add(&tt_ui, s, TK_COLUMN, 0 as *u8);
+    let first: u32 = tk_add(&tt_ui, col, TK_BUTTON, "First");
+    let k: u32 = 0;
+    while (k < 6) { tk_add(&tt_ui, col, TK_BUTTON, "Middle"); k = k + 1; }
+    let last: u32 = tk_add(&tt_ui, col, TK_BUTTON, "Last");
+    if (last == 0 || tt_show(4) != 0) { return 5301; }
+    let x: i32 = 7;
+    let y: i32 = 7;
+    if (tk_scroll_pos(&tt_ui, s, &x, &y) != 0 || x != 0 || y != 0) { return 5302; }
+    if (tk_role(&tt_ui, s) != TK_ROLE_SCROLL || tk_scroll_by(&tt_ui, col, 0, 1) != E_INVALID_ARGS) { return 5303; }
+    tk_scroll_by(&tt_ui, s, 0, 20);
+    tk_scroll_pos(&tt_ui, s, &x, &y);
+    if (y != 20 || x != 0) { return 5304; }
+    // no further than the content goes
+    tk_scroll_by(&tt_ui, s, 500, 10000);
+    tk_scroll_pos(&tt_ui, s, &x, &y);
+    if (x != 0 || y <= 20 || y >= 10000) { return 5305; }
+    tt_repaint();
+    if (tt_inside(last, s) == 0) { return 5306; }
+    tk_scroll_by(&tt_ui, s, 0, -10000);
+    tk_scroll_pos(&tt_ui, s, &x, &y);
+    if (y != 0) { return 5307; }
+    tt_repaint();
+    if (tt_inside(first, s) == 0 || tt_inside(last, s) == 1) { return 5308; }
+    // the focus brings what it goes to into the view, and back
+    tk_focus(&tt_ui, last);
+    tt_repaint();
+    tk_scroll_pos(&tt_ui, s, &x, &y);
+    if (y <= 0 || tt_inside(last, s) == 0) { return 5309; }
+    tk_focus(&tt_ui, first);
+    tt_repaint();
+    tk_scroll_pos(&tt_ui, s, &x, &y);
+    if (y != 0) { return 5310; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 5400: a list's keys choose, past a disabled row, stopping at the ends;
+// Enter activates the choice; tk_select chooses without telling; a press
+// chooses. A table's header is never chosen (5600).
+fn tt_list(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 5400; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    let l: u32 = tk_add(&tt_ui, root, TK_LIST, "Names");
+    let a: u32 = tk_add(&tt_ui, l, TK_ITEM, "A");
+    let b: u32 = tk_add(&tt_ui, l, TK_ITEM, "B");
+    let c: u32 = tk_add(&tt_ui, l, TK_ITEM, "C");
+    let d: u32 = tk_add(&tt_ui, l, TK_ITEM, "D");
+    tk_set_flags(&tt_ui, b, TK_F_DISABLED, 0);
+    if (d == 0 || tt_show(4) != 0) { return 5401; }
+    if (tk_role(&tt_ui, l) != TK_ROLE_LIST || tk_role(&tt_ui, a) != TK_ROLE_LISTITEM || tk_selected(&tt_ui, l) != 0) { return 5402; }
+    tk_key(&tt_ui, KC_TAB, 0, 0);
+    if (tk_focused(&tt_ui) != l) { return 5403; }
+    let ev: tk_event;
+    tt_press(KC_DOWN, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_CHANGE || ev.id != l || ev.value != 0 || ev.code != a || tk_selected(&tt_ui, l) != a) { return 5404; }
+    tt_press(KC_DOWN, 0);
+    tt_event(&ev);
+    if (tk_selected(&tt_ui, l) != c || ev.value != 2) { return 5405; }
+    tt_press(KC_END, 0);
+    tt_press(KC_DOWN, 0);
+    if (tk_selected(&tt_ui, l) != d) { return 5406; }
+    tt_press(KC_HOME, 0);
+    tt_press(KC_UP, 0);
+    if (tk_selected(&tt_ui, l) != a) { return 5407; }
+    tt_drain();
+    tt_press(KC_ENTER, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_ACTIVATE || ev.id != l || ev.value != 0 || ev.code != a) { return 5408; }
+    // tk_select: no event; a disabled row or another's refused
+    if (tk_select(&tt_ui, l, c) != 0 || tk_selected(&tt_ui, l) != c) { return 5409; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_NONE) { return 5410; }
+    if (tk_select(&tt_ui, l, b) != E_INVALID_ARGS || tk_select(&tt_ui, l, root) != E_INVALID_ARGS || tk_selected(&tt_ui, l) != c) { return 5411; }
+    tt_repaint();
+    tt_click(d);
+    if (tk_selected(&tt_ui, l) != d) { return 5412; }
+    tt_click(b);
+    if (tk_selected(&tt_ui, l) != d) { return 5413; }
+    tk_free(&tt_ui);
+
+    // a table: its first item is the header, which is not a row to choose
+    tk_init(&tt_ui, 4, &tt_font);
+    root = tk_root(&tt_ui);
+    let t: u32 = tk_add(&tt_ui, root, TK_TABLE, "Files");
+    let h: u32 = tk_add(&tt_ui, t, TK_ITEM, 0 as *u8);
+    tk_add(&tt_ui, h, TK_ITEM, "Name"); tk_add(&tt_ui, h, TK_ITEM, "Size");
+    let r1: u32 = tk_add(&tt_ui, t, TK_ITEM, 0 as *u8);
+    tk_add(&tt_ui, r1, TK_ITEM, "one"); tk_add(&tt_ui, r1, TK_ITEM, "1");
+    let r2: u32 = tk_add(&tt_ui, t, TK_ITEM, 0 as *u8);
+    tk_add(&tt_ui, r2, TK_ITEM, "two");
+    if (tk_add(&tt_ui, r2, TK_ITEM, "2") == 0 || tt_show(4) != 0) { return 5600; }
+    if (tk_role(&tt_ui, t) != TK_ROLE_TABLE || tk_role(&tt_ui, h) != TK_ROLE_HEADER || tk_role(&tt_ui, r1) != TK_ROLE_ROW) { return 5601; }
+    tk_key(&tt_ui, KC_TAB, 0, 0);
+    tt_press(KC_HOME, 0);
+    if (tk_selected(&tt_ui, t) != r1) { return 5602; }
+    tt_press(KC_UP, 0);
+    if (tk_selected(&tt_ui, t) != r1) { return 5603; }
+    tt_press(KC_DOWN, 0);
+    if (tk_selected(&tt_ui, t) != r2) { return 5604; }
+    if (tk_select(&tt_ui, t, h) != E_INVALID_ARGS) { return 5605; }
+    tt_click(h);
+    if (tk_selected(&tt_ui, t) != r2) { return 5606; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 5500: a tree's keys, as Serenity's TreeView: Right opens a closed item or
+// goes into an open one; Left closes an open one or goes to its parent; a
+// closed item's children are not rows; opening and closing are heard.
+fn tt_tree(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 5500; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    let t: u32 = tk_add(&tt_ui, root, TK_TREE, "Files");
+    let p: u32 = tk_add(&tt_ui, t, TK_ITEM, "P");
+    tk_set_flags(&tt_ui, p, TK_F_OPEN, 0);
+    let p1: u32 = tk_add(&tt_ui, p, TK_ITEM, "p1");
+    tk_add(&tt_ui, p, TK_ITEM, "p2");
+    let q: u32 = tk_add(&tt_ui, t, TK_ITEM, "Q");
+    let q1: u32 = tk_add(&tt_ui, q, TK_ITEM, "q1");
+    let r: u32 = tk_add(&tt_ui, t, TK_ITEM, "R");
+    if (r == 0 || tt_show(4) != 0) { return 5501; }
+    if (tk_role(&tt_ui, t) != TK_ROLE_TREE || tk_role(&tt_ui, q1) != TK_ROLE_TREEITEM) { return 5502; }
+    // q1 is under a closed item: not a row
+    if (tk_select(&tt_ui, t, q1) != E_INVALID_ARGS) { return 5503; }
+    tk_key(&tt_ui, KC_TAB, 0, 0);
+    tt_press(KC_DOWN, 0);
+    if (tk_selected(&tt_ui, t) != p) { return 5504; }
+    tt_press(KC_RIGHT, 0);
+    if (tk_selected(&tt_ui, t) != p1) { return 5505; }
+    tt_press(KC_LEFT, 0);
+    if (tk_selected(&tt_ui, t) != p) { return 5506; }
+    tt_drain();
+    let ev: tk_event;
+    tt_press(KC_LEFT, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_EXPAND || ev.id != t || ev.value != 0 || ev.code != p || (tk_flags(&tt_ui, p) & TK_F_OPEN) != 0) { return 5507; }
+    tt_press(KC_DOWN, 0);
+    if (tk_selected(&tt_ui, t) != q) { return 5508; }
+    tt_drain();
+    tt_press(KC_RIGHT, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_EXPAND || ev.value != 1 || ev.code != q || tk_selected(&tt_ui, t) != q) { return 5509; }
+    tt_press(KC_RIGHT, 0);
+    if (tk_selected(&tt_ui, t) != q1) { return 5510; }
+    tt_press(KC_END, 0);
+    if (tk_selected(&tt_ui, t) != r) { return 5511; }
+    // Enter on a leaf activates; on an item with children, opens or closes it
+    tt_drain();
+    tt_press(KC_ENTER, 0);
+    tt_event(&ev);
+    if (ev.kind == TK_EV_ACTIVATE) { return 5512; }
+    tk_select(&tt_ui, t, q);
+    tt_press(KC_ENTER, 0);
+    if ((tk_flags(&tt_ui, q) & TK_F_OPEN) != 0) { return 5513; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 5700: tabs: Left, Right, Home and End on the focused tabs, stopping at the
+// ends; Ctrl+Tab and Ctrl+Shift+Tab wrap; a hidden page's widgets cannot
+// have the focus, and the focus in a page turned away goes to the tabs.
+fn tt_tabs(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 5700; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    let t: u32 = tk_add(&tt_ui, root, TK_TABS, 0 as *u8);
+    let p1: u32 = tk_add(&tt_ui, t, TK_COLUMN, "One");
+    let b1: u32 = tk_add(&tt_ui, p1, TK_BUTTON, "In one");
+    let p2: u32 = tk_add(&tt_ui, t, TK_COLUMN, "Two");
+    let b2: u32 = tk_add(&tt_ui, p2, TK_BUTTON, "In two");
+    let p3: u32 = tk_add(&tt_ui, t, TK_COLUMN, "Three");
+    if (p3 == 0 || tt_show(4) != 0) { return 5701; }
+    if (tk_role(&tt_ui, t) != TK_ROLE_TABLIST || tk_role(&tt_ui, p1) != TK_ROLE_TABPANEL || tk_selected(&tt_ui, t) != p1) { return 5702; }
+    tk_key(&tt_ui, KC_TAB, 0, 0);
+    if (tk_focused(&tt_ui) != t) { return 5703; }
+    tk_key(&tt_ui, KC_TAB, 0, 0);
+    if (tk_focused(&tt_ui) != b1) { return 5704; }
+    tk_key(&tt_ui, KC_TAB, 0, KEYMOD_SHIFT);
+    let ev: tk_event;
+    tt_drain();
+    tt_press(KC_RIGHT, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_CHANGE || ev.id != t || ev.value != 1 || tk_selected(&tt_ui, t) != p2) { return 5705; }
+    // b1's page is hidden: Tab goes past it to b2
+    tk_key(&tt_ui, KC_TAB, 0, 0);
+    if (tk_focused(&tt_ui) != b2) { return 5706; }
+    tk_key(&tt_ui, KC_TAB, 0, KEYMOD_SHIFT);
+    tt_press(KC_END, 0);
+    tt_press(KC_RIGHT, 0);
+    if (tk_selected(&tt_ui, t) != p3) { return 5707; }
+    tt_press(KC_HOME, 0);
+    tt_press(KC_LEFT, 0);
+    if (tk_selected(&tt_ui, t) != p1) { return 5708; }
+    // Ctrl+Tab wraps either way, from a widget in a page too
+    tk_focus(&tt_ui, b1);
+    tt_press(KC_TAB, KEYMOD_CTRL | KEYMOD_SHIFT);
+    if (tk_selected(&tt_ui, t) != p3 || tk_focused(&tt_ui) != t) { return 5709; }
+    tt_press(KC_TAB, KEYMOD_CTRL);
+    if (tk_selected(&tt_ui, t) != p1) { return 5710; }
+    if (tk_focus(&tt_ui, b2) == 0) { return 5711; }
+    if (tk_select(&tt_ui, t, b1) != E_INVALID_ARGS || tk_select(&tt_ui, t, p2) != 0 || tk_selected(&tt_ui, t) != p2) { return 5712; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 5800: menus: F10 opens the bar's first menu with its first item lit; Up
+// and Down step past separators and disabled items, wrapping; Right goes
+// to the next menu; Enter chooses and closes; Esc closes. A context menu
+// by Shift+F10, by a right press, by tk_popup; a bar's menu is not one.
+fn tt_menus(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 5800; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    let bar: u32 = tk_add(&tt_ui, root, TK_MENUBAR, 0 as *u8);
+    let file: u32 = tk_add(&tt_ui, bar, TK_MENU, "File");
+    let fnew: u32 = tk_add(&tt_ui, file, TK_MENUITEM, "New");
+    tk_add(&tt_ui, file, TK_MENUITEM, 0 as *u8);
+    let off: u32 = tk_add(&tt_ui, file, TK_MENUITEM, "Off");
+    tk_set_flags(&tt_ui, off, TK_F_DISABLED, 0);
+    let fopen: u32 = tk_add(&tt_ui, file, TK_MENUITEM, "Open");
+    let edit: u32 = tk_add(&tt_ui, bar, TK_MENU, "Edit");
+    tk_add(&tt_ui, edit, TK_MENUITEM, "Undo");
+    let b: u32 = tk_add(&tt_ui, root, TK_BUTTON, "Here");
+    let ctx: u32 = tk_add(&tt_ui, root, TK_MENU, 0 as *u8);
+    let c1: u32 = tk_add(&tt_ui, ctx, TK_MENUITEM, "First");
+    if (c1 == 0 || tt_show(4) != 0) { return 5801; }
+    if (tk_role(&tt_ui, bar) != TK_ROLE_MENUBAR || tk_role(&tt_ui, fopen) != TK_ROLE_MENUITEM || tk_open_top(&tt_ui) != 0) { return 5802; }
+    tt_press(TK_KC_F10, 0);
+    if (tk_open_top(&tt_ui) != file || tk_menu_lit(&tt_ui, file) != fnew) { return 5803; }
+    tt_press(KC_DOWN, 0);
+    if (tk_menu_lit(&tt_ui, file) != fopen) { return 5804; }
+    tt_press(KC_DOWN, 0);
+    if (tk_menu_lit(&tt_ui, file) != fnew) { return 5805; }
+    tt_press(KC_UP, 0);
+    if (tk_menu_lit(&tt_ui, file) != fopen) { return 5806; }
+    tt_drain();
+    let ev: tk_event;
+    tt_press(KC_ENTER, 0);
+    tt_event(&ev);
+    if (tk_open_top(&tt_ui) != 0 || ev.kind != TK_EV_ACTIVATE || ev.id != fopen) { return 5807; }
+    tt_press(TK_KC_F10, 0);
+    tt_press(KC_RIGHT, 0);
+    if (tk_open_top(&tt_ui) != edit) { return 5808; }
+    tt_press(KC_RIGHT, 0);
+    if (tk_open_top(&tt_ui) != file) { return 5809; }
+    tt_press(KC_ESC, 0);
+    if (tk_open_top(&tt_ui) != 0) { return 5810; }
+    // context menus
+    if (tk_set_context(&tt_ui, b, file) != E_INVALID_ARGS || tk_popup(&tt_ui, file, 1, 1) != E_INVALID_ARGS) { return 5811; }
+    if (tk_set_context(&tt_ui, b, ctx) != 0) { return 5812; }
+    tk_focus(&tt_ui, b);
+    tt_press(TK_KC_F10, KEYMOD_SHIFT);
+    if (tk_open_top(&tt_ui) != ctx || tk_menu_lit(&tt_ui, ctx) != c1) { return 5813; }
+    tt_press(KC_ESC, 0);
+    if (tk_open_top(&tt_ui) != 0 || tk_focused(&tt_ui) != b) { return 5814; }
+    let x: i32 = 0;
+    let y: i32 = 0;
+    tt_centre(b, &x, &y);
+    tk_pointer(&tt_ui, x, y, 2);
+    tk_pointer(&tt_ui, x, y, 0);
+    if (tk_open_top(&tt_ui) != ctx) { return 5815; }
+    tk_menus_close(&tt_ui);
+    if (tk_open_top(&tt_ui) != 0) { return 5816; }
+    if (tk_popup(&tt_ui, ctx, 2, 2) != 0 || tk_open_top(&tt_ui) != ctx) { return 5817; }
+    // a press outside closes it and goes no further
+    tt_drain();
+    tt_centre(b, &x, &y);
+    tk_pointer(&tt_ui, x + 300, y + 300, 1);
+    tk_pointer(&tt_ui, x + 300, y + 300, 0);
+    if (tk_open_top(&tt_ui) != 0) { return 5818; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 5900: a tooltip shows after 700 ms still over its widget, and not
+// before; moving to another while one is up switches at once; moving off,
+// or a press, hides it; tk_due says how long is left.
+fn tt_tips(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 5900; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    tk_set_spacing(&tt_ui, root, 4, 4);
+    let a: u32 = tk_add(&tt_ui, root, TK_BUTTON, "A");
+    let b: u32 = tk_add(&tt_ui, root, TK_BUTTON, "B");
+    let l: u32 = tk_add(&tt_ui, root, TK_LABEL, "none");
+    if (tk_set_tip(&tt_ui, a, "Tip A") != 0 || tk_set_tip(&tt_ui, b, "Tip B") != 0 || tk_set_tip(&tt_ui, 9999, "x") != E_INVALID_ARGS) { return 5901; }
+    if (l == 0 || tt_show(4) != 0) { return 5902; }
+    tk_tick(&tt_ui, 1000);
+    if (tk_due(&tt_ui) != TK_NONE) { return 5903; }
+    tt_hover(a);
+    if (tk_due(&tt_ui) != 700 || tk_tip_shown(&tt_ui) != 0) { return 5904; }
+    tk_tick(&tt_ui, 1699);
+    if (tk_tip_shown(&tt_ui) != 0 || tk_due(&tt_ui) != 1) { return 5905; }
+    tk_tick(&tt_ui, 1700);
+    if (tk_tip_shown(&tt_ui) != a || tk_due(&tt_ui) != TK_NONE) { return 5906; }
+    tt_hover(b);
+    // and drawn under b, not still under a
+    let rb: ds_rect;
+    tk_box_of(&tt_ui, b, &rb);
+    if (tk_tip_shown(&tt_ui) != b || tt_ui.tip_y < (rb.y as i32) + (rb.h as i32)) { return 5907; }
+    tt_hover(l);
+    if (tk_tip_shown(&tt_ui) != 0 || tk_due(&tt_ui) != TK_NONE) { return 5908; }
+    // moving on before the time is up starts it again
+    tk_tick(&tt_ui, 5000);
+    tt_hover(a);
+    tk_tick(&tt_ui, 5400);
+    tt_hover(b);
+    tk_tick(&tt_ui, 5800);
+    if (tk_tip_shown(&tt_ui) != 0 || tk_due(&tt_ui) != 300) { return 5909; }
+    tk_tick(&tt_ui, 6100);
+    if (tk_tip_shown(&tt_ui) != b) { return 5910; }
+    // it is drawn: the canvas changes where it is
+    tt_repaint();
+    let x: i32 = 0;
+    let y: i32 = 0;
+    tt_centre(b, &x, &y);
+    tk_pointer(&tt_ui, x, y, 1);
+    if (tk_tip_shown(&tt_ui) != 0) { return 5911; }
+    tk_pointer(&tt_ui, x, y, 0);
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 6000: a dialog: refused with no buttons or unknown ones; open, it holds
+// the focus and the keys; Esc answers Cancel, Enter OK; the focus goes back.
+fn tt_dialog(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 6000; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    let under: u32 = tk_add(&tt_ui, root, TK_BUTTON, "Under");
+    tk_add(&tt_ui, root, TK_BUTTON, "Also under");
+    if (tk_dialog(&tt_ui, "T", "x", 0) != 0 || tk_dialog(&tt_ui, "T", "x", 128) != 0) { return 6001; }
+    let d: u32 = tk_dialog(&tt_ui, "Save?", "The text.", TK_DLG_OK | TK_DLG_CANCEL | TK_DLG_DISCARD);
+    let body: u32 = tk_dialog_body(&tt_ui, d);
+    if (d == 0 || body == 0 || tk_dialog_body(&tt_ui, under) != 0) { return 6002; }
+    let k: u32 = tk_add(&tt_ui, body, TK_CHECK, "Do not ask");
+    if (k == 0 || tt_show(4) != 0) { return 6003; }
+    if (tk_role(&tt_ui, d) != TK_ROLE_DIALOG || tk_open_top(&tt_ui) != 0) { return 6004; }
+    tk_focus(&tt_ui, under);
+    if (tk_dialog_open(&tt_ui, d) != 0 || tk_open_top(&tt_ui) != d || tk_focused(&tt_ui) != k) { return 6005; }
+    // the focus stays in it
+    let n: u32 = 0;
+    while (n < 6) {
+        tk_key(&tt_ui, KC_TAB, 0, 0);
+        if (tk_focused(&tt_ui) == under || tk_focused(&tt_ui) == 0) { return 6006; }
+        n = n + 1;
+    }
+    tt_drain();
+    tt_repaint();
+    // a press on what is under it does nothing there
+    tt_click(under);
+    let ev: tk_event;
+    tt_event(&ev);
+    if (ev.kind == TK_EV_ACTIVATE && ev.id == under) { return 6007; }
+    if (tk_open_top(&tt_ui) != d) { return 6008; }
+    tt_drain();
+    tk_focus(&tt_ui, k);
+    tt_press(KC_ESC, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_DIALOG || ev.id != d || ev.value != (TK_DLG_CANCEL as i32)) { return 6009; }
+    if (tk_open_top(&tt_ui) != 0 || tk_focused(&tt_ui) != under) { return 6010; }
+    tk_dialog_open(&tt_ui, d);
+    tt_drain();
+    tt_press(KC_ENTER, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_DIALOG || ev.value != (TK_DLG_OK as i32) || tk_open_top(&tt_ui) != 0) { return 6011; }
+    // closed without an answer: nothing heard
+    tk_dialog_open(&tt_ui, d);
+    tt_drain();
+    if (tk_dialog_close(&tt_ui, d) != 0 || tk_open_top(&tt_ui) != 0 || tk_dialog_close(&tt_ui, under) != E_INVALID_ARGS) { return 6012; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_NONE) { return 6013; }
+    // a dialog with only Discard: Enter presses it (the last), Esc nothing
+    let d2: u32 = tk_dialog(&tt_ui, "Gone", 0 as *u8, TK_DLG_DISCARD);
+    tk_dialog_open(&tt_ui, d2);
+    tt_drain();
+    tt_press(KC_ESC, 0);
+    if (tk_open_top(&tt_ui) != d2) { return 6014; }
+    tt_drain();
+    tt_press(KC_ENTER, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_DIALOG || ev.id != d2 || ev.value != (TK_DLG_DISCARD as i32)) { return 6015; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 6100: a text grid: its size bounded, its cells written and read back,
+// scrolled, its cursor placed; the cells' pool runs out cleanly; what is in
+// a cell, and the cursor, are drawn.
+fn tt_textgrid(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 6100; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    let g: u32 = tk_add(&tt_ui, root, TK_TEXTGRID, 0 as *u8);
+    let g2: u32 = tk_add(&tt_ui, root, TK_TEXTGRID, 0 as *u8);
+    if (tk_grid_size(&tt_ui, g, 0, 5) != E_INVALID_ARGS || tk_grid_size(&tt_ui, g, 256, 1) != E_INVALID_ARGS || tk_grid_size(&tt_ui, root, 2, 2) != E_INVALID_ARGS) { return 6101; }
+    if (tk_grid_put(&tt_ui, g, 0, 0, 65, 0, 0) != E_INVALID_ARGS) { return 6102; }
+    if (tk_grid_size(&tt_ui, g, 10, 3) != 0) { return 6103; }
+    if (tk_grid_size(&tt_ui, g2, 64, 64) != E_NO_RESOURCES || tk_grid_size(&tt_ui, g2, 2, 2) != 0) { return 6104; }
+    if (tk_grid_write(&tt_ui, g, 0, 0, "hello", 2, 0) != 5) { return 6105; }
+    if (tk_grid_cell(&tt_ui, g, 1, 0) != tk_grid_pack(101, 2, 0) || tk_grid_cell(&tt_ui, g, 5, 0) != 0) { return 6106; }
+    if (tk_grid_write(&tt_ui, g, 8, 1, "abc", 0, 0) != 2 || tk_grid_cell(&tt_ui, g, 9, 1) != tk_grid_pack(98, 0, 0)) { return 6107; }
+    if (tk_grid_put(&tt_ui, g, 10, 0, 65, 0, 0) != E_INVALID_ARGS || tk_grid_put(&tt_ui, g, 0, 3, 65, 0, 0) != E_INVALID_ARGS) { return 6108; }
+    if (tk_grid_put(&tt_ui, g, 0, 0, 65, 17, 0) != E_INVALID_ARGS || tk_grid_put(&tt_ui, g, 0, 0, 0x110000, 0, 0) != E_INVALID_ARGS) { return 6109; }
+    if (tk_grid_put(&tt_ui, g, 2, 2, 0xE9, 16, 5) != 0 || tk_grid_cell(&tt_ui, g, 2, 2) != tk_grid_pack(0xE9, 16, 5)) { return 6110; }
+    // up a row: row 1 to row 0, a blank row at the bottom
+    if (tk_grid_scroll(&tt_ui, g, 1) != 0 || tk_grid_cell(&tt_ui, g, 8, 0) != tk_grid_pack(97, 0, 0) || tk_grid_cell(&tt_ui, g, 0, 0) != 0) { return 6111; }
+    if (tk_grid_cell(&tt_ui, g, 2, 1) != tk_grid_pack(0xE9, 16, 5) || tk_grid_cell(&tt_ui, g, 2, 2) != 0) { return 6112; }
+    if (tk_grid_cursor(&tt_ui, g, 10, 0, 1) != E_INVALID_ARGS || tk_grid_cursor(&tt_ui, g, 4, 2, 1) != 0 || (tk_flags(&tt_ui, g) & TK_F_CURSOR) == 0) { return 6113; }
+    if (tk_role(&tt_ui, g) != TK_ROLE_TEXTGRID) { return 6114; }
+    if (tt_show(4) != 0) { return 6115; }
+    let gi: u32 = tk_index(&tt_ui, g);
+    let x: i32 = 0;
+    let y: i32 = 0;
+    // a written cell, a blank one, the cursor's: the font's glyphs are solid
+    tk_grid_xy(&tt_ui, gi, 8, 0, &x, &y);
+    let ink: u32 = tt_pix(x + 4, y + 4);
+    tk_grid_xy(&tt_ui, gi, 6, 2, &x, &y);
+    let blank: u32 = tt_pix(x + 4, y + 4);
+    tk_grid_xy(&tt_ui, gi, 4, 2, &x, &y);
+    let cur: u32 = tt_pix(x + 4, y + 4);
+    if (ink == blank || cur == blank) { return 6116; }
+    tk_grid_cursor(&tt_ui, g, 4, 2, 0);
+    tt_repaint();
+    if (tt_pix(x + 4, y + 4) != blank) { return 6117; }
+    if (tk_grid_clear(&tt_ui, g) != 0 || tk_grid_cell(&tt_ui, g, 8, 0) != 0) { return 6118; }
     tk_free(&tt_ui);
     return 0;
 }

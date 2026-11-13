@@ -8,8 +8,9 @@
 //
 // Every widget in every state (gallery_pages.xfxn). Started by the display
 // server, which gives it the connection and the font. Keys: Tab, Space,
-// Enter and the arrows go to the widgets; D turns dark on and off; 1, 2, 3
-// show it at 100, 150 and 200 %.
+// Enter and the arrows go to the widgets; Ctrl+Tab turns the page; F10
+// opens the menus; Ctrl+D turns dark on and off; Ctrl+1, 2, 3 show it at
+// 100, 150 and 200 %.
 
 import "toolkit_window.xfxn";
 import "gallery_pages.xfxn";
@@ -30,7 +31,7 @@ fn _start() -> void {
         tk_win_next(&ga_win, &ev);
         if (ev.kind == TK_EV_CLOSE) { tk_win_close(&ga_win); exit(0); }
         if (ev.kind == TK_EV_GONE) { exit(5); }
-        if (ev.kind == TK_EV_COMMAND && gp_command(&ga_ui, ev.value as u32) == 1) {
+        if (gp_event(&ga_ui, &ev) == 1) {
             if (tk_win_reopen(&ga_win, ep, "Widget gallery", 0) != 0) { exit(6); }
         }
     }

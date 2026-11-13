@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-// apps/gallery_pages.xfxn - what the widget gallery shows (roadmap 2.8a1).
+// apps/gallery_pages.xfxn - what the widget gallery shows (roadmap 2.8a1, 2.8a3).
 // Aurora Tejeda / CATX Systems
 //
 // Shared by the gallery (gallery.xfxn) and its test in xtest.xfxn, which
-// builds the same page with no window and requires the gallery's window to
+// builds the same pages with no window and requires the gallery's window to
 // hold exactly the pixels the test drew, key for key.
 //
 // Every widget in every state: the states a pointer or the focus makes
-// (hover, pressed, focused) are also shown fixed, beside a live one.
+// (hover, pressed, focused) are also shown fixed, beside a live one. Three
+// pages (2.8a3): the controls; lists, trees and tables in scroll views;
+// menus, tooltips, a dialog and a text grid.
 
 import "toolkit.xfxn";
+
+global gp_open: u32;        // the button that opens the dialog
+global gp_dlg: u32;         // the dialog
 
 fn gp_add(ui: *tk_ui, parent: u32, kind: u32, text: *u8, flags: u32) -> u32 {
     let id: u32 = tk_add(ui, parent, kind, text);
@@ -26,19 +31,16 @@ fn gp_row(ui: *tk_ui, grid: u32, name: *u8) -> u32 {
     return row;
 }
 
-// The page: 0, or 1 if the ui ran out of room.
-fn gp_build(ui: *tk_ui) -> u32 {
-    let root: u32 = tk_root(ui);
-    tk_set_spacing(ui, root, 3, 4);
-    if (gp_add(ui, root, TK_HEADING, "Widget gallery", 0) == 0) { return 1; }
-    gp_add(ui, root, TK_LABEL, "Tab moves, Space presses. Ctrl+D dark, Ctrl+1 2 3 scale.", TK_F_MUTED);
-    // the gallery's own commands (2.8a2): keys a text field cannot take
-    tk_command(ui, "dark", KC_D, KEYMOD_CTRL);
-    tk_command(ui, "scale-100", KC_1, KEYMOD_CTRL);
-    tk_command(ui, "scale-150", KC_1 + 1, KEYMOD_CTRL);
-    tk_command(ui, "scale-200", KC_1 + 2, KEYMOD_CTRL);
-    tk_set_im(ui, TK_IM_DEAD);
-    let grid: u32 = tk_add(ui, root, TK_GRID, 0 as *u8);
+// A menu item running command cmd (0: the app hears TK_EV_ACTIVATE); no text: a separator.
+fn gp_item(ui: *tk_ui, menu: u32, text: *u8, cmd: u32) -> u32 {
+    let it: u32 = tk_add(ui, menu, TK_MENUITEM, text);
+    if (it != 0 && cmd != 0) { tk_set_command(ui, it, cmd); }
+    return it;
+}
+
+// The first page: every control in every state. 0, or 1 out of room.
+fn gp_controls(ui: *tk_ui, page: u32) -> u32 {
+    let grid: u32 = tk_add(ui, page, TK_GRID, 0 as *u8);
     tk_set_cols(ui, grid, 2);
     tk_set_spacing(ui, grid, 3, 0);
 
@@ -93,12 +95,146 @@ fn gp_build(ui: *tk_ui) -> u32 {
     gp_add(ui, r, TK_LABEL, "Muted", TK_F_MUTED);
     if (gp_add(ui, r, TK_LABEL, "Off", TK_F_DISABLED) == 0) { return 1; }
 
-    // dead keys are on: ' then e is one character
+    // dead keys are on: an apostrophe then e is one character
     r = gp_row(ui, grid, "Text field");
     gp_add(ui, r, TK_TEXTFIELD, "Name", 0);
     let t: u32 = gp_add(ui, r, TK_TEXTFIELD, "Off", TK_F_DISABLED);
     if (t == 0) { return 1; }
     tk_set_field_text(ui, t, "Off");
+    return 0;
+}
+
+// A titled column holding a scroll view a list's width and 120 high: the scroll view.
+fn gp_scroll(ui: *tk_ui, row: u32, title: *u8) -> u32 {
+    let col: u32 = tk_add(ui, row, TK_COLUMN, 0 as *u8);
+    tk_set_spacing(ui, col, 1, 0);
+    gp_add(ui, col, TK_LABEL, title, TK_F_MUTED);
+    let s: u32 = tk_add(ui, col, TK_SCROLL, 0 as *u8);
+    tk_set_min(ui, s, TK_LIST_W + TK_BAR + 2, 120);
+    return s;
+}
+
+// The second page: a list, a tree and a table, each more than its view holds.
+fn gp_collections(ui: *tk_ui, page: u32) -> u32 {
+    let row: u32 = tk_add(ui, page, TK_ROW, 0 as *u8);
+    tk_set_spacing(ui, row, 4, 0);
+    let list: u32 = tk_add(ui, gp_scroll(ui, row, "List"), TK_LIST, "Names");
+    tk_add(ui, list, TK_ITEM, "Alpha");   tk_add(ui, list, TK_ITEM, "Bravo");
+    tk_add(ui, list, TK_ITEM, "Charlie"); tk_add(ui, list, TK_ITEM, "Delta");
+    tk_add(ui, list, TK_ITEM, "Echo");    tk_add(ui, list, TK_ITEM, "Foxtrot");
+    gp_add(ui, list, TK_ITEM, "Golf (off)", TK_F_DISABLED);
+    tk_add(ui, list, TK_ITEM, "Hotel");   tk_add(ui, list, TK_ITEM, "India");
+    tk_add(ui, list, TK_ITEM, "Juliett"); tk_add(ui, list, TK_ITEM, "Kilo");
+    if (tk_add(ui, list, TK_ITEM, "Lima") == 0) { return 1; }
+
+    let tree: u32 = tk_add(ui, gp_scroll(ui, row, "Tree"), TK_TREE, "Files");
+    let a: u32 = gp_add(ui, tree, TK_ITEM, "Programs", TK_F_OPEN);
+    tk_add(ui, a, TK_ITEM, "gallery"); tk_add(ui, a, TK_ITEM, "terminal"); tk_add(ui, a, TK_ITEM, "xtest");
+    let b: u32 = tk_add(ui, tree, TK_ITEM, "Shared");
+    let f: u32 = gp_add(ui, b, TK_ITEM, "Fonts", TK_F_OPEN);
+    tk_add(ui, f, TK_ITEM, "terminus");
+    tk_add(ui, b, TK_ITEM, "Settings");
+    let s: u32 = gp_add(ui, tree, TK_ITEM, "System", TK_F_OPEN);
+    tk_add(ui, s, TK_ITEM, "executive"); tk_add(ui, s, TK_ITEM, "kernel");
+    if (tk_add(ui, tree, TK_ITEM, "Users") == 0) { return 1; }
+
+    let table: u32 = tk_add(ui, gp_scroll(ui, row, "Table"), TK_TABLE, "Programs");
+    let h: u32 = tk_add(ui, table, TK_ITEM, 0 as *u8);
+    tk_add(ui, h, TK_ITEM, "Name"); tk_add(ui, h, TK_ITEM, "Size"); tk_add(ui, h, TK_ITEM, "Signed by");
+    let k: u32 = 0;
+    while (k < 7) {
+        let r: u32 = tk_add(ui, table, TK_ITEM, 0 as *u8);
+        if (k == 0) { tk_add(ui, r, TK_ITEM, "gallery");  tk_add(ui, r, TK_ITEM, "96 KB");  }
+        if (k == 1) { tk_add(ui, r, TK_ITEM, "terminal"); tk_add(ui, r, TK_ITEM, "80 KB");  }
+        if (k == 2) { tk_add(ui, r, TK_ITEM, "xtest");    tk_add(ui, r, TK_ITEM, "410 KB"); }
+        if (k == 3) { tk_add(ui, r, TK_ITEM, "shell");    tk_add(ui, r, TK_ITEM, "64 KB");  }
+        if (k == 4) { tk_add(ui, r, TK_ITEM, "displayd"); tk_add(ui, r, TK_ITEM, "120 KB"); }
+        if (k == 5) { tk_add(ui, r, TK_ITEM, "xc");       tk_add(ui, r, TK_ITEM, "900 KB"); }
+        if (k == 6) { tk_add(ui, r, TK_ITEM, "hi");       tk_add(ui, r, TK_ITEM, "8 KB");   }
+        if (tk_add(ui, r, TK_ITEM, "CATX Systems (test)") == 0) { return 1; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// The third page: tooltips, a dialog, a context menu, a text grid.
+fn gp_menus(ui: *tk_ui, page: u32) -> u32 {
+    gp_add(ui, page, TK_LABEL, "F10 opens the menus; Shift+F10, the Menu key or the right button this page's.", TK_F_MUTED);
+    let row: u32 = tk_add(ui, page, TK_ROW, 0 as *u8);
+    tk_set_spacing(ui, row, 2, 0);
+    gp_open = tk_add(ui, row, TK_BUTTON, "Open a dialog");
+    let t: u32 = tk_add(ui, row, TK_BUTTON, "With a tooltip");
+    tk_set_tip(ui, t, "A tooltip: after a hover, or at once by Tab");
+    t = gp_add(ui, row, TK_BUTTON, "Off, with one", TK_F_DISABLED);
+    if (t == 0) { return 1; }
+    tk_set_tip(ui, t, "Even a widget that is off explains itself");
+
+    let g: u32 = tk_add(ui, page, TK_TEXTGRID, "Text grid");
+    if (g == 0 || tk_grid_size(ui, g, 40, 6) != 0) { return 1; }
+    tk_grid_write(ui, g, 0, 0, "CXOS text grid: 40 x 6 cells", 0, 0);
+    tk_grid_write(ui, g, 0, 1, "red", 2, 0);
+    tk_grid_write(ui, g, 4, 1, "green", 3, 0);
+    tk_grid_write(ui, g, 10, 1, "blue", 13, 0);
+    tk_grid_write(ui, g, 15, 1, " on yellow ", 1, 12);
+    tk_grid_write(ui, g, 0, 3, "cxk> ", 11, 0);
+    tk_grid_cursor(ui, g, 5, 3, 1);
+
+    gp_dlg = tk_dialog(ui, "Save the changes?", "They are lost if they are not saved.", TK_DLG_DISCARD | TK_DLG_CANCEL | TK_DLG_OK);
+    if (gp_dlg == 0) { return 1; }
+    if (tk_add(ui, tk_dialog_body(ui, gp_dlg), TK_CHECK, "Do not ask again") == 0) { return 1; }
+    return 0;
+}
+
+// The menu bar: File, Edit (the standard commands, their keys shown), View.
+fn gp_menubar(ui: *tk_ui, root: u32, dark: u32, s1: u32, s2: u32, s3: u32) -> u32 {
+    let bar: u32 = tk_add(ui, root, TK_MENUBAR, 0 as *u8);
+    tk_set_flags(ui, bar, TK_F_FILL, 0);
+    let m: u32 = tk_add(ui, bar, TK_MENU, "File");
+    gp_item(ui, m, "New", 0); gp_item(ui, m, "Open", 0);
+    gp_item(ui, m, 0 as *u8, 0);
+    gp_add(ui, m, TK_MENUITEM, "Print (off)", TK_F_DISABLED);
+    m = tk_add(ui, bar, TK_MENU, "Edit");
+    gp_item(ui, m, "Undo", TK_CMD_UNDO); gp_item(ui, m, "Redo", TK_CMD_REDO);
+    gp_item(ui, m, 0 as *u8, 0);
+    gp_item(ui, m, "Cut", TK_CMD_CUT); gp_item(ui, m, "Copy", TK_CMD_COPY); gp_item(ui, m, "Paste", TK_CMD_PASTE);
+    gp_item(ui, m, "Select all", TK_CMD_SELECT_ALL);
+    m = tk_add(ui, bar, TK_MENU, "View");
+    gp_item(ui, m, "Dark", dark);
+    gp_item(ui, m, 0 as *u8, 0);
+    gp_item(ui, m, "100 %", s1); gp_item(ui, m, "150 %", s2);
+    if (gp_item(ui, m, "200 %", s3) == 0) { return 1; }
+    return 0;
+}
+
+// The pages: 0, or 1 if the ui ran out of room.
+fn gp_build(ui: *tk_ui) -> u32 {
+    let root: u32 = tk_root(ui);
+    tk_set_spacing(ui, root, 3, 4);
+    // the gallery's own commands (2.8a2): keys a text field cannot take
+    let dark: u32 = tk_command(ui, "dark", KC_D, KEYMOD_CTRL) as u32;
+    let s1: u32 = tk_command(ui, "scale-100", KC_1, KEYMOD_CTRL) as u32;
+    let s2: u32 = tk_command(ui, "scale-150", KC_1 + 1, KEYMOD_CTRL) as u32;
+    let s3: u32 = tk_command(ui, "scale-200", KC_1 + 2, KEYMOD_CTRL) as u32;
+    tk_set_im(ui, TK_IM_DEAD);
+    if (gp_menubar(ui, root, dark, s1, s2, s3) != 0) { return 1; }
+    if (gp_add(ui, root, TK_HEADING, "Widget gallery", 0) == 0) { return 1; }
+    gp_add(ui, root, TK_LABEL, "Tab moves, Space presses, Ctrl+Tab turns the page. Ctrl+D dark, Ctrl+1 2 3 scale.", TK_F_MUTED);
+    let tabs: u32 = tk_add(ui, root, TK_TABS, 0 as *u8);
+    tk_set_flags(ui, tabs, TK_F_FILL, 0);
+    tk_set_spacing(ui, tabs, 0, 3);
+    let p1: u32 = tk_add(ui, tabs, TK_COLUMN, "Controls");
+    let p2: u32 = tk_add(ui, tabs, TK_COLUMN, "Collections");
+    let p3: u32 = tk_add(ui, tabs, TK_COLUMN, "Menus and dialogs");
+    if (p3 == 0) { return 1; }
+    tk_set_spacing(ui, p3, 3, 0);
+    if (gp_controls(ui, p1) != 0 || gp_collections(ui, p2) != 0 || gp_menus(ui, p3) != 0) { return 1; }
+    // a context menu for the last two pages
+    let ctx: u32 = tk_add(ui, root, TK_MENU, 0 as *u8);
+    gp_item(ui, ctx, "Open", 0); gp_item(ui, ctx, "Rename", 0);
+    gp_item(ui, ctx, 0 as *u8, 0);
+    if (gp_item(ui, ctx, "Delete", 0) == 0) { return 1; }
+    tk_set_context(ui, p2, ctx);
+    tk_set_context(ui, p3, ctx);
     return 0;
 }
 
@@ -111,5 +247,13 @@ fn gp_command(ui: *tk_ui, cmd: u32) -> u32 {
     if (streq(name, "scale-100") != 0) { tk_set_scale(ui, 4); return 1; }
     if (streq(name, "scale-150") != 0) { tk_set_scale(ui, 6); return 1; }
     if (streq(name, "scale-200") != 0) { tk_set_scale(ui, 8); return 1; }
+    return 0;
+}
+
+// What the gallery does with an event: its commands, and the dialog's
+// opening button. 1 if the window must be opened again (gp_command).
+fn gp_event(ui: *tk_ui, ev: *tk_event) -> u32 {
+    if (ev.kind == TK_EV_COMMAND) { return gp_command(ui, ev.value as u32); }
+    if (ev.kind == TK_EV_ACTIVATE && ev.id == gp_open) { tk_dialog_open(ui, gp_dlg); }
     return 0;
 }

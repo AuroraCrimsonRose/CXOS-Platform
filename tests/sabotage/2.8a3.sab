@@ -1,0 +1,230 @@
+# Step 2.8a3, the toolkit's scroll view, list, tree, table, tabs, menus,
+# tooltips, dialogs and text grid, and the server's timed wait, run by
+# `cxk test sabotage`. Each must turn red exactly the self-tests named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds at
+# most one sabotage per test.
+
+# ---- scroll views ----
+
+[scroll-unclamped]
+# a scroll view scrolls past its content: both clamps go, the scroll's and
+# the placing's (either alone is covered by the other)
+expect = x: toolkit: a scroll view @ failed at step 5305
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    sx = tk_imax(tk_imin(sx, cw - vw), 0);
+    sy = tk_imax(tk_imin(sy, ch - vh), 0);
+===
+    sx = tk_imax(sx, 0);
+    sy = tk_imax(sy, 0);
+>>>
+edit = os/std/toolkit.xfxn
+<<<
+    n.sx = tk_imax(tk_imin(n.sx, cw - vw), 0);
+    n.sy = tk_imax(tk_imin(n.sy, ch - vh), 0);
+===
+    n.sx = tk_imax(n.sx, 0);
+    n.sy = tk_imax(n.sy, 0);
+>>>
+
+[reveal-never]
+# the focus going out of sight leaves the view where it was; the gallery's
+# list does not follow End (alone, as tabs-focus-left-hidden)
+expect = x: toolkit: a scroll view @ failed at step 5309
+expect = x: gallery: the window holds what was drawn @ failed at step 4629
+edit = os/std/toolkit.xfxn
+<<<
+    if (ui.reveal != TK_NONE) { tk_reveal_now(ui); }
+===
+    ui.reveal = TK_NONE;
+>>>
+
+# ---- lists, trees, tables ----
+
+[rows-choose-disabled]
+# a key lands on a row that cannot be chosen (a disabled one, a header)
+expect = x: toolkit: a list and a table @ failed at step 5405
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+        if (tk_row_choosable(ui, w, r) == 1) { return r; }
+        k = k + dir;
+===
+        return r;
+>>>
+
+[rows-pick-silent]
+# a choice by key is never heard
+expect = x: toolkit: a list and a table @ failed at step 5404
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+    if (tell == 1) { tk_push(ui, TK_EV_CHANGE, w, k as i32, tk_id(ui, r)); }
+===
+    if (tell == 2) { tk_push(ui, TK_EV_CHANGE, w, k as i32, tk_id(ui, r)); }
+>>>
+
+[tree-left-no-parent]
+# Left on an item with no open children stays put
+expect = x: toolkit: a tree @ failed at step 5506
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+            else if (ui.node[s].parent != w) { tk_rows_pick(ui, w, ui.node[s].parent, 1); }
+===
+            else if (ui.node[s].parent == TK_NONE) { tk_rows_pick(ui, w, ui.node[s].parent, 1); }
+>>>
+
+[tree-closed-unheard]
+# opening and closing is not told to the app
+expect = x: toolkit: a tree @ failed at step 5507
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+    tk_push(ui, TK_EV_EXPAND, w, open as i32, tk_id(ui, r));
+===
+>>>
+
+# ---- tabs ----
+
+[tabs-change-silent]
+# a page turned by key is never heard
+expect = x: toolkit: tabs @ failed at step 5705
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    if (tell == 1) { tk_push(ui, TK_EV_CHANGE, t, k as i32, 0); }
+===
+>>>
+
+[tabs-focus-left-hidden]
+# the focus stays on a widget of a page turned away; the gallery's replay
+# too (it boots alone: the gallery stops at its first red)
+expect = x: toolkit: tabs @ failed at step 5709
+expect = x: gallery: the window holds what was drawn @ failed at step 4626
+edit = os/std/toolkit.xfxn
+<<<
+    if (f != TK_NONE && f != t && tk_within(ui, f, t) == 1 && tk_reachable(ui, f) == 0) { tk_focus_set(ui, t); }
+===
+>>>
+
+# ---- menus ----
+
+[menu-lights-disabled]
+# Down lights a disabled item
+expect = x: toolkit: menus @ failed at step 5804
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    if (n.text == TK_NONE || (n.flags & TK_F_DISABLED) != 0) { return 0; }
+===
+    if (n.text == TK_NONE) { return 0; }
+>>>
+
+[context-takes-bar-menu]
+# a bar's menu is taken as a widget's context menu
+expect = x: toolkit: menus @ failed at step 5811
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+    if (m == TK_NONE || ui.node[m].kind != TK_MENU || ui.node[ui.node[m].parent].kind == TK_MENUBAR) { return E_INVALID_ARGS; }
+    ui.node[i].menu = m;
+===
+    if (m == TK_NONE || ui.node[m].kind != TK_MENU) { return E_INVALID_ARGS; }
+    ui.node[i].menu = m;
+>>>
+
+# ---- tooltips ----
+
+[tip-at-once]
+# a tooltip waits for nothing
+expect = x: toolkit: tooltips @ failed at step 5904
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    ui.tip_due = ui.now + TK_TIP_MS;
+===
+    ui.tip_due = ui.now + 1;
+>>>
+
+[tip-no-switch]
+# moving to another while one is up waits again
+expect = x: toolkit: tooltips @ failed at step 5907
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+    if (ui.tip_up == 1) { tk_tip_show(ui, o); return; }
+===
+>>>
+
+# ---- dialogs ----
+
+[dialog-no-cancel]
+# Esc presses nothing in a dialog with Cancel; the gallery's dialog stays
+# open (alone, as tabs-focus-left-hidden)
+expect = x: toolkit: a dialog @ failed at step 6009
+expect = x: gallery: the window holds what was drawn @ failed at step 4641
+edit = os/std/toolkit.xfxn
+<<<
+            if (code == TK_DLG_CANCEL || (code == TK_DLG_CLOSE && cancel == 0)) { cancel = b; }
+===
+            if (code == TK_DLG_CLOSE && cancel == 0) { cancel = b; }
+>>>
+
+[dialog-no-last-default]
+# a dialog with none of OK, Yes and Close has no default
+expect = x: toolkit: a dialog @ failed at step 6015
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+    if (dflt == 0) { dflt = last; }
+===
+>>>
+
+# ---- text grids ----
+
+[grid-pool-unbounded]
+# a grid takes cells past the pool
+expect = x: toolkit: a text grid @ failed at step 6104
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+        if (ui.cell_n + need > TK_CELLS_MAX) { return E_NO_RESOURCES; }
+===
+>>>
+
+[grid-cursor-unseen]
+# the cursor is never drawn
+expect = x: toolkit: a text grid @ failed at step 6116
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+                if (tk_on(n, TK_F_CURSOR) == 1 && n.sx == (col as i32) && n.sy == row) { cur = 1; }
+===
+>>>
+
+# ---- the server's timed wait ----
+
+[timer-late]
+# a timed wait runs out a tick late
+expect = x: windows: a timed wait runs out once @ failed at step 6202
+group = g1
+edit = os/std/wm.xfxn
+<<<
+        if (cl.used == 1 && cl.waiter > 0 && cl.n == 0 && cl.wake_at != 0 && now >= cl.wake_at) {
+===
+        if (cl.used == 1 && cl.waiter > 0 && cl.n == 0 && cl.wake_at != 0 && now > cl.wake_at) {
+>>>
+
+[timer-again]
+# a timed wait that ran out runs out again
+expect = x: windows: a timed wait runs out once @ failed at step 6204
+group = g2
+edit = os/std/wm.xfxn
+<<<
+            cl.wake_at = 0;
+            wm_push(w, c, WM_EV_TIMER, WM_NONE, 0, 0, 0);
+===
+            wm_push(w, c, WM_EV_TIMER, WM_NONE, 0, 0, 0);
+>>>

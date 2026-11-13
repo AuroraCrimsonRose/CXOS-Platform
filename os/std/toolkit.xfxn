@@ -22,8 +22,8 @@ import "display.xfxn";
 import "string.xfxn";
 import "mem.xfxn";
 
-const TK_NODES_MAX: u32 = 256;
-const TK_ARENA_BYTES: u32 = 8192;
+const TK_NODES_MAX: u32 = 512;
+const TK_ARENA_BYTES: u32 = 12288;
 const TK_EVENTS_MAX: u32 = 32;
 const TK_NONE: u32 = 0xFFFFFFFF;
 const TK_GRID_COLS_MAX: u32 = 8;
@@ -36,6 +36,11 @@ const TK_COLUMN: u32 = 1;           // containers
 const TK_ROW: u32 = 2;
 const TK_GRID: u32 = 3;             // cols: its column count
 const TK_STACK: u32 = 4;            // children on top of each other
+const TK_SCROLL: u32 = 5;           // one child, seen through its box (2.8a3)
+const TK_TABS: u32 = 6;             // pages, one shown; a page's text is its tab's
+const TK_DIALOG: u32 = 7;           // a column over the window, opened by tk_dialog_open
+const TK_MENUBAR: u32 = 8;          // menus' titles in a row
+const TK_MENU: u32 = 9;             // items, over the window while open (a bar's, or a context menu)
 const TK_LABEL: u32 = 10;
 const TK_HEADING: u32 = 11;
 const TK_BUTTON: u32 = 12;          // first of the ones that take input
@@ -45,7 +50,13 @@ const TK_SWITCH: u32 = 15;
 const TK_SLIDER: u32 = 16;          // last of the run of ones that take input
 const TK_PROGRESS: u32 = 17;
 const TK_TEXTFIELD: u32 = 18;       // one line of text (2.8a2); takes input too
-const TK_KIND_LAST: u32 = 18;
+const TK_LIST: u32 = 19;            // rows: its items (2.8a3)
+const TK_TREE: u32 = 20;            // rows: its items, and theirs while open
+const TK_TABLE: u32 = 21;           // rows of cells: its first item is the header
+const TK_ITEM: u32 = 22;            // a list's, tree's or table's row, or a table row's cell
+const TK_MENUITEM: u32 = 23;        // a menu's; no text: a separator
+const TK_TEXTGRID: u32 = 24;        // a grid of character cells (the terminal's)
+const TK_KIND_LAST: u32 = 24;
 
 // ---- flags ----
 
@@ -62,8 +73,10 @@ const TK_F_DEFAULT: u32 = 512;      // the button Enter presses
 const TK_F_MUTED: u32 = 1024;       // secondary text
 const TK_F_SHOW_RING: u32 = 2048;   // drawn as if focused (a gallery's state)
 const TK_F_CANCEL: u32 = 4096;      // the button Esc presses
-const TK_F_APP: u32 = 8127;         // what tk_set_flags may change: all but FOCUS
-const TK_F_LAYOUT: u32 = 385;       // HIDDEN | GROW | FILL: a change lays out again
+const TK_F_CURSOR: u32 = 8192;      // a text grid shows its cursor
+const TK_F_OPEN: u32 = 16384;       // a tree item shows its children
+const TK_F_APP: u32 = 32703;        // what tk_set_flags may change: all but FOCUS
+const TK_F_LAYOUT: u32 = 16769;     // HIDDEN | GROW | FILL | OPEN: a change lays out again
 const TK_F_USED: u32 = 0x80000000;
 
 // ---- accessibility roles (the tree is the accessibility tree) ----
@@ -78,6 +91,23 @@ const TK_ROLE_SWITCH: u32 = 7;
 const TK_ROLE_SLIDER: u32 = 8;
 const TK_ROLE_PROGRESS: u32 = 9;
 const TK_ROLE_TEXTFIELD: u32 = 10;
+const TK_ROLE_SCROLL: u32 = 11;
+const TK_ROLE_TABLIST: u32 = 12;
+const TK_ROLE_TABPANEL: u32 = 13;   // a page of a TK_TABS
+const TK_ROLE_DIALOG: u32 = 14;
+const TK_ROLE_MENUBAR: u32 = 15;
+const TK_ROLE_MENU: u32 = 16;
+const TK_ROLE_MENUITEM: u32 = 17;
+const TK_ROLE_SEPARATOR: u32 = 18;
+const TK_ROLE_LIST: u32 = 19;
+const TK_ROLE_LISTITEM: u32 = 20;
+const TK_ROLE_TREE: u32 = 21;
+const TK_ROLE_TREEITEM: u32 = 22;
+const TK_ROLE_TABLE: u32 = 23;
+const TK_ROLE_ROW: u32 = 24;
+const TK_ROLE_HEADER: u32 = 25;     // a table's header row
+const TK_ROLE_CELL: u32 = 26;
+const TK_ROLE_TEXTGRID: u32 = 27;
 
 // ---- what the app is told ----
 
@@ -88,11 +118,28 @@ const TK_EV_KEY: u32 = 3;           // code, ch, mods: a press no widget or comm
 const TK_EV_CLOSE: u32 = 4;         // the window's close box (toolkit_window.xfxn)
 const TK_EV_GONE: u32 = 5;          // value: the server has gone, or a commit failed
 const TK_EV_COMMAND: u32 = 6;       // value: a command ran (id: the widget, or 0 for a key)
+const TK_EV_DIALOG: u32 = 7;        // id: a dialog closed, value: the TK_DLG_* button that closed it
+const TK_EV_EXPAND: u32 = 8;        // id: a tree, code: its item, value: 1 opened, 0 closed
+// TK_EV_CHANGE also comes from a list, tree or table (value: the row, code:
+// the item's id) and from tabs (value: the page); TK_EV_ACTIVATE from a
+// row (Enter: id the item) and from a menu item without a command.
+
+// ---- a dialog's standard buttons (tk_dialog), left to right as drawn ----
+
+const TK_DLG_DISCARD: u32 = 1;      // alone at the left, away from the rest
+const TK_DLG_APPLY: u32 = 2;
+const TK_DLG_CLOSE: u32 = 4;
+const TK_DLG_CANCEL: u32 = 8;
+const TK_DLG_NO: u32 = 16;
+const TK_DLG_YES: u32 = 32;
+const TK_DLG_OK: u32 = 64;
+const TK_DLG_ALL: u32 = 127;
 
 // ---- keys: codes are KC_* (USB usages), mods KEYMOD_* | KEYEV_*, from
 // the ABI (2.8a2); a key is a press or a release with its character ----
 
 const TK_MODS_CAS: u32 = 14;        // KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SUPER
+const TK_KC_F10: u32 = 0x43;        // KC_F1 + 9: the ABI names only the F keys it uses
 
 // ---- commands: a name, and a key that runs it (CX_TOOLKIT.md §7) ----
 
@@ -132,6 +179,23 @@ const TK_SLIDER_H: i32 = 20;
 const TK_KNOB: i32 = 16;
 const TK_TRACK: i32 = 4;
 const TK_PROG_H: i32 = 8;
+const TK_ROW_H: i32 = 24;           // a list's, tree's, table's or menu's row
+const TK_ROW_PADX: i32 = 8;
+const TK_INDENT: i32 = 16;          // a tree's level, and its disclosure's room
+const TK_LIST_W: i32 = 160;         // the least a list, tree or table is wide
+const TK_BAR: i32 = 10;             // a scroll bar's thickness
+const TK_THUMB_MIN: i32 = 16;
+const TK_LINE: i32 = 16;            // what an arrow scrolls
+const TK_TAB_H: i32 = 32;
+const TK_TAB_PADX: i32 = 12;
+const TK_MENUBAR_H: i32 = 28;
+const TK_SEP_H: i32 = 9;            // a menu's separator
+const TK_POP_PAD: i32 = 4;          // inside a menu's or a tooltip's border
+const TK_KEY_GAP: i32 = 24;         // a menu item's text to its key
+const TK_GRID_PAD: i32 = 4;
+const TK_TIP_MS: u64 = 700;         // hover this long for a tooltip (Serenity's)
+const TK_POPS_MAX: u32 = 4;         // open at once: a dialog and its menus
+const TK_CELLS_MAX: u32 = 4096;     // every text grid's cells together
 
 // The spacing scale: an app names a step, never a number of units.
 fn tk_sp(step: u32) -> i32 {
@@ -206,7 +270,16 @@ struct tk_node {
     dw: u32,
     dh: u32,
     cmd: u32,           // the command it runs when pressed, or 0
-    field: u32          // text fields: its slot in ui.field
+    field: u32,         // text fields: its slot in ui.field
+    // 2.8a3
+    sel: u32,           // lists, trees, tables: the item selected; menus: the one lit; or TK_NONE
+    sx: i32,            // scroll views: how far scrolled, logical; menus: where opened;
+    sy: i32,            //   text grids: the cursor's column and row
+    tip: u32,           // its tooltip's text in the arena, or TK_NONE
+    menu: u32,          // its context menu, or TK_NONE
+    depth: u32,         // tree items: the level, from 0
+    rows: u32,          // text grids: rows (cols: columns)
+    cells: u32          // text grids: the first of its cells in ui.cell
 }
 
 struct tk_event {
@@ -242,7 +315,7 @@ struct tk_field {
 }
 
 struct tk_ui {
-    node: [256]tk_node,     // TK_NODES_MAX
+    node: [512]tk_node,     // TK_NODES_MAX
     used: u32,
     root: u32,
     gen: u32,
@@ -260,7 +333,7 @@ struct tk_ui {
     relayout: u32,
     lw: i32,                // the canvas in logical units
     lh: i32,
-    arena: [8192]u8,        // TK_ARENA_BYTES
+    arena: [12288]u8,       // TK_ARENA_BYTES
     arena_used: u32,
     ev: [32]tk_event,       // TK_EVENTS_MAX
     ev_head: u32,
@@ -272,16 +345,67 @@ struct tk_ui {
     im: u32,                // TK_IM_*
     clip_want: u32,         // TK_CLIP_*: for whoever has the window
     clip: [256]u8,
-    clip_n: u32
+    clip_n: u32,
+    // 2.8a3: what is open over the tree, bottom first (dialogs, menus)
+    pop: [4]u32,            // TK_POPS_MAX
+    pop_n: u32,
+    pop_focus: [4]u32,      // the focus each had taken it from
+    bar: u32,               // the menu bar the open menus came from, or TK_NONE
+    menu_armed: u32,        // a release over an item chooses it
+    pop_px: i32,            // where the pointer was when a menu opened
+    pop_py: i32,
+    drag: u32,              // a scroll view whose thumb is held, or TK_NONE
+    drag_at: i32,           // the pointer's offset into the thumb
+    drag_v: u32,            // 1: the vertical thumb, 0: the horizontal
+    reveal: u32,            // scrolled into sight at the next paint, or TK_NONE
+    now: u64,               // the time as tk_tick was last told, in ms
+    tip_for: u32,           // whose tooltip waits or shows, or TK_NONE
+    tip_due: u64,           // when it shows
+    tip_up: u32,            // it is showing
+    tip_x: i32,             // its box, device pixels
+    tip_y: i32,
+    tip_w: i32,
+    tip_h: i32,
+    cell: [4096]u32,        // TK_CELLS_MAX: the text grids' cells
+    cell_n: u32
 }
 
 // ---- units ----
 
 // A logical edge to a device pixel: each edge is rounded on its own, so
-// boxes that meet in logical units meet in pixels at every scale.
+// boxes that meet in logical units meet in pixels at every scale. An edge
+// left of or above the canvas (content scrolled past it) is negative: its
+// u32 is read as an i32, and tk_dbox clips a box to the canvas.
 fn tk_dev(ui: *tk_ui, v: i32) -> u32 {
-    if (v <= 0) { return 0; }
-    return (((v as u32) * ui.scale + 2) / 4);
+    if (v >= 0) { return (((v as u32) * ui.scale + 2) / 4); }
+    // floor((v * q + 2) / 4), for v below 0
+    let t: i32 = v * (ui.scale as i32) + 2;
+    if (t >= 0) { return 0; }
+    return (0 - ((3 - t) / 4)) as u32;
+}
+
+// A node's device box clipped to the canvas, as a rect: 1, or 0 if nothing
+// of it is on the canvas.
+fn tk_dbox(ui: *tk_ui, i: u32, r: *ds_rect) -> u32 {
+    let n: *tk_node = &ui.node[i];
+    let x0: i32 = tk_imax(n.dx as i32, 0);
+    let y0: i32 = tk_imax(n.dy as i32, 0);
+    let x1: i32 = tk_imin((n.dx as i32) + (n.dw as i32), ui.canvas.width as i32);
+    let y1: i32 = tk_imin((n.dy as i32) + (n.dh as i32), ui.canvas.height as i32);
+    if (x1 <= x0 || y1 <= y0) { ds_rect_set(r, 0, 0, 0, 0); return 0; }
+    ds_rect_set(r, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+    return 1;
+}
+
+// A device rect of signed edges clipped to the canvas: 1, or 0 if empty.
+fn tk_drect(ui: *tk_ui, r: *ds_rect, x: i32, y: i32, w: i32, h: i32) -> u32 {
+    let x0: i32 = tk_imax(x, 0);
+    let y0: i32 = tk_imax(y, 0);
+    let x1: i32 = tk_imin(x + w, ui.canvas.width as i32);
+    let y1: i32 = tk_imin(y + h, ui.canvas.height as i32);
+    if (x1 <= x0 || y1 <= y0) { ds_rect_set(r, 0, 0, 0, 0); return 0; }
+    ds_rect_set(r, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+    return 1;
 }
 
 // A logical length as device pixels, never less than one if it is any.
@@ -320,6 +444,7 @@ fn tk_node_new(ui: *tk_ui, kind: u32) -> u32 {
     n.parent = TK_NONE; n.first = TK_NONE; n.last = TK_NONE; n.next = TK_NONE;
     n.text = TK_NONE;
     n.field = TK_NONE;
+    n.sel = TK_NONE; n.tip = TK_NONE; n.menu = TK_NONE;
     n.vmax = 100;
     n.step = 1;
     return i;
@@ -335,6 +460,10 @@ fn tk_reset(ui: *tk_ui) -> void {
     ui.ev_head = 0; ui.ev_n = 0;
     ui.field_n = 0;
     ui.clip_want = TK_CLIP_NONE; ui.clip_n = 0;
+    ui.pop_n = 0; ui.bar = TK_NONE; ui.menu_armed = 0;
+    ui.drag = TK_NONE; ui.reveal = TK_NONE;
+    ui.tip_for = TK_NONE; ui.tip_up = 0;
+    ui.cell_n = 0;
     ui.root = tk_node_new(ui, TK_COLUMN);
     ui.relayout = 1;
     // the standard commands, numbered TK_CMD_*, on the keys every app has
@@ -383,13 +512,68 @@ fn tk_index(ui: *tk_ui, id: u32) -> u32 {
 
 fn tk_root(ui: *tk_ui) -> u32 { return tk_id(ui, ui.root); }
 
+// A box laid out by the column, row, grid or stack rules (a dialog is a column).
 fn tk_is_container(kind: u32) -> u32 {
-    if (kind >= TK_COLUMN && kind <= TK_STACK) { return 1; }
+    if ((kind >= TK_COLUMN && kind <= TK_STACK) || kind == TK_DIALOG) { return 1; }
     return 0;
+}
+
+// Over the window while open, never in its parent's layout.
+fn tk_floats(kind: u32) -> u32 {
+    if (kind == TK_MENU || kind == TK_DIALOG) { return 1; }
+    return 0;
+}
+
+// Drawn by the widget that holds them (their rows), never on their own.
+fn tk_is_row(kind: u32) -> u32 {
+    if (kind == TK_ITEM || kind == TK_MENUITEM) { return 1; }
+    return 0;
+}
+
+// Laid out in a box's flow.
+fn tk_in_flow(kind: u32) -> u32 {
+    if (kind < TK_COLUMN || kind > TK_KIND_LAST || (kind > TK_MENU && kind < TK_LABEL)) { return 0; }
+    if (tk_floats(kind) == 1 || tk_is_row(kind) == 1) { return 0; }
+    return 1;
 }
 
 fn tk_takes_input(kind: u32) -> u32 {
     if ((kind >= TK_BUTTON && kind <= TK_SLIDER) || kind == TK_TEXTFIELD) { return 1; }
+    if (kind == TK_SCROLL || kind == TK_TABS || (kind >= TK_LIST && kind <= TK_TABLE) || kind == TK_TEXTGRID) { return 1; }
+    return 0;
+}
+
+// The list, tree or table an item belongs to (its nearest ancestor that is not an item).
+fn tk_owner(ui: *tk_ui, i: u32) -> u32 {
+    let a: u32 = ui.node[i].parent;
+    while (a != TK_NONE && ui.node[a].kind == TK_ITEM) { a = ui.node[a].parent; }
+    return a;
+}
+
+// May a node of kind k be added under p? A box (and a dialog, a page)
+// holds what flows and the floating ones; a scroll view one child; a list
+// items; a tree items under items; a table rows and each row cells; a menu
+// bar menus; a menu its items.
+fn tk_may_hold(ui: *tk_ui, p: u32, k: u32) -> u32 {
+    let pk: u32 = ui.node[p].kind;
+    if (pk == TK_SCROLL) {
+        if (ui.node[p].first == TK_NONE && tk_in_flow(k) == 1) { return 1; }
+        return 0;
+    }
+    if (tk_is_container(pk) == 1 || pk == TK_TABS) {
+        if (tk_in_flow(k) == 1 || tk_floats(k) == 1) { return 1; }
+        return 0;
+    }
+    if (k == TK_ITEM && (pk == TK_LIST || pk == TK_TREE || pk == TK_TABLE)) { return 1; }
+    if (k == TK_ITEM && pk == TK_ITEM) {
+        let o: u32 = tk_owner(ui, p);
+        if (ui.node[o].kind == TK_TREE) { return 1; }
+        // a table's row (an item whose parent is the table) holds cells
+        if (ui.node[o].kind == TK_TABLE && ui.node[p].parent == o) { return 1; }
+        return 0;
+    }
+    if (pk == TK_MENUBAR && k == TK_MENU) { return 1; }
+    if (pk == TK_MENU && k == TK_MENUITEM) { return 1; }
     return 0;
 }
 
@@ -406,11 +590,12 @@ fn tk_store(ui: *tk_ui, text: *u8) -> u32 {
 }
 
 // A new widget at the end of parent's children: its id, or 0 (the parent is
-// stale or not a container, the pool or the arena is full).
+// stale or cannot hold that kind (tk_may_hold), the pool or the arena is full).
 fn tk_add(ui: *tk_ui, parent: u32, kind: u32, text: *u8) -> u32 {
     let p: u32 = tk_index(ui, parent);
-    if (p == TK_NONE || tk_is_container(ui.node[p].kind) == 0) { return 0; }
-    if (kind < TK_COLUMN || kind > TK_KIND_LAST || (kind > TK_STACK && kind < TK_LABEL)) { return 0; }
+    if (p == TK_NONE) { return 0; }
+    if (kind < TK_COLUMN || kind > TK_KIND_LAST || (kind > TK_MENU && kind < TK_LABEL)) { return 0; }
+    if (tk_may_hold(ui, p, kind) == 0) { return 0; }
     if (kind == TK_TEXTFIELD && ui.field_n >= TK_FIELDS_MAX) { return 0; }
     let at: u32 = TK_NONE;
     if (text != (0 as *u8)) {
@@ -429,6 +614,7 @@ fn tk_add(ui: *tk_ui, parent: u32, kind: u32, text: *u8) -> u32 {
         ui.field_n = ui.field_n + 1;
     }
     ui.node[i].parent = p;
+    if (kind == TK_ITEM && ui.node[p].kind == TK_ITEM) { ui.node[i].depth = ui.node[p].depth + 1; }
     if (ui.node[p].last == TK_NONE) { ui.node[p].first = i; }
     else { ui.node[ui.node[p].last].next = i; }
     ui.node[p].last = i;
@@ -445,9 +631,16 @@ fn tk_text_of(ui: *tk_ui, i: u32) -> *u8 {
 // ---- damage ----
 
 fn tk_damage_node(ui: *tk_ui, i: u32) -> void {
-    let n: *tk_node = &ui.node[i];
-    if (n.dw == 0 || n.dh == 0) { return; }
-    ds_damage_add(&ui.damage, n.dx, n.dy, n.dw, n.dh);
+    let r: ds_rect;
+    if (tk_dbox(ui, i, &r) == 0) { return; }
+    ds_damage_add(&ui.damage, r.x, r.y, r.w, r.h);
+}
+
+// Damage a device rect of signed edges.
+fn tk_damage_rect(ui: *tk_ui, x: i32, y: i32, w: i32, h: i32) -> void {
+    let r: ds_rect;
+    if (tk_drect(ui, &r, x, y, w, h) == 0) { return; }
+    ds_damage_add(&ui.damage, r.x, r.y, r.w, r.h);
 }
 
 fn tk_damage_all(ui: *tk_ui) -> void { ds_damage_all(&ui.damage); }
@@ -572,7 +765,31 @@ fn tk_role(ui: *tk_ui, id: u32) -> u32 {
     let i: u32 = tk_index(ui, id);
     if (i == TK_NONE) { return 0; }
     let k: u32 = ui.node[i].kind;
+    let p: u32 = ui.node[i].parent;
+    if (p != TK_NONE && ui.node[p].kind == TK_TABS) { return TK_ROLE_TABPANEL; }
+    if (k == TK_DIALOG) { return TK_ROLE_DIALOG; }
     if (tk_is_container(k) == 1) { return TK_ROLE_GROUP; }
+    if (k == TK_SCROLL) { return TK_ROLE_SCROLL; }
+    if (k == TK_TABS) { return TK_ROLE_TABLIST; }
+    if (k == TK_MENUBAR) { return TK_ROLE_MENUBAR; }
+    if (k == TK_MENU) { return TK_ROLE_MENU; }
+    if (k == TK_MENUITEM) {
+        if (ui.node[i].text == TK_NONE) { return TK_ROLE_SEPARATOR; }
+        return TK_ROLE_MENUITEM;
+    }
+    if (k == TK_LIST) { return TK_ROLE_LIST; }
+    if (k == TK_TREE) { return TK_ROLE_TREE; }
+    if (k == TK_TABLE) { return TK_ROLE_TABLE; }
+    if (k == TK_TEXTGRID) { return TK_ROLE_TEXTGRID; }
+    if (k == TK_ITEM) {
+        let o: u32 = tk_owner(ui, i);
+        let ok: u32 = ui.node[o].kind;
+        if (ok == TK_LIST) { return TK_ROLE_LISTITEM; }
+        if (ok == TK_TREE) { return TK_ROLE_TREEITEM; }
+        if (p != o) { return TK_ROLE_CELL; }
+        if (ui.node[o].first == i) { return TK_ROLE_HEADER; }
+        return TK_ROLE_ROW;
+    }
     if (k == TK_LABEL) { return TK_ROLE_TEXT; }
     if (k == TK_HEADING) { return TK_ROLE_HEADING; }
     if (k == TK_BUTTON) { return TK_ROLE_BUTTON; }
@@ -588,6 +805,13 @@ fn tk_name(ui: *tk_ui, id: u32) -> *u8 {
     let i: u32 = tk_index(ui, id);
     if (i == TK_NONE) { return 0 as *u8; }
     return tk_text_of(ui, i);
+}
+
+// Its accessible description: the tooltip's text, or 0.
+fn tk_description(ui: *tk_ui, id: u32) -> *u8 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].tip == TK_NONE) { return 0 as *u8; }
+    return &ui.arena[ui.node[i].tip];
 }
 
 // ---- events for the app ----
@@ -742,6 +966,131 @@ fn tk_shown(ui: *tk_ui, i: u32) -> u32 {
     return 1;
 }
 
+// Shown, and in its parent's flow (not floating, not a row).
+fn tk_flows(ui: *tk_ui, i: u32) -> u32 {
+    if (tk_shown(ui, i) == 0 || tk_in_flow(ui.node[i].kind) == 0) { return 0; }
+    return 1;
+}
+
+// A string's width in logical units.
+fn tk_str_lw(ui: *tk_ui, s: *u8) -> i32 {
+    if (s == (0 as *u8)) { return 0; }
+    return tk_logical(ui, tk_utf8_count(s, strlen(s)) * tk_char_w(ui));
+}
+
+// The name of a key with its modifiers, as a menu shows it ("Ctrl+Shift+Z"):
+// its length in out (room for 32), or 0 for no key.
+fn tk_key_name(key: u32, mods: u32, out: *u8) -> u32 {
+    if (key == 0) { out[0] = 0; return 0; }
+    let n: u32 = 0;
+    if ((mods & KEYMOD_CTRL) != 0) { n = n + strcopy(&out[n], "Ctrl+", 32 - n); }
+    if ((mods & KEYMOD_ALT) != 0) { n = n + strcopy(&out[n], "Alt+", 32 - n); }
+    if ((mods & KEYMOD_SHIFT) != 0) { n = n + strcopy(&out[n], "Shift+", 32 - n); }
+    if (key >= KC_A && key <= KC_Z) { out[n] = (65 + key - KC_A) as u8; n = n + 1; }
+    else if (key >= KC_1 && key <= KC_9) { out[n] = (49 + key - KC_1) as u8; n = n + 1; }
+    else if (key == KC_0) { out[n] = 48; n = n + 1; }
+    else if (key >= KC_F1 && key <= KC_F12) {
+        let f: u32 = key - KC_F1 + 1;
+        out[n] = 70; n = n + 1;
+        if (f >= 10) { out[n] = 49; n = n + 1; f = f - 10; }
+        out[n] = (48 + f) as u8; n = n + 1;
+    }
+    else if (key == KC_DELETE) { n = n + strcopy(&out[n], "Del", 32 - n); }
+    else if (key == KC_ENTER) { n = n + strcopy(&out[n], "Enter", 32 - n); }
+    else if (key == KC_TAB) { n = n + strcopy(&out[n], "Tab", 32 - n); }
+    else if (key == KC_SPACE) { n = n + strcopy(&out[n], "Space", 32 - n); }
+    else { out[n] = 63; n = n + 1; }
+    out[n] = 0;
+    return n;
+}
+
+// The key shown beside a menu item: its command's, in out; its length.
+fn tk_item_key(ui: *tk_ui, i: u32, out: *u8) -> u32 {
+    let c: u32 = ui.node[i].cmd;
+    if (c == 0 || c > ui.cmd_n) { out[0] = 0; return 0; }
+    return tk_key_name(ui.cmd[c - 1].key, ui.cmd[c - 1].mods, out);
+}
+
+// ---- rows: a list's, tree's or table's items, in the order drawn ----
+
+// The first row of w, or TK_NONE.
+fn tk_rows_first(ui: *tk_ui, w: u32) -> u32 {
+    let c: u32 = ui.node[w].first;
+    while (c != TK_NONE && tk_shown(ui, c) == 0) { c = ui.node[c].next; }
+    return c;
+}
+
+// The row after i in w: a tree goes into an open item's children.
+fn tk_rows_next(ui: *tk_ui, w: u32, i: u32) -> u32 {
+    let c: u32 = TK_NONE;
+    if (ui.node[w].kind == TK_TREE && (ui.node[i].flags & TK_F_OPEN) != 0) { c = ui.node[i].first; }
+    let a: u32 = i;
+    while (1 == 1) {
+        while (c == TK_NONE) {
+            if (a == w) { return TK_NONE; }
+            c = ui.node[a].next;
+            if (c == TK_NONE) { a = ui.node[a].parent; }
+        }
+        if (tk_shown(ui, c) == 1) { return c; }
+        a = c;
+        c = TK_NONE;
+    }
+    return TK_NONE;
+}
+
+// How many rows w shows.
+fn tk_rows_count(ui: *tk_ui, w: u32) -> u32 {
+    let n: u32 = 0;
+    let r: u32 = tk_rows_first(ui, w);
+    while (r != TK_NONE) { n = n + 1; r = tk_rows_next(ui, w, r); }
+    return n;
+}
+
+// Row i's place among w's rows, or TK_NONE if it is not one shown.
+fn tk_row_index(ui: *tk_ui, w: u32, i: u32) -> u32 {
+    let n: u32 = 0;
+    let r: u32 = tk_rows_first(ui, w);
+    while (r != TK_NONE) {
+        if (r == i) { return n; }
+        n = n + 1;
+        r = tk_rows_next(ui, w, r);
+    }
+    return TK_NONE;
+}
+
+// Row k of w, or TK_NONE.
+fn tk_row_at(ui: *tk_ui, w: u32, k: u32) -> u32 {
+    let r: u32 = tk_rows_first(ui, w);
+    while (r != TK_NONE && k > 0) { r = tk_rows_next(ui, w, r); k = k - 1; }
+    return r;
+}
+
+// A table's columns, from its header (its first row): the count, and each
+// one's width in logical units into colw (at most TK_GRID_COLS_MAX).
+fn tk_table_cols(ui: *tk_ui, t: u32, colw: *i32) -> u32 {
+    let k: u32 = 0;
+    while (k < TK_GRID_COLS_MAX) { colw[k] = 0; k = k + 1; }
+    let head: u32 = tk_rows_first(ui, t);
+    if (head == TK_NONE) { return 0; }
+    let cols: u32 = 0;
+    let c: u32 = ui.node[head].first;
+    while (c != TK_NONE && cols < TK_GRID_COLS_MAX) { cols = cols + 1; c = ui.node[c].next; }
+    let r: u32 = head;
+    while (r != TK_NONE) {
+        k = 0;
+        c = ui.node[r].first;
+        while (c != TK_NONE && k < cols) {
+            colw[k] = tk_imax(colw[k], tk_text_lw(ui, c) + 2 * TK_ROW_PADX);
+            k = k + 1;
+            c = ui.node[c].next;
+        }
+        r = tk_rows_next(ui, t, r);
+    }
+    return cols;
+}
+
+// ---- layout: measure, children first ----
+
 fn tk_measure_leaf(ui: *tk_ui, i: u32) -> void {
     let n: *tk_node = &ui.node[i];
     let tw: i32 = tk_text_lw(ui, i);
@@ -762,12 +1111,108 @@ fn tk_measure_leaf(ui: *tk_ui, i: u32) -> void {
     else if (k == TK_SLIDER) { w = TK_SLIDER_W + 2 * TK_RING; h = TK_SLIDER_H + 2 * TK_RING; }
     else if (k == TK_PROGRESS) { w = TK_SLIDER_W; h = TK_PROG_H; }
     else if (k == TK_TEXTFIELD) { w = TK_FIELD_W + 2 * TK_RING; h = TK_CTRL_H + 2 * TK_RING; }
+    else if (k == TK_TEXTGRID) {
+        w = tk_logical(ui, n.cols * tk_char_w(ui)) + 2 * TK_GRID_PAD;
+        h = tk_logical(ui, n.rows * tk_char_h(ui)) + 2 * TK_GRID_PAD;
+    }
+    else if (k == TK_LIST || k == TK_TREE) {
+        let r: u32 = tk_rows_first(ui, i);
+        let count: i32 = 0;
+        w = TK_LIST_W;
+        while (r != TK_NONE) {
+            let rw: i32 = tk_text_lw(ui, r) + 2 * TK_ROW_PADX;
+            if (k == TK_TREE) { rw = rw + ((ui.node[r].depth + 1) as i32) * TK_INDENT; }
+            w = tk_imax(w, rw);
+            count = count + 1;
+            r = tk_rows_next(ui, i, r);
+        }
+        h = count * TK_ROW_H;
+    }
+    else if (k == TK_TABLE) {
+        let colw: [8]i32;
+        let cols: u32 = tk_table_cols(ui, i, &colw[0]);
+        let c: u32 = 0;
+        while (c < cols) { w = w + colw[c]; c = c + 1; }
+        w = tk_imax(w, TK_LIST_W);
+        h = (tk_rows_count(ui, i) as i32) * TK_ROW_H;
+    }
+    else if (k == TK_MENUBAR) {
+        let m: u32 = n.first;
+        while (m != TK_NONE) {
+            if (tk_shown(ui, m) == 1) { w = w + tk_text_lw(ui, m) + 2 * TK_TAB_PADX; }
+            m = ui.node[m].next;
+        }
+        h = TK_MENUBAR_H;
+    }
+    else if (k == TK_MENU) {
+        let key: [32]u8;
+        let it: u32 = n.first;
+        let tw2: i32 = 0;
+        let kw: i32 = 0;
+        while (it != TK_NONE) {
+            if (tk_shown(ui, it) == 1) {
+                if (ui.node[it].text == TK_NONE) { h = h + TK_SEP_H; }
+                else {
+                    h = h + TK_ROW_H;
+                    tw2 = tk_imax(tw2, tk_text_lw(ui, it));
+                    if (tk_item_key(ui, it, &key[0]) > 0) { kw = tk_imax(kw, tk_str_lw(ui, &key[0])); }
+                }
+            }
+            it = ui.node[it].next;
+        }
+        if (kw > 0) { tw2 = tw2 + TK_KEY_GAP + kw; }
+        w = tw2 + 2 * TK_ROW_PADX + 2 * TK_POP_PAD;
+        h = h + 2 * TK_POP_PAD;
+    }
     n.pw = w;
     n.ph = h;
 }
 
+// The tab strip's width, logical.
+fn tk_tabs_strip_w(ui: *tk_ui, i: u32) -> i32 {
+    let w: i32 = 2 * TK_RING;
+    let c: u32 = ui.node[i].first;
+    while (c != TK_NONE) {
+        if (tk_flows(ui, c) == 1) { w = w + tk_text_lw(ui, c) + 2 * TK_TAB_PADX; }
+        c = ui.node[c].next;
+    }
+    return w;
+}
+
 fn tk_measure(ui: *tk_ui, i: u32) -> void {
     let n: *tk_node = &ui.node[i];
+    if (n.kind == TK_SCROLL) {
+        // as big as its content, unless given a size (tk_set_min): then
+        // that and no more, the rest seen by scrolling
+        let w: i32 = 0;
+        let h: i32 = 0;
+        let c: u32 = n.first;
+        if (c != TK_NONE && tk_flows(ui, c) == 1) { tk_measure(ui, c); w = ui.node[c].pw; h = ui.node[c].ph; }
+        if (n.minw > 0) { w = n.minw; }
+        if (n.minh > 0) { h = n.minh; }
+        n.pw = w; n.ph = h;
+        return;
+    }
+    if (n.kind == TK_TABS) {
+        // every page measured, shown or not, so a new page changes no size
+        let pad: i32 = tk_sp(n.pad);
+        let w: i32 = 0;
+        let h: i32 = 0;
+        let c: u32 = n.first;
+        while (c != TK_NONE) {
+            if (tk_flows(ui, c) == 1) {
+                tk_measure(ui, c);
+                w = tk_imax(w, ui.node[c].pw);
+                h = tk_imax(h, ui.node[c].ph);
+            }
+            c = ui.node[c].next;
+        }
+        n.pw = tk_imax(w + 2 * pad, tk_tabs_strip_w(ui, i));
+        n.ph = TK_TAB_H + h + 2 * pad;
+        n.pw = tk_imax(n.pw, n.minw);
+        n.ph = tk_imax(n.ph, n.minh);
+        return;
+    }
     if (tk_is_container(n.kind) == 0) {
         tk_measure_leaf(ui, i);
     } else {
@@ -783,10 +1228,10 @@ fn tk_measure(ui: *tk_ui, i: u32) -> void {
         let rows: i32 = 0;
         let c: u32 = n.first;
         while (c != TK_NONE) {
-            if (tk_shown(ui, c) == 1) {
+            if (tk_flows(ui, c) == 1) {
                 tk_measure(ui, c);
                 let cn: *tk_node = &ui.node[c];
-                if (n.kind == TK_COLUMN) {
+                if (n.kind == TK_COLUMN || n.kind == TK_DIALOG) {
                     w = tk_imax(w, cn.pw);
                     h = h + cn.ph;
                     if (count > 0) { h = h + gap; }
@@ -840,15 +1285,103 @@ fn tk_growers(ui: *tk_ui, i: u32) -> i32 {
     let g: i32 = 0;
     let c: u32 = ui.node[i].first;
     while (c != TK_NONE) {
-        if (tk_shown(ui, c) == 1 && (ui.node[c].flags & TK_F_GROW) != 0) { g = g + 1; }
+        if (tk_flows(ui, c) == 1 && (ui.node[c].flags & TK_F_GROW) != 0) { g = g + 1; }
         c = ui.node[c].next;
     }
     return g;
 }
 
+// A scroll view's parts, logical: the view (what of the content shows),
+// the content's size, and which bars it has.
+fn tk_scroll_geom(ui: *tk_ui, i: u32, vw: *i32, vh: *i32, cw: *i32, ch: *i32, vbar: *u32, hbar: *u32) -> void {
+    let n: *tk_node = &ui.node[i];
+    let c: u32 = n.first;
+    let pw: i32 = 0;
+    let ph: i32 = 0;
+    if (c != TK_NONE && tk_flows(ui, c) == 1) { pw = ui.node[c].pw; ph = ui.node[c].ph; }
+    *vbar = 0; *hbar = 0;
+    if (ph > n.h) { *vbar = 1; }
+    let w: i32 = n.w;
+    if (*vbar == 1) { w = w - TK_BAR; }
+    if (pw > w) {
+        *hbar = 1;
+        // the horizontal bar may leave too little height: a vertical one too
+        if (*vbar == 0 && ph > n.h - TK_BAR) { *vbar = 1; w = w - TK_BAR; }
+    }
+    let h: i32 = n.h;
+    if (*hbar == 1) { h = h - TK_BAR; }
+    *vw = tk_imax(w, 0);
+    *vh = tk_imax(h, 0);
+    *cw = tk_imax(pw, *vw);
+    *ch = tk_imax(ph, *vh);
+}
+
+// Keep a scroll view's offsets inside its content, and lay its content
+// out where they put it.
+fn tk_scroll_place(ui: *tk_ui, i: u32) -> void {
+    let vw: i32 = 0; let vh: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+    let vb: u32 = 0; let hb: u32 = 0;
+    tk_scroll_geom(ui, i, &vw, &vh, &cw, &ch, &vb, &hb);
+    let n: *tk_node = &ui.node[i];
+    n.sx = tk_imax(tk_imin(n.sx, cw - vw), 0);
+    n.sy = tk_imax(tk_imin(n.sy, ch - vh), 0);
+    let c: u32 = n.first;
+    if (c != TK_NONE && tk_flows(ui, c) == 1) { tk_arrange(ui, c, n.x - n.sx, n.y - n.sy, cw, ch); }
+}
+
+// Rows of a list, tree or table, one under the other; a tree's closed
+// items' children, and a table's cells, get boxes of their own.
+fn tk_rows_place(ui: *tk_ui, i: u32) -> void {
+    let n: *tk_node = &ui.node[i];
+    // every item first gets no box: the shown ones get theirs below
+    let k: u32 = 0;
+    let a: u32 = tk_after(ui, i);
+    while (a != TK_NONE && tk_owner(ui, a) == i && ui.node[a].kind == TK_ITEM) {
+        tk_place(ui, a, n.x, n.y, 0, 0);
+        a = tk_after(ui, a);
+    }
+    let colw: [8]i32;
+    let cols: u32 = 0;
+    if (n.kind == TK_TABLE) { cols = tk_table_cols(ui, i, &colw[0]); }
+    let y: i32 = n.y;
+    let r: u32 = tk_rows_first(ui, i);
+    while (r != TK_NONE) {
+        tk_place(ui, r, n.x, y, n.w, TK_ROW_H);
+        if (n.kind == TK_TABLE) {
+            let cx: i32 = n.x;
+            let c: u32 = ui.node[r].first;
+            k = 0;
+            while (c != TK_NONE && k < cols) {
+                let cw: i32 = colw[k];
+                if (k + 1 == cols) { cw = tk_imax(n.x + n.w - cx, 0); }     // the last takes the rest
+                tk_place(ui, c, cx, y, cw, TK_ROW_H);
+                cx = cx + colw[k];
+                k = k + 1;
+                c = ui.node[c].next;
+            }
+        }
+        y = y + TK_ROW_H;
+        r = tk_rows_next(ui, i, r);
+    }
+}
+
 fn tk_arrange(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
     tk_place(ui, i, x, y, w, h);
     let n: *tk_node = &ui.node[i];
+    if (n.kind == TK_SCROLL) { tk_scroll_place(ui, i); return; }
+    if (n.kind == TK_LIST || n.kind == TK_TREE || n.kind == TK_TABLE) { tk_rows_place(ui, i); return; }
+    if (n.kind == TK_TABS) {
+        // every page in the one place under the strip; only the chosen is drawn
+        let pad: i32 = tk_sp(n.pad);
+        let c: u32 = n.first;
+        while (c != TK_NONE) {
+            if (tk_flows(ui, c) == 1) {
+                tk_arrange(ui, c, x + pad, y + TK_TAB_H + pad, tk_imax(w - 2 * pad, 0), tk_imax(h - TK_TAB_H - 2 * pad, 0));
+            }
+            c = ui.node[c].next;
+        }
+        return;
+    }
     if (tk_is_container(n.kind) == 0) { return; }
     let gap: i32 = tk_sp(n.gap);
     let pad: i32 = tk_sp(n.pad);
@@ -864,15 +1397,15 @@ fn tk_arrange(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
     let shown: i32 = 0;
     let c: u32 = n.first;
     while (c != TK_NONE) {
-        if (tk_shown(ui, c) == 1) {
-            if (n.kind == TK_COLUMN) { asked = asked + ui.node[c].ph; }
+        if (tk_flows(ui, c) == 1) {
+            if (n.kind == TK_COLUMN || n.kind == TK_DIALOG) { asked = asked + ui.node[c].ph; }
             if (n.kind == TK_ROW) { asked = asked + ui.node[c].pw; }
             shown = shown + 1;
         }
         c = ui.node[c].next;
     }
     if (shown > 1) { asked = asked + gap * (shown - 1); }
-    if (n.kind == TK_COLUMN) { extra = tk_imax(ih - asked, 0); }
+    if (n.kind == TK_COLUMN || n.kind == TK_DIALOG) { extra = tk_imax(ih - asked, 0); }
     if (n.kind == TK_ROW) { extra = tk_imax(iw - asked, 0); }
 
     let colw: [8]i32;
@@ -883,7 +1416,7 @@ fn tk_arrange(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
         let count: u32 = 0;
         c = n.first;
         while (c != TK_NONE) {
-            if (tk_shown(ui, c) == 1) {
+            if (tk_flows(ui, c) == 1) {
                 let col: u32 = count % n.cols;
                 colw[col] = tk_imax(colw[col], ui.node[c].pw);
                 count = count + 1;
@@ -903,13 +1436,13 @@ fn tk_arrange(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
     let rowh: i32 = 0;
     c = n.first;
     while (c != TK_NONE) {
-        if (tk_shown(ui, c) == 1) {
+        if (tk_flows(ui, c) == 1) {
             let cn: *tk_node = &ui.node[c];
             let grows: u32 = 0;
             if ((cn.flags & TK_F_GROW) != 0) { grows = 1; }
             let fills: u32 = 0;
             if ((cn.flags & TK_F_FILL) != 0) { fills = 1; }
-            if (n.kind == TK_COLUMN) {
+            if (n.kind == TK_COLUMN || n.kind == TK_DIALOG) {
                 let ch: i32 = cn.ph;
                 if (grows == 1 && growers > 0) {
                     g = g + 1;
@@ -945,7 +1478,7 @@ fn tk_arrange(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
                 let r: u32 = c;
                 let k2: u32 = col;
                 while (r != TK_NONE && k2 < n.cols) {
-                    if (tk_shown(ui, r) == 1) { rh = tk_imax(rh, ui.node[r].ph); k2 = k2 + 1; }
+                    if (tk_flows(ui, r) == 1) { rh = tk_imax(rh, ui.node[r].ph); k2 = k2 + 1; }
                     r = ui.node[r].next;
                 }
                 if (col == 0) { rowh = rh; }
@@ -964,6 +1497,9 @@ fn tk_layout(ui: *tk_ui) -> void {
     tk_measure(ui, ui.root);
     tk_arrange(ui, ui.root, 0, 0, ui.lw, ui.lh);
     ui.relayout = 0;
+    // what is open over the tree goes where it was, kept on the canvas
+    let k: u32 = 0;
+    while (k < ui.pop_n) { tk_pop_place(ui, ui.pop[k]); k = k + 1; }
 }
 
 // The size the tree asks for, in device pixels.
@@ -1510,19 +2046,49 @@ fn tk_draw_node(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
     else if (k == TK_SLIDER) { tk_draw_slider(ui, n, c); }
     else if (k == TK_PROGRESS) { tk_draw_progress(ui, n, c); }
     else if (k == TK_TEXTFIELD) { tk_draw_field(ui, n, c); }
+    else if (k == TK_LIST || k == TK_TREE || k == TK_TABLE) { tk_draw_rows(ui, i, c); }
+    else if (k == TK_TABS) { tk_draw_tabs(ui, i, c); }
+    else if (k == TK_MENUBAR) { tk_draw_menubar(ui, i, c); }
+    else if (k == TK_MENU) { tk_draw_menu(ui, i, c); }
+    else if (k == TK_DIALOG) { tk_draw_dialog(ui, n, c); }
+    else if (k == TK_TEXTGRID) { tk_draw_textgrid(ui, i, c); }
 }
 
-// Draw i and its children inside clip, each kept to its own box.
+// Is child c of p drawn with it? Rows and what floats are not (their
+// widget draws the one, the open list the other); of a tab's pages, only
+// the one chosen.
+fn tk_paints(ui: *tk_ui, p: u32, c: u32) -> u32 {
+    if (tk_flows(ui, c) == 0) { return 0; }
+    if (ui.node[p].kind == TK_TABS && tk_tab_page(ui, p, ui.node[p].value as u32) != c) { return 0; }
+    return 1;
+}
+
+// Draw i and its children inside clip, each kept to its own box; a scroll
+// view's content to its view, and its bars over it.
 fn tk_paint_node(ui: *tk_ui, i: u32, clip: *ds_rect) -> void {
     if (tk_shown(ui, i) == 0) { return; }
     let n: *tk_node = &ui.node[i];
     let box: ds_rect;
     let c: ds_rect;
-    ds_rect_set(&box, n.dx, n.dy, n.dw, n.dh);
+    if (tk_dbox(ui, i, &box) == 0) { return; }
     if (ds_rect_and(&c, &box, clip) == 0) { return; }
     tk_draw_node(ui, i, &c);
-    let k: u32 = n.first;
-    while (k != TK_NONE) { tk_paint_node(ui, k, &c); k = ui.node[k].next; }
+    let inner: ds_rect;
+    ds_rect_set(&inner, c.x, c.y, c.w, c.h);
+    if (n.kind == TK_SCROLL) {
+        let vx: i32 = 0; let vy: i32 = 0; let vw: i32 = 0; let vh: i32 = 0;
+        tk_scroll_view_dev(ui, i, &vx, &vy, &vw, &vh);
+        let view: ds_rect;
+        if (tk_drect(ui, &view, vx, vy, vw, vh) == 0 || ds_rect_and(&inner, &view, &c) == 0) { inner.w = 0; }
+    }
+    if (inner.w > 0) {
+        let k: u32 = n.first;
+        while (k != TK_NONE) {
+            if (tk_paints(ui, i, k) == 1) { tk_paint_node(ui, k, &inner); }
+            k = ui.node[k].next;
+        }
+    }
+    if (n.kind == TK_SCROLL) { tk_draw_scroll(ui, i, &c); }
 }
 
 // Draw what the damage covers, lay out first if anything asked for it. The
@@ -1532,12 +2098,24 @@ fn tk_paint(ui: *tk_ui, out: *ds_damage) -> u32 {
     if (ui.relayout == 1) {
         tk_layout(ui);
         tk_damage_all(ui);
+        // a tooltip's place was the old layout's
+        ui.tip_up = 0; ui.tip_for = TK_NONE;
     }
+    if (ui.reveal != TK_NONE) { tk_reveal_now(ui); }
     let k: u32 = 0;
     while (k < ui.damage.n) {
         let r: *ds_rect = &ui.damage.r[k];
         ds_fill(&ui.canvas, r.x, r.y, r.w, r.h, ui.theme.surface);
         tk_paint_node(ui, ui.root, r);
+        // what is open, bottom first: a dialog dims what is under it
+        let p: u32 = 0;
+        while (p < ui.pop_n) {
+            let o: u32 = ui.pop[p];
+            if (ui.node[o].kind == TK_DIALOG) { tk_scrim(ui, r); }
+            tk_paint_node(ui, o, r);
+            p = p + 1;
+        }
+        if (ui.tip_up == 1) { tk_draw_tip(ui, r); }
         k = k + 1;
     }
     *out = ui.damage;
@@ -1547,15 +2125,62 @@ fn tk_paint(ui: *tk_ui, out: *ds_damage) -> u32 {
 
 // ---- input ----
 
+// Where the focus may go: the dialog open on top, or the whole tree.
+fn tk_scope(ui: *tk_ui) -> u32 {
+    let k: u32 = ui.pop_n;
+    while (k > 0) {
+        k = k - 1;
+        if (ui.node[ui.pop[k]].kind == TK_DIALOG) { return ui.pop[k]; }
+    }
+    return ui.root;
+}
+
+// Is p open over the tree?
+fn tk_is_open(ui: *tk_ui, p: u32) -> u32 {
+    let k: u32 = 0;
+    while (k < ui.pop_n) { if (ui.pop[k] == p) { return 1; } k = k + 1; }
+    return 0;
+}
+
+// Can i be seen, and is it in the scope: nothing above it hidden, on a
+// tab's chosen page, in no closed dialog or menu? 1 if so.
+fn tk_reachable(ui: *tk_ui, i: u32) -> u32 {
+    let scope: u32 = tk_scope(ui);
+    let inside: u32 = 0;
+    let a: u32 = i;
+    while (a != TK_NONE) {
+        if (a == scope) { inside = 1; }
+        if ((ui.node[a].flags & TK_F_HIDDEN) != 0) { return 0; }
+        if (tk_floats(ui.node[a].kind) == 1 && tk_is_open(ui, a) == 0) { return 0; }
+        let p: u32 = ui.node[a].parent;
+        if (p != TK_NONE && ui.node[p].kind == TK_TABS && tk_tab_page(ui, p, ui.node[p].value as u32) != a) { return 0; }
+        a = p;
+    }
+    return inside;
+}
+
 fn tk_focusable(ui: *tk_ui, i: u32) -> u32 {
     let n: *tk_node = &ui.node[i];
     if (tk_takes_input(n.kind) == 0 || (n.flags & TK_F_DISABLED) != 0) { return 0; }
-    let a: u32 = i;
-    while (a != TK_NONE) {
-        if ((ui.node[a].flags & TK_F_HIDDEN) != 0) { return 0; }
-        a = ui.node[a].parent;
+    if (tk_reachable(ui, i) == 0) { return 0; }
+    if (n.kind == TK_SCROLL) {
+        // a scroll view takes the focus only when nothing in it can
+        let a: u32 = tk_after(ui, i);
+        while (a != TK_NONE && tk_within(ui, a, i) == 1) {
+            if (a != i && tk_takes_input(ui.node[a].kind) == 1 && tk_focusable(ui, a) == 1) { return 0; }
+            a = tk_after(ui, a);
+        }
     }
     return 1;
+}
+
+// Is a i or under it?
+fn tk_within(ui: *tk_ui, a: u32, i: u32) -> u32 {
+    while (a != TK_NONE) {
+        if (a == i) { return 1; }
+        a = ui.node[a].parent;
+    }
+    return 0;
 }
 
 // The node after i in tree order (preorder), or TK_NONE past the last.
@@ -1563,6 +2188,17 @@ fn tk_after(ui: *tk_ui, i: u32) -> u32 {
     if (ui.node[i].first != TK_NONE) { return ui.node[i].first; }
     let a: u32 = i;
     while (a != TK_NONE) {
+        if (ui.node[a].next != TK_NONE) { return ui.node[a].next; }
+        a = ui.node[a].parent;
+    }
+    return TK_NONE;
+}
+
+// The same, never leaving s.
+fn tk_after_in(ui: *tk_ui, i: u32, s: u32) -> u32 {
+    if (ui.node[i].first != TK_NONE) { return ui.node[i].first; }
+    let a: u32 = i;
+    while (a != TK_NONE && a != s) {
         if (ui.node[a].next != TK_NONE) { return ui.node[a].next; }
         a = ui.node[a].parent;
     }
@@ -1581,33 +2217,38 @@ fn tk_focus_set(ui: *tk_ui, i: u32) -> void {
     if (i != TK_NONE) {
         ui.node[i].flags = ui.node[i].flags | TK_F_FOCUS;
         tk_damage_node(ui, i);
+        // brought into sight in any scroll view it is in, at the next paint
+        ui.reveal = i;
     }
 }
 
-// Tab: the next widget that can take the focus, in tree order, wrapping.
+// Tab: the next widget that can take the focus, in tree order, wrapping,
+// within the scope (an open dialog keeps it).
 fn tk_focus_next(ui: *tk_ui) -> void {
+    let scope: u32 = tk_scope(ui);
     let start: u32 = ui.focus;
-    if (start == TK_NONE) { start = ui.root; }
-    let i: u32 = tk_after(ui, start);
+    if (start == TK_NONE || tk_within(ui, start, scope) == 0) { start = scope; }
+    let i: u32 = tk_after_in(ui, start, scope);
     let steps: u32 = 0;
     while (steps <= ui.used) {
-        if (i == TK_NONE) { i = ui.root; }
+        if (i == TK_NONE) { i = scope; }
         if (tk_focusable(ui, i) == 1) { tk_focus_set(ui, i); return; }
-        i = tk_after(ui, i);
+        i = tk_after_in(ui, i, scope);
         steps = steps + 1;
     }
 }
 
 // Shift+Tab: the one before, wrapping.
 fn tk_focus_prev(ui: *tk_ui) -> void {
+    let scope: u32 = tk_scope(ui);
     let before: u32 = TK_NONE;     // the last focusable one ahead of the focus
     let last: u32 = TK_NONE;
     let found: u32 = 0;
-    let i: u32 = ui.root;
+    let i: u32 = scope;
     while (i != TK_NONE) {
         if (i == ui.focus) { found = 1; before = last; }
         if (tk_focusable(ui, i) == 1) { last = i; }
-        i = tk_after(ui, i);
+        i = tk_after_in(ui, i, scope);
     }
     // nothing before the focus, or no focus: the last one
     let to: u32 = before;
@@ -1647,6 +2288,12 @@ fn tk_radio_pick(ui: *tk_ui, i: u32) -> void {
 fn tk_activate(ui: *tk_ui, i: u32) -> void {
     let n: *tk_node = &ui.node[i];
     if ((n.flags & TK_F_DISABLED) != 0) { return; }
+    // a dialog's standard button closes it with its answer
+    if (n.kind == TK_BUTTON && n.value > 0) {
+        let d: u32 = n.parent;
+        while (d != TK_NONE && ui.node[d].kind != TK_DIALOG) { d = ui.node[d].parent; }
+        if (d != TK_NONE) { tk_dialog_done(ui, d, n.value as u32); return; }
+    }
     if (n.kind == TK_BUTTON && n.cmd != 0) { tk_run(ui, n.cmd, i); return; }
     if (n.kind == TK_BUTTON) { tk_push(ui, TK_EV_ACTIVATE, i, 0, 0); return; }
     if (n.kind == TK_CHECK || n.kind == TK_SWITCH) {
@@ -1717,6 +2364,10 @@ fn tk_widget_key(ui: *tk_ui, code: u32, ch: u32, mods: u32) -> u32 {
     if (f == TK_NONE || (mods & TK_MODS_CAS) != 0) { return 0; }
     let n: *tk_node = &ui.node[f];
     if (n.kind == TK_TEXTFIELD) { return tk_field_key(ui, f, code, ch, mods); }
+    if (n.kind == TK_LIST || n.kind == TK_TREE || n.kind == TK_TABLE) { return tk_rows_key(ui, f, code); }
+    if (n.kind == TK_SCROLL) { return tk_scroll_key(ui, f, code); }
+    if (n.kind == TK_TABS) { return tk_tabs_key(ui, f, code); }
+    if (n.kind == TK_TEXTGRID) { return 0; }       // its keys are the app's (TK_EV_KEY)
     if (code == KC_SPACE && n.kind != TK_SLIDER) { tk_activate(ui, f); return 1; }
     if ((code == KC_ENTER || code == KC_KP_ENTER) && n.kind == TK_BUTTON) { tk_activate(ui, f); return 1; }
     if (n.kind == TK_SLIDER) {
@@ -1757,8 +2408,29 @@ fn tk_press_flagged(ui: *tk_ui, flag: u32) -> u32 {
 //
 // In order: the input method (a text field has the focus), the focused
 // widget, the dialog manager (Tab, Shift+Tab, Enter, Esc), the commands.
+//
+// Before all of them, an open menu takes every press, and Esc puts a
+// tooltip away. After the dialog manager: F10 opens the first menu bar's
+// first menu, Shift+F10 or the Menu key the focused widget's context menu.
+// After the commands: Ctrl+Tab and Ctrl+Shift+Tab turn the pages of the
+// tabs the focus is in (only when no command has the key). The focus
+// moved by a key shows its tooltip at once; any other key puts it away.
 fn tk_key(ui: *tk_ui, code: u32, ch: u32, mods: u32) -> u32 {
     if ((mods & KEYEV_RELEASE) != 0) { return 0; }
+    if (ui.pop_n > 0 && ui.node[ui.pop[ui.pop_n - 1]].kind == TK_MENU) {
+        tk_menu_key(ui, code, mods & KEYMOD_HELD);
+        return 1;
+    }
+    if (ui.tip_up == 1 && code == KC_ESC && (mods & KEYMOD_HELD) == 0) { tk_tip_hide(ui); return 1; }
+    let was: u32 = ui.focus;
+    let took: u32 = tk_key_in(ui, code, ch, mods);
+    if (ui.pop_n > 0 && ui.node[ui.pop[ui.pop_n - 1]].kind == TK_MENU) { tk_tip_hide(ui); }
+    else if (ui.focus != was && ui.focus != TK_NONE && ui.node[ui.focus].tip != TK_NONE) { tk_tip_show(ui, ui.focus); }
+    else { tk_tip_hide(ui); }
+    return took;
+}
+
+fn tk_key_in(ui: *tk_ui, code: u32, ch: u32, mods: u32) -> u32 {
     let held: u32 = mods & KEYMOD_HELD;
     if (ui.focus != TK_NONE && ui.node[ui.focus].kind == TK_TEXTFIELD && ui.im != TK_IM_NONE) {
         if (tk_im_key(ui, ui.focus, code, ch, held) == 1) { return 1; }
@@ -1771,9 +2443,22 @@ fn tk_key(ui: *tk_ui, code: u32, ch: u32, mods: u32) -> u32 {
         }
         if ((code == KC_ENTER || code == KC_KP_ENTER) && tk_press_flagged(ui, TK_F_DEFAULT) == 1) { return 1; }
         if (code == KC_ESC && tk_press_flagged(ui, TK_F_CANCEL) == 1) { return 1; }
+        if (code == TK_KC_F10 && held == 0 && tk_menubar_key(ui) == 1) { return 1; }
+        if ((code == KC_MENU && held == 0) || (code == TK_KC_F10 && held == KEYMOD_SHIFT)) {
+            if (tk_context_key(ui) == 1) { return 1; }
+        }
     }
     let cmd: u32 = tk_command_for(ui, code, held);
-    if (cmd != 0) { tk_run(ui, cmd, TK_NONE); return 1; }
+    if (cmd != 0) {
+        // the app's own wait while a dialog is open; a field in it still
+        // has its copy, paste and the rest
+        if (cmd > TK_CMD_REDO && tk_scope(ui) != ui.root) { return 1; }
+        tk_run(ui, cmd, TK_NONE);
+        return 1;
+    }
+    if (code == KC_TAB && (held == KEYMOD_CTRL || held == (KEYMOD_CTRL | KEYMOD_SHIFT))) {
+        if (tk_tabs_turn(ui, (held & KEYMOD_SHIFT)) == 1) { return 1; }
+    }
     let at: u32 = (ui.ev_head + ui.ev_n) % TK_EVENTS_MAX;
     let room: u32 = 0;
     if (ui.ev_n < TK_EVENTS_MAX) { room = 1; }
@@ -2231,16 +2916,45 @@ fn tk_field_at(ui: *tk_ui, i: u32, x: i32) -> u32 {
 }
 
 // The widget that takes input under device (x, y): the last drawn wins.
+// A menu bar is hit too (it opens its menus), though it takes no focus.
 fn tk_hit(ui: *tk_ui, i: u32, x: i32, y: i32) -> u32 {
-    if (tk_shown(ui, i) == 0) { return TK_NONE; }
+    if (tk_shown(ui, i) == 0 || tk_in_box(ui, i, x, y) == 0) { return TK_NONE; }
     let n: *tk_node = &ui.node[i];
-    if (x < (n.dx as i32) || y < (n.dy as i32) || x >= ((n.dx + n.dw) as i32) || y >= ((n.dy + n.dh) as i32)) { return TK_NONE; }
     let found: u32 = TK_NONE;
-    if (tk_takes_input(n.kind) == 1 && (n.flags & TK_F_DISABLED) == 0) { found = i; }
+    if ((tk_takes_input(n.kind) == 1 || n.kind == TK_MENUBAR) && (n.flags & TK_F_DISABLED) == 0) { found = i; }
+    // a scroll view's bars are its own; what is under them is not hit
+    if (n.kind == TK_SCROLL && tk_scroll_in_view(ui, i, x, y) == 0) { return found; }
     let c: u32 = n.first;
     while (c != TK_NONE) {
-        let h: u32 = tk_hit(ui, c, x, y);
-        if (h != TK_NONE) { found = h; }
+        if (tk_paints(ui, i, c) == 1) {
+            let h: u32 = tk_hit(ui, c, x, y);
+            if (h != TK_NONE) { found = h; }
+        }
+        c = ui.node[c].next;
+    }
+    return found;
+}
+
+fn tk_in_box(ui: *tk_ui, i: u32, x: i32, y: i32) -> u32 {
+    let n: *tk_node = &ui.node[i];
+    let x0: i32 = n.dx as i32;
+    let y0: i32 = n.dy as i32;
+    if (x < x0 || y < y0 || x >= x0 + (n.dw as i32) || y >= y0 + (n.dh as i32)) { return 0; }
+    return 1;
+}
+
+// The deepest node drawn under (x, y), whatever it is.
+fn tk_hit_any(ui: *tk_ui, i: u32, x: i32, y: i32) -> u32 {
+    if (tk_shown(ui, i) == 0 || tk_in_box(ui, i, x, y) == 0) { return TK_NONE; }
+    let n: *tk_node = &ui.node[i];
+    if (n.kind == TK_SCROLL && tk_scroll_in_view(ui, i, x, y) == 0) { return i; }
+    let found: u32 = i;
+    let c: u32 = n.first;
+    while (c != TK_NONE) {
+        if (tk_paints(ui, i, c) == 1) {
+            let h: u32 = tk_hit_any(ui, c, x, y);
+            if (h != TK_NONE) { found = h; }
+        }
         c = ui.node[c].next;
     }
     return found;
@@ -2259,20 +2973,55 @@ fn tk_set_bit(ui: *tk_ui, i: u32, f: u32, on: u32) -> void {
 // The pointer, in device pixels of the canvas, with its buttons (bit 0 the
 // left). A press captures the widget under it; it is pressed only if the
 // button comes up over that widget still.
+//
+// The right button (bit 1) opens the context menu of what is under it, or
+// of the nearest widget holding it that has one. While a menu is open it
+// has the pointer; while a dialog is, only what is in it can be hit.
 fn tk_pointer(ui: *tk_ui, x: i32, y: i32, buttons: u32) -> void {
-    let hit: u32 = tk_hit(ui, ui.root, x, y);
+    let was: u32 = ui.buttons & 1;
+    let now: u32 = buttons & 1;
+    let rwas: u32 = (ui.buttons >> 1) & 1;
+    let rnow: u32 = (buttons >> 1) & 1;
+    ui.buttons = buttons;
+    if (ui.pop_n > 0 && ui.node[ui.pop[ui.pop_n - 1]].kind == TK_MENU) {
+        tk_menu_pointer(ui, x, y, was, now, rwas, rnow);
+        return;
+    }
+    if (ui.drag != TK_NONE) {
+        if (now == 1) { tk_scroll_drag(ui, x, y); } else { tk_damage_node(ui, ui.drag); ui.drag = TK_NONE; }
+        return;
+    }
+    let hit: u32 = tk_hit(ui, tk_scope(ui), x, y);
     if (ui.capture == TK_NONE && hit != ui.hover) {
         tk_set_bit(ui, ui.hover, TK_F_HOVER, 0);
         ui.hover = hit;
         tk_set_bit(ui, hit, TK_F_HOVER, 1);
     }
-    let was: u32 = ui.buttons & 1;
-    let now: u32 = buttons & 1;
-    ui.buttons = buttons;
+    if (now == 0 && rnow == 0 && was == 0 && rwas == 0) { tk_tip_track(ui, x, y); }
+    if ((was == 0 && now == 1) || (rwas == 0 && rnow == 1)) { tk_tip_hide(ui); ui.tip_for = TK_NONE; }
+    if (rwas == 0 && rnow == 1 && ui.capture == TK_NONE) {
+        let a: u32 = tk_hit_any(ui, tk_scope(ui), x, y);
+        // a row's widget, so a press on a row picks it first
+        if (hit != TK_NONE && (ui.node[hit].kind == TK_LIST || ui.node[hit].kind == TK_TREE || ui.node[hit].kind == TK_TABLE)) {
+            tk_rows_press(ui, hit, x, y);
+        }
+        while (a != TK_NONE && ui.node[a].menu == TK_NONE) { a = ui.node[a].parent; }
+        if (a != TK_NONE) {
+            if (hit != TK_NONE && tk_focusable(ui, hit) == 1) { tk_focus_set(ui, hit); }
+            tk_menu_open(ui, ui.node[a].menu, tk_lpos(ui, x), tk_lpos(ui, y), TK_NONE, 0);
+            ui.pop_px = x; ui.pop_py = y;
+        }
+        return;
+    }
     if (was == 0 && now == 1 && hit != TK_NONE) {
+        let hk: u32 = ui.node[hit].kind;
+        if (hk == TK_MENUBAR) { tk_menubar_press(ui, hit, x, y); return; }
+        if (hk == TK_SCROLL && tk_scroll_in_view(ui, hit, x, y) == 0) { tk_scroll_bar_press(ui, hit, x, y); return; }
         ui.capture = hit;
         tk_set_bit(ui, hit, TK_F_PRESSED, 1);
-        tk_focus_set(ui, hit);
+        if (tk_focusable(ui, hit) == 1) { tk_focus_set(ui, hit); }
+        if (hk == TK_LIST || hk == TK_TREE || hk == TK_TABLE) { tk_rows_press(ui, hit, x, y); }
+        if (hk == TK_TABS) { tk_tabs_press(ui, hit, x, y); }
         if (ui.node[hit].kind == TK_SLIDER) { tk_slider_to(ui, hit, tk_slider_at(ui, hit, x)); }
         if (ui.node[hit].kind == TK_TEXTFIELD) {
             // the caret where it was pressed; a drag selects from there
@@ -2323,26 +3072,1513 @@ fn tk_surface_hash(s: *ds_surface) -> u32 {
     return h;
 }
 
-// Is every node's device box inside its parent's? 1 if so.
+// Is every node's device box inside its parent's? 1 if so. Not asked of
+// what floats (it is over the window), of a scroll view's content (it is
+// bigger than the view, and clipped to it), and of a tree's rows, which
+// are inside their tree, not each other.
 fn tk_boxes_nest(ui: *tk_ui) -> u32 {
     let k: u32 = 0;
     while (k < ui.used) {
         let n: *tk_node = &ui.node[k];
-        if (n.parent != TK_NONE && tk_shown(ui, k) == 1) {
-            let p: *tk_node = &ui.node[n.parent];
-            if (n.dw > 0 && n.dh > 0) {
-                if (n.dx < p.dx || n.dy < p.dy || n.dx + n.dw > p.dx + p.dw || n.dy + n.dh > p.dy + p.dh) { return 0; }
-            }
+        let q: u32 = n.parent;
+        if (n.kind == TK_ITEM && q != TK_NONE && ui.node[tk_owner(ui, k)].kind == TK_TREE) { q = tk_owner(ui, k); }
+        if (q != TK_NONE && tk_shown(ui, k) == 1 && n.dw > 0 && n.dh > 0 && tk_floats(n.kind) == 0 && ui.node[q].kind != TK_SCROLL) {
+            let p: *tk_node = &ui.node[q];
+            let x0: i32 = n.dx as i32;
+            let y0: i32 = n.dy as i32;
+            let px: i32 = p.dx as i32;
+            let py: i32 = p.dy as i32;
+            if (x0 < px || y0 < py || x0 + (n.dw as i32) > px + (p.dw as i32) || y0 + (n.dh as i32) > py + (p.dh as i32)) { return 0; }
         }
         k = k + 1;
     }
     return 1;
 }
 
-// A node's device box, by id: 0, or E_INVALID_ARGS.
+// A node's device box, by id (its edges signed: read x, y as i32): 0, or E_INVALID_ARGS.
 fn tk_box_of(ui: *tk_ui, id: u32, r: *ds_rect) -> i32 {
     let i: u32 = tk_index(ui, id);
     if (i == TK_NONE) { return E_INVALID_ARGS; }
     ds_rect_set(r, ui.node[i].dx, ui.node[i].dy, ui.node[i].dw, ui.node[i].dh);
     return 0;
+}
+
+// ---- tabs ----
+
+// Page k of tabs t (its k-th child in the flow), or TK_NONE.
+fn tk_tab_page(ui: *tk_ui, t: u32, k: u32) -> u32 {
+    let c: u32 = ui.node[t].first;
+    let n: u32 = 0;
+    while (c != TK_NONE) {
+        if (tk_flows(ui, c) == 1) {
+            if (n == k) { return c; }
+            n = n + 1;
+        }
+        c = ui.node[c].next;
+    }
+    return TK_NONE;
+}
+
+fn tk_tabs_count(ui: *tk_ui, t: u32) -> u32 {
+    let c: u32 = ui.node[t].first;
+    let n: u32 = 0;
+    while (c != TK_NONE) {
+        if (tk_flows(ui, c) == 1) { n = n + 1; }
+        c = ui.node[c].next;
+    }
+    return n;
+}
+
+// Tab k's place in the strip, logical: 1 and [*x0, *x1), or 0.
+fn tk_tab_span(ui: *tk_ui, t: u32, k: u32, x0: *i32, x1: *i32) -> u32 {
+    let x: i32 = ui.node[t].x + TK_RING;
+    let c: u32 = ui.node[t].first;
+    let n: u32 = 0;
+    while (c != TK_NONE) {
+        if (tk_flows(ui, c) == 1) {
+            let w: i32 = tk_text_lw(ui, c) + 2 * TK_TAB_PADX;
+            if (n == k) { *x0 = x; *x1 = x + w; return 1; }
+            x = x + w;
+            n = n + 1;
+        }
+        c = ui.node[c].next;
+    }
+    return 0;
+}
+
+// Show page k. The focus, if it was on the page put away, goes to the tabs.
+fn tk_tabs_pick(ui: *tk_ui, t: u32, k: u32, tell: u32) -> void {
+    if (k >= tk_tabs_count(ui, t) || (ui.node[t].value as u32) == k) { return; }
+    ui.node[t].value = k as i32;
+    tk_damage_node(ui, t);
+    tk_tip_hide(ui);
+    let f: u32 = ui.focus;
+    if (f != TK_NONE && f != t && tk_within(ui, f, t) == 1 && tk_reachable(ui, f) == 0) { tk_focus_set(ui, t); }
+    if (tell == 1) { tk_push(ui, TK_EV_CHANGE, t, k as i32, 0); }
+}
+
+// Left and Right, Home and End, on the focused tabs (Serenity's TabWidget).
+fn tk_tabs_key(ui: *tk_ui, t: u32, code: u32) -> u32 {
+    let n: u32 = tk_tabs_count(ui, t);
+    if (n == 0) { return 0; }
+    let v: u32 = ui.node[t].value as u32;
+    if (code == KC_LEFT) { if (v > 0) { tk_tabs_pick(ui, t, v - 1, 1); } return 1; }
+    if (code == KC_RIGHT) { if (v + 1 < n) { tk_tabs_pick(ui, t, v + 1, 1); } return 1; }
+    if (code == KC_HOME) { tk_tabs_pick(ui, t, 0, 1); return 1; }
+    if (code == KC_END) { tk_tabs_pick(ui, t, n - 1, 1); return 1; }
+    return 0;
+}
+
+// Ctrl+Tab (back 0) and Ctrl+Shift+Tab: the next or the previous page of
+// the tabs the focus is in, wrapping. 1 if there were tabs to turn.
+fn tk_tabs_turn(ui: *tk_ui, back: u32) -> u32 {
+    let t: u32 = ui.focus;
+    while (t != TK_NONE && ui.node[t].kind != TK_TABS) { t = ui.node[t].parent; }
+    if (t == TK_NONE) { return 0; }
+    let n: u32 = tk_tabs_count(ui, t);
+    if (n == 0) { return 0; }
+    let v: u32 = ui.node[t].value as u32;
+    if (back != 0) { v = (v + n - 1) % n; } else { v = (v + 1) % n; }
+    tk_tabs_pick(ui, t, v, 1);
+    return 1;
+}
+
+// A press on the strip chooses the tab under it.
+fn tk_tabs_press(ui: *tk_ui, t: u32, x: i32, y: i32) -> void {
+    let n: *tk_node = &ui.node[t];
+    if (y >= (tk_dev(ui, n.y + TK_TAB_H) as i32)) { return; }
+    let k: u32 = 0;
+    let x0: i32 = 0;
+    let x1: i32 = 0;
+    while (tk_tab_span(ui, t, k, &x0, &x1) == 1) {
+        if (x >= (tk_dev(ui, x0) as i32) && x < (tk_dev(ui, x1) as i32)) { tk_tabs_pick(ui, t, k, 1); return; }
+        k = k + 1;
+    }
+}
+
+fn tk_draw_tabs(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
+    let n: *tk_node = &ui.node[i];
+    let sb: i32 = tk_dev(ui, n.y + TK_TAB_H) as i32;
+    let line: i32 = tk_len(ui, 1);
+    tk_box(ui, c, n.dx as i32, sb - line, n.dw as i32, line, ui.theme.border);
+    let top: i32 = tk_dev(ui, n.y + TK_RING) as i32;
+    let chh: i32 = tk_char_h(ui) as i32;
+    let k: u32 = 0;
+    let x0: i32 = 0;
+    let x1: i32 = 0;
+    while (tk_tab_span(ui, i, k, &x0, &x1) == 1) {
+        let p: u32 = tk_tab_page(ui, i, k);
+        let tx: i32 = tk_dev(ui, x0) as i32;
+        let tw: i32 = (tk_dev(ui, x1) as i32) - tx;
+        let fg: u32 = ui.theme.muted;
+        if ((ui.node[p].flags & TK_F_DISABLED) != 0) { fg = ui.theme.off_text; }
+        if ((n.value as u32) == k) {
+            tk_box(ui, c, tx, top, tw, sb - line - top, ui.theme.raised);
+            tk_box(ui, c, tx, sb - tk_len(ui, 2), tw, tk_len(ui, 2), ui.theme.accent);
+            fg = ui.theme.text;
+            if (tk_on(n, TK_F_FOCUS) == 1 || tk_on(n, TK_F_SHOW_RING) == 1) {
+                tk_shape(ui, c, tx, top, tw, sb - top, tk_len(ui, TK_RADIUS), tk_len(ui, TK_RING_T), ui.theme.ring);
+            }
+        }
+        tk_text(ui, c, tx + tk_len(ui, TK_TAB_PADX), top + (sb - top - chh) / 2, tk_text_of(ui, p), fg, 0);
+        k = k + 1;
+    }
+}
+
+// ---- scroll views ----
+
+// Device pixels to logical units (a pointer's place), rounded down.
+fn tk_lpos(ui: *tk_ui, d: i32) -> i32 {
+    if (d < 0) { return 0 - ((0 - d) * 4 / (ui.scale as i32)); }
+    return d * 4 / (ui.scale as i32);
+}
+
+// A scroll view's view, in device pixels.
+fn tk_scroll_view_dev(ui: *tk_ui, i: u32, vx: *i32, vy: *i32, vw: *i32, vh: *i32) -> void {
+    let w: i32 = 0; let h: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+    let vb: u32 = 0; let hb: u32 = 0;
+    tk_scroll_geom(ui, i, &w, &h, &cw, &ch, &vb, &hb);
+    let n: *tk_node = &ui.node[i];
+    *vx = tk_dev(ui, n.x) as i32;
+    *vy = tk_dev(ui, n.y) as i32;
+    *vw = (tk_dev(ui, n.x + w) as i32) - *vx;
+    *vh = (tk_dev(ui, n.y + h) as i32) - *vy;
+}
+
+// Is (x, y) in scroll view i's view (not on a bar)? 1 if so.
+fn tk_scroll_in_view(ui: *tk_ui, i: u32, x: i32, y: i32) -> u32 {
+    let vx: i32 = 0; let vy: i32 = 0; let vw: i32 = 0; let vh: i32 = 0;
+    tk_scroll_view_dev(ui, i, &vx, &vy, &vw, &vh);
+    if (x < vx || y < vy || x >= vx + vw || y >= vy + vh) { return 0; }
+    return 1;
+}
+
+// Scroll i to (sx, sy), logical, kept inside its content: 1 if it moved.
+fn tk_scroll_to(ui: *tk_ui, i: u32, sx: i32, sy: i32) -> u32 {
+    let vw: i32 = 0; let vh: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+    let vb: u32 = 0; let hb: u32 = 0;
+    tk_scroll_geom(ui, i, &vw, &vh, &cw, &ch, &vb, &hb);
+    sx = tk_imax(tk_imin(sx, cw - vw), 0);
+    sy = tk_imax(tk_imin(sy, ch - vh), 0);
+    let n: *tk_node = &ui.node[i];
+    if (sx == n.sx && sy == n.sy) { return 0; }
+    n.sx = sx;
+    n.sy = sy;
+    tk_tip_hide(ui);
+    if (ui.relayout == 0) { tk_scroll_place(ui, i); tk_damage_node(ui, i); }
+    return 1;
+}
+
+// The arrows a line, Page Up and Page Down a view less a line, Home and End
+// to the top and the bottom.
+fn tk_scroll_key(ui: *tk_ui, i: u32, code: u32) -> u32 {
+    let vw: i32 = 0; let vh: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+    let vb: u32 = 0; let hb: u32 = 0;
+    tk_scroll_geom(ui, i, &vw, &vh, &cw, &ch, &vb, &hb);
+    let page: i32 = tk_imax(vh - TK_LINE, TK_LINE);
+    let x: i32 = ui.node[i].sx;
+    let y: i32 = ui.node[i].sy;
+    if (code == KC_UP) { y = y - TK_LINE; }
+    else if (code == KC_DOWN) { y = y + TK_LINE; }
+    else if (code == KC_LEFT) { x = x - TK_LINE; }
+    else if (code == KC_RIGHT) { x = x + TK_LINE; }
+    else if (code == KC_PGUP) { y = y - page; }
+    else if (code == KC_PGDN) { y = y + page; }
+    else if (code == KC_HOME) { y = 0; }
+    else if (code == KC_END) { y = ch; }
+    else { return 0; }
+    tk_scroll_to(ui, i, x, y);
+    return 1;
+}
+
+// A bar's track, device pixels (v 1: the vertical one): 1, or 0 if there is no such bar.
+fn tk_bar_track(ui: *tk_ui, i: u32, v: u32, x: *i32, y: *i32, w: *i32, h: *i32) -> u32 {
+    let vw: i32 = 0; let vh: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+    let vb: u32 = 0; let hb: u32 = 0;
+    tk_scroll_geom(ui, i, &vw, &vh, &cw, &ch, &vb, &hb);
+    let n: *tk_node = &ui.node[i];
+    if (v == 1) {
+        if (vb == 0) { return 0; }
+        *x = tk_dev(ui, n.x + vw) as i32;
+        *w = (tk_dev(ui, n.x + n.w) as i32) - *x;
+        *y = tk_dev(ui, n.y) as i32;
+        *h = (tk_dev(ui, n.y + vh) as i32) - *y;
+        return 1;
+    }
+    if (hb == 0) { return 0; }
+    *x = tk_dev(ui, n.x) as i32;
+    *w = (tk_dev(ui, n.x + vw) as i32) - *x;
+    *y = tk_dev(ui, n.y + vh) as i32;
+    *h = (tk_dev(ui, n.y + n.h) as i32) - *y;
+    return 1;
+}
+
+// A bar's thumb: its start along the track and its length, device pixels.
+// Its length is the view's share of the content, never under TK_THUMB_MIN.
+fn tk_bar_thumb(ui: *tk_ui, i: u32, v: u32, at: *i32, len: *i32) -> void {
+    let vw: i32 = 0; let vh: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+    let vb: u32 = 0; let hb: u32 = 0;
+    tk_scroll_geom(ui, i, &vw, &vh, &cw, &ch, &vb, &hb);
+    let x: i32 = 0; let y: i32 = 0; let w: i32 = 0; let h: i32 = 0;
+    *at = 0; *len = 0;
+    if (tk_bar_track(ui, i, v, &x, &y, &w, &h) == 0) { return; }
+    let tl: i32 = w;
+    let view: i32 = vw;
+    let content: i32 = cw;
+    let off: i32 = ui.node[i].sx;
+    if (v == 1) { tl = h; view = vh; content = ch; off = ui.node[i].sy; }
+    let l: i32 = tl;
+    if (content > 0) { l = (tl * view) / content; }
+    l = tk_imin(tk_imax(l, tk_imin(tk_len(ui, TK_THUMB_MIN), tl)), tl);
+    *len = l;
+    if (content > view) { *at = ((tl - l) * off) / (content - view); }
+}
+
+fn tk_draw_scroll(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
+    let n: *tk_node = &ui.node[i];
+    let m: i32 = tk_len(ui, 2);
+    let v: u32 = 0;
+    let both: u32 = 0;
+    while (v < 2) {
+        let x: i32 = 0; let y: i32 = 0; let w: i32 = 0; let h: i32 = 0;
+        if (tk_bar_track(ui, i, v, &x, &y, &w, &h) == 1) {
+            both = both + 1;
+            tk_box(ui, c, x, y, w, h, ui.theme.surface);
+            let at: i32 = 0;
+            let len: i32 = 0;
+            tk_bar_thumb(ui, i, v, &at, &len);
+            let col: u32 = ui.theme.border;
+            if (ui.drag == i && ui.drag_v == v) { col = ui.theme.muted; }
+            if (v == 1) { tk_shape(ui, c, x + m, y + at, w - 2 * m, len, (w - 2 * m) / 2, 0, col); }
+            else { tk_shape(ui, c, x + at, y + m, len, h - 2 * m, (h - 2 * m) / 2, 0, col); }
+        }
+        v = v + 1;
+    }
+    if (both == 2) {
+        // the corner the two bars leave
+        let vx: i32 = 0; let vy: i32 = 0; let vw: i32 = 0; let vh: i32 = 0;
+        tk_scroll_view_dev(ui, i, &vx, &vy, &vw, &vh);
+        tk_box(ui, c, vx + vw, vy + vh, (n.dx as i32) + (n.dw as i32) - vx - vw, (n.dy as i32) + (n.dh as i32) - vy - vh, ui.theme.surface);
+    }
+    if (tk_on(n, TK_F_FOCUS) == 1 || tk_on(n, TK_F_SHOW_RING) == 1) {
+        tk_shape(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, 0, tk_len(ui, TK_RING_T), ui.theme.ring);
+    }
+}
+
+// A press on a bar: on the thumb, it is held (and dragged); on the track,
+// the view moves a page toward the press.
+fn tk_scroll_bar_press(ui: *tk_ui, i: u32, x: i32, y: i32) -> void {
+    let v: u32 = 0;
+    while (v < 2) {
+        let tx: i32 = 0; let ty: i32 = 0; let tw: i32 = 0; let th: i32 = 0;
+        if (tk_bar_track(ui, i, v, &tx, &ty, &tw, &th) == 1 && x >= tx && y >= ty && x < tx + tw && y < ty + th) {
+            let at: i32 = 0;
+            let len: i32 = 0;
+            tk_bar_thumb(ui, i, v, &at, &len);
+            let p: i32 = x - tx;
+            if (v == 1) { p = y - ty; }
+            if (p >= at && p < at + len) {
+                ui.drag = i;
+                ui.drag_v = v;
+                ui.drag_at = p - at;
+                tk_damage_node(ui, i);
+                return;
+            }
+            let vw: i32 = 0; let vh: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+            let vb: u32 = 0; let hb: u32 = 0;
+            tk_scroll_geom(ui, i, &vw, &vh, &cw, &ch, &vb, &hb);
+            let n: *tk_node = &ui.node[i];
+            if (v == 1) {
+                let page: i32 = tk_imax(vh - TK_LINE, TK_LINE);
+                if (p < at) { page = 0 - page; }
+                tk_scroll_to(ui, i, n.sx, n.sy + page);
+            } else {
+                let page: i32 = tk_imax(vw - TK_LINE, TK_LINE);
+                if (p < at) { page = 0 - page; }
+                tk_scroll_to(ui, i, n.sx + page, n.sy);
+            }
+            return;
+        }
+        v = v + 1;
+    }
+}
+
+// The held thumb follows the pointer.
+fn tk_scroll_drag(ui: *tk_ui, x: i32, y: i32) -> void {
+    let i: u32 = ui.drag;
+    let v: u32 = ui.drag_v;
+    let tx: i32 = 0; let ty: i32 = 0; let tw: i32 = 0; let th: i32 = 0;
+    if (tk_bar_track(ui, i, v, &tx, &ty, &tw, &th) == 0) { return; }
+    let at: i32 = 0;
+    let len: i32 = 0;
+    tk_bar_thumb(ui, i, v, &at, &len);
+    let vw: i32 = 0; let vh: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+    let vb: u32 = 0; let hb: u32 = 0;
+    tk_scroll_geom(ui, i, &vw, &vh, &cw, &ch, &vb, &hb);
+    let p: i32 = x - tx - ui.drag_at;
+    let room: i32 = tw - len;
+    let span: i32 = cw - vw;
+    if (v == 1) { p = y - ty - ui.drag_at; room = th - len; span = ch - vh; }
+    if (room <= 0) { return; }
+    let off: i32 = (p * span + room / 2) / room;
+    if (p < 0) { off = 0; }
+    if (v == 1) { tk_scroll_to(ui, i, ui.node[i].sx, off); }
+    else { tk_scroll_to(ui, i, off, ui.node[i].sy); }
+}
+
+// Bring what tk_focus_set or a choice marked into sight in every scroll
+// view it is in, the innermost first; the least move that shows it, its
+// top and left first when it is bigger than the view (Serenity's
+// AbstractView::scroll_into_view).
+fn tk_reveal_now(ui: *tk_ui) -> void {
+    let i: u32 = ui.reveal;
+    ui.reveal = TK_NONE;
+    if (i == TK_NONE || i >= ui.used || tk_shown(ui, i) == 0) { return; }
+    let s: u32 = ui.node[i].parent;
+    while (s != TK_NONE) {
+        if (ui.node[s].kind == TK_SCROLL) {
+            let vw: i32 = 0; let vh: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+            let vb: u32 = 0; let hb: u32 = 0;
+            tk_scroll_geom(ui, s, &vw, &vh, &cw, &ch, &vb, &hb);
+            let n: *tk_node = &ui.node[i];
+            let sn: *tk_node = &ui.node[s];
+            // its box in the content's units
+            let top: i32 = n.y - sn.y + sn.sy;
+            let left: i32 = n.x - sn.x + sn.sx;
+            let ny: i32 = sn.sy;
+            let nx: i32 = sn.sx;
+            if (top + n.h > ny + vh) { ny = top + n.h - vh; }
+            if (top < ny) { ny = top; }
+            if (left + n.w > nx + vw) { nx = left + n.w - vw; }
+            if (left < nx) { nx = left; }
+            tk_scroll_to(ui, s, nx, ny);
+        }
+        s = ui.node[s].parent;
+    }
+}
+
+// Scroll a scroll view by (dx, dy) logical units: 0, or E_INVALID_ARGS.
+fn tk_scroll_by(ui: *tk_ui, id: u32, dx: i32, dy: i32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].kind != TK_SCROLL) { return E_INVALID_ARGS; }
+    if (ui.relayout == 1) { tk_layout(ui); tk_damage_all(ui); }
+    tk_scroll_to(ui, i, ui.node[i].sx + dx, ui.node[i].sy + dy);
+    return 0;
+}
+
+// How far a scroll view is scrolled, logical: 0, or E_INVALID_ARGS.
+fn tk_scroll_pos(ui: *tk_ui, id: u32, x: *i32, y: *i32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].kind != TK_SCROLL) { return E_INVALID_ARGS; }
+    *x = ui.node[i].sx;
+    *y = ui.node[i].sy;
+    return 0;
+}
+
+// ---- lists, trees and tables ----
+
+// May row r of w be chosen? A table's header, and a disabled row, cannot.
+fn tk_row_choosable(ui: *tk_ui, w: u32, r: u32) -> u32 {
+    if (r == TK_NONE || (ui.node[r].flags & TK_F_DISABLED) != 0) { return 0; }
+    if (ui.node[w].kind == TK_TABLE && r == tk_rows_first(ui, w)) { return 0; }
+    return 1;
+}
+
+// Choose row r of w (TK_NONE: none), brought into sight; with tell, the
+// app hears of it: TK_EV_CHANGE, value the row's place, code its id.
+fn tk_rows_pick(ui: *tk_ui, w: u32, r: u32, tell: u32) -> void {
+    let old: u32 = ui.node[w].sel;
+    if (r == old) { return; }
+    if (old != TK_NONE) { tk_damage_node(ui, old); }
+    ui.node[w].sel = r;
+    let k: u32 = TK_NONE;
+    if (r != TK_NONE) {
+        tk_damage_node(ui, r);
+        ui.reveal = r;
+        k = tk_row_index(ui, w, r);
+    }
+    if (tell == 1) { tk_push(ui, TK_EV_CHANGE, w, k as i32, tk_id(ui, r)); }
+}
+
+// The row a move of delta rows from the chosen one lands on, stopping at
+// the ends and stepping past rows that cannot be chosen; with none chosen,
+// the first (down) or the last (up).
+fn tk_rows_move(ui: *tk_ui, w: u32, delta: i32) -> u32 {
+    let n: i32 = tk_rows_count(ui, w) as i32;
+    if (n == 0) { return TK_NONE; }
+    let cur: i32 = -1;
+    let s: u32 = ui.node[w].sel;
+    if (s != TK_NONE) {
+        let at: u32 = tk_row_index(ui, w, s);
+        if (at != TK_NONE) { cur = at as i32; }
+    }
+    let to: i32 = cur + delta;
+    if (cur < 0) {
+        if (delta > 0) { to = 0; } else { to = n - 1; }
+    }
+    // Home and End (a move past every row) are the ends, chosen or not
+    if (delta <= 0 - n) { to = 0; }
+    if (delta >= n) { to = n - 1; }
+    to = tk_imax(tk_imin(to, n - 1), 0);
+    let dir: i32 = 1;
+    if (delta < 0) { dir = -1; }
+    let k: i32 = to;
+    while (k >= 0 && k < n) {
+        let r: u32 = tk_row_at(ui, w, k as u32);
+        if (tk_row_choosable(ui, w, r) == 1) { return r; }
+        k = k + dir;
+    }
+    k = to - dir;
+    while (k >= 0 && k < n) {
+        let r: u32 = tk_row_at(ui, w, k as u32);
+        if (tk_row_choosable(ui, w, r) == 1) { return r; }
+        k = k - dir;
+    }
+    return TK_NONE;
+}
+
+// Rows a page holds: the nearest scroll view's view, less one; else all.
+fn tk_rows_page(ui: *tk_ui, w: u32) -> i32 {
+    let s: u32 = ui.node[w].parent;
+    while (s != TK_NONE && ui.node[s].kind != TK_SCROLL) { s = ui.node[s].parent; }
+    if (s == TK_NONE) { return tk_imax(tk_rows_count(ui, w) as i32, 1); }
+    let vw: i32 = 0; let vh: i32 = 0; let cw: i32 = 0; let ch: i32 = 0;
+    let vb: u32 = 0; let hb: u32 = 0;
+    tk_scroll_geom(ui, s, &vw, &vh, &cw, &ch, &vb, &hb);
+    return tk_imax(vh / TK_ROW_H - 1, 1);
+}
+
+// Open (1) or close a tree's item; the app hears TK_EV_EXPAND. A chosen
+// row closed out of sight leaves the choice on the item closed.
+fn tk_tree_open(ui: *tk_ui, w: u32, r: u32, open: u32) -> void {
+    let was: u32 = 0;
+    if ((ui.node[r].flags & TK_F_OPEN) != 0) { was = 1; }
+    if (was == open) { return; }
+    if (open == 1) { ui.node[r].flags = ui.node[r].flags | TK_F_OPEN; }
+    else { ui.node[r].flags = ui.node[r].flags & ~TK_F_OPEN; }
+    let s: u32 = ui.node[w].sel;
+    if (open == 0 && s != TK_NONE && s != r && tk_within(ui, s, r) == 1) { tk_rows_pick(ui, w, r, 1); }
+    ui.relayout = 1;
+    tk_push(ui, TK_EV_EXPAND, w, open as i32, tk_id(ui, r));
+}
+
+// Up, Down, Page Up, Page Down, Home and End choose; Enter activates the
+// choice (TK_EV_ACTIVATE, value its place, code its id). On a tree (as
+// Serenity's TreeView): Left closes an open item or goes to its parent,
+// Right opens a closed one or goes to its first child, Enter and Space
+// open or close.
+fn tk_rows_key(ui: *tk_ui, w: u32, code: u32) -> u32 {
+    let n: *tk_node = &ui.node[w];
+    let count: i32 = tk_rows_count(ui, w) as i32;
+    let r: u32 = TK_NONE;
+    let s: u32 = n.sel;
+    if (code == KC_UP) { r = tk_rows_move(ui, w, -1); }
+    else if (code == KC_DOWN) { r = tk_rows_move(ui, w, 1); }
+    else if (code == KC_HOME) { r = tk_rows_move(ui, w, 0 - count - 1); }
+    else if (code == KC_END) { r = tk_rows_move(ui, w, count + 1); }
+    else if (code == KC_PGUP) { r = tk_rows_move(ui, w, 0 - tk_rows_page(ui, w)); }
+    else if (code == KC_PGDN) { r = tk_rows_move(ui, w, tk_rows_page(ui, w)); }
+    else if (n.kind == TK_TREE && s != TK_NONE && (code == KC_LEFT || code == KC_RIGHT || code == KC_ENTER || code == KC_KP_ENTER || code == KC_SPACE)) {
+        let kids: u32 = 0;
+        if (tk_rows_first(ui, s) != TK_NONE) { kids = 1; }
+        let open: u32 = 0;
+        if ((ui.node[s].flags & TK_F_OPEN) != 0) { open = 1; }
+        if (code == KC_LEFT) {
+            if (kids == 1 && open == 1) { tk_tree_open(ui, w, s, 0); }
+            else if (ui.node[s].parent != w) { tk_rows_pick(ui, w, ui.node[s].parent, 1); }
+        } else if (code == KC_RIGHT) {
+            if (kids == 1 && open == 0) { tk_tree_open(ui, w, s, 1); }
+            else if (kids == 1) { tk_rows_pick(ui, w, tk_rows_first(ui, s), 1); }
+        } else if (kids == 1) {
+            tk_tree_open(ui, w, s, 1 - open);
+        }
+        return 1;
+    }
+    else if ((code == KC_ENTER || code == KC_KP_ENTER) && s != TK_NONE) {
+        tk_push(ui, TK_EV_ACTIVATE, w, tk_row_index(ui, w, s) as i32, tk_id(ui, s));
+        return 1;
+    }
+    else { return 0; }
+    if (r != TK_NONE) { tk_rows_pick(ui, w, r, 1); }
+    return 1;
+}
+
+// A press on a row chooses it; on a tree item's disclosure, opens or closes it too.
+fn tk_rows_press(ui: *tk_ui, w: u32, x: i32, y: i32) -> void {
+    let r: u32 = tk_rows_first(ui, w);
+    while (r != TK_NONE) {
+        let rn: *tk_node = &ui.node[r];
+        let top: i32 = rn.dy as i32;
+        if (y >= top && y < top + (rn.dh as i32)) {
+            if (ui.node[w].kind == TK_TREE && tk_rows_first(ui, r) != TK_NONE) {
+                let ax: i32 = tk_dev(ui, ui.node[w].x + (rn.depth as i32) * TK_INDENT) as i32;
+                let bx: i32 = tk_dev(ui, ui.node[w].x + ((rn.depth + 1) as i32) * TK_INDENT) as i32;
+                if (x >= ax && x < bx) {
+                    let open: u32 = 0;
+                    if ((rn.flags & TK_F_OPEN) != 0) { open = 1; }
+                    tk_tree_open(ui, w, r, 1 - open);
+                }
+            }
+            if (tk_row_choosable(ui, w, r) == 1) { tk_rows_pick(ui, w, r, 1); }
+            return;
+        }
+        r = tk_rows_next(ui, w, r);
+    }
+}
+
+// A tree item's disclosure: a chevron, > closed or v open, round (cx, cy).
+fn tk_draw_chevron(ui: *tk_ui, c: *ds_rect, cx: i32, cy: i32, open: u32, argb: u32) -> void {
+    let s: i32 = tk_len(ui, 3) * 8;
+    let t: i32 = ((ui.scale as i32) * 12) / 4;
+    let x: i32 = cx * 8;
+    let y: i32 = cy * 8;
+    if (open == 1) {
+        tk_seg(ui, c, x - s, y - s / 2, x, y + s / 2, t, argb);
+        tk_seg(ui, c, x, y + s / 2, x + s, y - s / 2, t, argb);
+    } else {
+        tk_seg(ui, c, x - s / 2, y - s, x + s / 2, y, t, argb);
+        tk_seg(ui, c, x + s / 2, y, x - s / 2, y + s, t, argb);
+    }
+}
+
+fn tk_draw_rows(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
+    let n: *tk_node = &ui.node[i];
+    tk_box(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, ui.theme.raised);
+    let chh: i32 = tk_char_h(ui) as i32;
+    let focused: u32 = tk_on(n, TK_F_FOCUS);
+    let head: u32 = TK_NONE;
+    if (n.kind == TK_TABLE) { head = tk_rows_first(ui, i); }
+    let r: u32 = tk_rows_first(ui, i);
+    while (r != TK_NONE) {
+        let rn: *tk_node = &ui.node[r];
+        let ry: i32 = rn.dy as i32;
+        let rh: i32 = rn.dh as i32;
+        if (ry < (c.y + c.h) as i32 && ry + rh > (c.y as i32)) {
+            let fg: u32 = tk_text_colour(ui, rn);
+            let bold: u32 = 0;
+            if (r == head) {
+                tk_box(ui, c, rn.dx as i32, ry, rn.dw as i32, rh, ui.theme.off_bg);
+                tk_box(ui, c, rn.dx as i32, ry + rh - tk_len(ui, 1), rn.dw as i32, tk_len(ui, 1), ui.theme.border);
+                bold = 1;
+            } else if (r == n.sel) {
+                let bg: u32 = ui.theme.pressed;
+                if (focused == 1) { bg = ui.theme.accent; fg = ui.theme.on_accent; }
+                tk_box(ui, c, rn.dx as i32, ry, rn.dw as i32, rh, bg);
+            }
+            let ty: i32 = ry + (rh - chh) / 2;
+            let rc: ds_rect;
+            if (n.kind == TK_TABLE) {
+                let cc: u32 = rn.first;
+                while (cc != TK_NONE) {
+                    let cb: ds_rect;
+                    if (tk_dbox(ui, cc, &cb) == 1 && ds_rect_and(&rc, &cb, c) == 1) {
+                        tk_text(ui, &rc, (ui.node[cc].dx as i32) + tk_len(ui, TK_ROW_PADX), ty, tk_text_of(ui, cc), fg, bold);
+                    }
+                    cc = ui.node[cc].next;
+                }
+            } else {
+                let tx: i32 = (rn.dx as i32) + tk_len(ui, TK_ROW_PADX);
+                if (n.kind == TK_TREE) {
+                    let ax: i32 = tk_dev(ui, n.x + (rn.depth as i32) * TK_INDENT) as i32;
+                    let bx: i32 = tk_dev(ui, n.x + ((rn.depth + 1) as i32) * TK_INDENT) as i32;
+                    if (tk_rows_first(ui, r) != TK_NONE) {
+                        let open: u32 = 0;
+                        if ((rn.flags & TK_F_OPEN) != 0) { open = 1; }
+                        tk_draw_chevron(ui, c, (ax + bx) / 2, ry + rh / 2, open, fg);
+                    }
+                    tx = bx + tk_len(ui, TK_ROW_PADX);
+                }
+                let rb: ds_rect;
+                if (tk_dbox(ui, r, &rb) == 1 && ds_rect_and(&rc, &rb, c) == 1) {
+                    tk_text(ui, &rc, tx, ty, tk_text_of(ui, r), fg, 0);
+                }
+            }
+        }
+        r = tk_rows_next(ui, i, r);
+    }
+    let edge: u32 = ui.theme.border;
+    let t: i32 = tk_len(ui, 1);
+    if (focused == 1 || tk_on(n, TK_F_SHOW_RING) == 1) { edge = ui.theme.ring; t = tk_len(ui, TK_RING_T); }
+    tk_shape(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, 0, t, edge);
+}
+
+// Choose an item of a list, tree or table (0: none), or show a page of
+// tabs (its id), brought into sight; the app hears nothing of its own
+// choice. 0, or E_INVALID_ARGS (not one of its rows shown, or the header).
+fn tk_select(ui: *tk_ui, id: u32, item: u32) -> i32 {
+    let w: u32 = tk_index(ui, id);
+    if (w == TK_NONE) { return E_INVALID_ARGS; }
+    let k: u32 = ui.node[w].kind;
+    let r: u32 = TK_NONE;
+    if (item != 0) {
+        r = tk_index(ui, item);
+        if (r == TK_NONE) { return E_INVALID_ARGS; }
+    }
+    if (k == TK_TABS) {
+        if (r == TK_NONE || ui.node[r].parent != w || tk_flows(ui, r) == 0) { return E_INVALID_ARGS; }
+        let at: u32 = 0;
+        while (tk_tab_page(ui, w, at) != r) { at = at + 1; }
+        tk_tabs_pick(ui, w, at, 0);
+        return 0;
+    }
+    if (k != TK_LIST && k != TK_TREE && k != TK_TABLE) { return E_INVALID_ARGS; }
+    if (r != TK_NONE && (tk_row_index(ui, w, r) == TK_NONE || tk_row_choosable(ui, w, r) == 0)) { return E_INVALID_ARGS; }
+    tk_rows_pick(ui, w, r, 0);
+    return 0;
+}
+
+// What is chosen: a list's, tree's or table's item, or the page tabs
+// show, by id; 0 for none.
+fn tk_selected(ui: *tk_ui, id: u32) -> u32 {
+    let w: u32 = tk_index(ui, id);
+    if (w == TK_NONE) { return 0; }
+    if (ui.node[w].kind == TK_TABS) { return tk_id(ui, tk_tab_page(ui, w, ui.node[w].value as u32)); }
+    let k: u32 = ui.node[w].kind;
+    if (k != TK_LIST && k != TK_TREE && k != TK_TABLE) { return 0; }
+    return tk_id(ui, ui.node[w].sel);
+}
+
+// ---- menus: a bar's, and context menus ----
+
+// May item it be chosen (or lit)? Shown, not a separator, not disabled.
+fn tk_menu_can(ui: *tk_ui, it: u32) -> u32 {
+    if (it == TK_NONE || tk_shown(ui, it) == 0) { return 0; }
+    let n: *tk_node = &ui.node[it];
+    if (n.text == TK_NONE || (n.flags & TK_F_DISABLED) != 0) { return 0; }
+    return 1;
+}
+
+// The item of menu m after `from` (back: before it) that may be lit,
+// wrapping; from TK_NONE, the first (back: the last).
+fn tk_menu_step(ui: *tk_ui, m: u32, from: u32, back: u32) -> u32 {
+    let first: u32 = TK_NONE;
+    let last: u32 = TK_NONE;
+    let before: u32 = TK_NONE;
+    let after: u32 = TK_NONE;
+    let seen: u32 = 0;
+    let it: u32 = ui.node[m].first;
+    while (it != TK_NONE) {
+        if (it == from) { seen = 1; }
+        else if (tk_menu_can(ui, it) == 1) {
+            if (first == TK_NONE) { first = it; }
+            last = it;
+            if (seen == 0) { before = it; }
+            if (seen == 1 && after == TK_NONE) { after = it; }
+        }
+        it = ui.node[it].next;
+    }
+    let to: u32 = first;
+    if (back == 0 && after != TK_NONE) { to = after; }
+    if (back == 1) {
+        to = last;
+        if (from != TK_NONE && before != TK_NONE) { to = before; }
+    }
+    if (to == TK_NONE) { return from; }
+    return to;
+}
+
+// Put what is open where it goes, kept on the canvas: a dialog in the
+// middle; a menu at its point (sx, sy), moved left to fit, and above the
+// point when there is no room below; its items one under the other.
+fn tk_pop_place(ui: *tk_ui, p: u32) -> void {
+    tk_measure(ui, p);
+    let n: *tk_node = &ui.node[p];
+    let w: i32 = tk_imin(n.pw, ui.lw);
+    let h: i32 = tk_imin(n.ph, ui.lh);
+    if (n.kind == TK_DIALOG) {
+        tk_arrange(ui, p, (ui.lw - w) / 2, (ui.lh - h) / 2, w, h);
+        return;
+    }
+    let x: i32 = n.sx;
+    let y: i32 = n.sy;
+    if (x + w > ui.lw) { x = ui.lw - w; }
+    if (y + h > ui.lh) {
+        y = n.sy - h;
+        if (ui.bar != TK_NONE && ui.node[p].parent == ui.bar) { y = ui.node[ui.bar].y - h; }
+    }
+    x = tk_imax(x, 0);
+    y = tk_imax(y, 0);
+    tk_place(ui, p, x, y, w, h);
+    let iy: i32 = y + TK_POP_PAD;
+    let it: u32 = n.first;
+    while (it != TK_NONE) {
+        if (tk_shown(ui, it) == 1) {
+            let ih: i32 = TK_ROW_H;
+            if (ui.node[it].text == TK_NONE) { ih = TK_SEP_H; }
+            tk_place(ui, it, x + TK_POP_PAD, iy, tk_imax(w - 2 * TK_POP_PAD, 0), ih);
+            iy = iy + ih;
+        } else {
+            tk_place(ui, it, x, y, 0, 0);
+        }
+        it = ui.node[it].next;
+    }
+}
+
+// Open menu m at (x, y), logical; bar is the menu bar it is from, or
+// TK_NONE. Opened by a key (key 1), its first item is lit.
+fn tk_menu_open(ui: *tk_ui, m: u32, x: i32, y: i32, bar: u32, key: u32) -> void {
+    if (m == TK_NONE || ui.node[m].kind != TK_MENU || tk_is_open(ui, m) == 1) { return; }
+    if (ui.pop_n >= TK_POPS_MAX) { return; }
+    tk_tip_hide(ui);
+    ui.tip_for = TK_NONE;
+    let n: *tk_node = &ui.node[m];
+    n.sx = x;
+    n.sy = y;
+    n.sel = TK_NONE;
+    ui.pop[ui.pop_n] = m;
+    ui.pop_focus[ui.pop_n] = ui.focus;
+    ui.pop_n = ui.pop_n + 1;
+    ui.bar = bar;
+    ui.menu_armed = 0;
+    tk_pop_place(ui, m);
+    if (key == 1) {
+        let s: u32 = tk_menu_step(ui, m, TK_NONE, 0);
+        ui.node[m].sel = s;
+    }
+    tk_damage_node(ui, m);
+    if (bar != TK_NONE) { tk_damage_node(ui, bar); }
+}
+
+// Take what is open on top away; a dialog gives the focus back to what had it.
+fn tk_pop_remove(ui: *tk_ui) -> void {
+    if (ui.pop_n == 0) { return; }
+    ui.pop_n = ui.pop_n - 1;
+    let p: u32 = ui.pop[ui.pop_n];
+    if (ui.node[p].kind == TK_DIALOG) {
+        tk_damage_all(ui);
+        let f: u32 = ui.pop_focus[ui.pop_n];
+        if (f != TK_NONE && tk_focusable(ui, f) == 1) { tk_focus_set(ui, f); }
+        else if (ui.focus != TK_NONE && tk_within(ui, ui.focus, p) == 1) { tk_focus_set(ui, TK_NONE); }
+        return;
+    }
+    tk_damage_node(ui, p);
+    if (ui.bar != TK_NONE) { tk_damage_node(ui, ui.bar); }
+}
+
+// Close every menu open on top.
+fn tk_menu_close_all(ui: *tk_ui) -> void {
+    while (ui.pop_n > 0 && ui.node[ui.pop[ui.pop_n - 1]].kind == TK_MENU) { tk_pop_remove(ui); }
+    ui.bar = TK_NONE;
+    ui.menu_armed = 0;
+}
+
+// Choose item it: the menus close, and its command runs (or the app hears
+// TK_EV_ACTIVATE, id the item).
+fn tk_menu_choose(ui: *tk_ui, it: u32) -> void {
+    let cmd: u32 = ui.node[it].cmd;
+    tk_menu_close_all(ui);
+    if (cmd != 0) { tk_run(ui, cmd, it); return; }
+    tk_push(ui, TK_EV_ACTIVATE, it, 0, 0);
+}
+
+// Menu m's title in bar b, logical: [*x0, *x1).
+fn tk_bar_span(ui: *tk_ui, b: u32, m: u32, x0: *i32, x1: *i32) -> void {
+    let x: i32 = ui.node[b].x;
+    let c: u32 = ui.node[b].first;
+    *x0 = x; *x1 = x;
+    while (c != TK_NONE) {
+        if (tk_shown(ui, c) == 1) {
+            let w: i32 = tk_text_lw(ui, c) + 2 * TK_TAB_PADX;
+            if (c == m) { *x0 = x; *x1 = x + w; return; }
+            x = x + w;
+        }
+        c = ui.node[c].next;
+    }
+}
+
+// The menu of bar b after m (back: before it) that may open, wrapping;
+// from TK_NONE, the first.
+fn tk_bar_step(ui: *tk_ui, b: u32, m: u32, back: u32) -> u32 {
+    let first: u32 = TK_NONE;
+    let last: u32 = TK_NONE;
+    let before: u32 = TK_NONE;
+    let after: u32 = TK_NONE;
+    let seen: u32 = 0;
+    let c: u32 = ui.node[b].first;
+    while (c != TK_NONE) {
+        if (c == m) { seen = 1; }
+        else if (tk_shown(ui, c) == 1 && (ui.node[c].flags & TK_F_DISABLED) == 0) {
+            if (first == TK_NONE) { first = c; }
+            last = c;
+            if (seen == 0) { before = c; }
+            if (seen == 1 && after == TK_NONE) { after = c; }
+        }
+        c = ui.node[c].next;
+    }
+    let to: u32 = first;
+    if (back == 0 && after != TK_NONE) { to = after; }
+    if (back == 1) {
+        to = last;
+        if (m != TK_NONE && before != TK_NONE) { to = before; }
+    }
+    if (to == TK_NONE) { return m; }
+    return to;
+}
+
+// Open bar b's menu m under its title.
+fn tk_bar_open(ui: *tk_ui, b: u32, m: u32, key: u32) -> void {
+    let x0: i32 = 0;
+    let x1: i32 = 0;
+    tk_bar_span(ui, b, m, &x0, &x1);
+    tk_menu_open(ui, m, x0, ui.node[b].y + ui.node[b].h, b, key);
+}
+
+// The title of bar b under (x, y): its menu, or TK_NONE.
+fn tk_bar_menu_at(ui: *tk_ui, b: u32, x: i32, y: i32) -> u32 {
+    if (tk_in_box(ui, b, x, y) == 0) { return TK_NONE; }
+    let c: u32 = ui.node[b].first;
+    while (c != TK_NONE) {
+        if (tk_shown(ui, c) == 1 && (ui.node[c].flags & TK_F_DISABLED) == 0) {
+            let x0: i32 = 0;
+            let x1: i32 = 0;
+            tk_bar_span(ui, b, c, &x0, &x1);
+            if (x >= (tk_dev(ui, x0) as i32) && x < (tk_dev(ui, x1) as i32)) { return c; }
+        }
+        c = ui.node[c].next;
+    }
+    return TK_NONE;
+}
+
+// F10: the first menu bar the focus may reach opens its first menu. 1 if one did.
+fn tk_menubar_key(ui: *tk_ui) -> u32 {
+    let k: u32 = 0;
+    while (k < ui.used) {
+        if (ui.node[k].kind == TK_MENUBAR && (ui.node[k].flags & TK_F_DISABLED) == 0 && tk_reachable(ui, k) == 1) {
+            let m: u32 = tk_bar_step(ui, k, TK_NONE, 0);
+            if (m != TK_NONE) { tk_bar_open(ui, k, m, 1); return 1; }
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// A press on a bar's title opens its menu, or closes it if it was open.
+fn tk_menubar_press(ui: *tk_ui, b: u32, x: i32, y: i32) -> void {
+    let m: u32 = tk_bar_menu_at(ui, b, x, y);
+    if (m == TK_NONE) { return; }
+    tk_bar_open(ui, b, m, 0);
+    ui.pop_px = x;
+    ui.pop_py = y;
+}
+
+// Shift+F10 or the Menu key: the context menu of the focus, or of the
+// nearest widget holding it that has one, under the focus (or its chosen
+// row). 1 if one opened.
+fn tk_context_key(ui: *tk_ui) -> u32 {
+    let a: u32 = ui.focus;
+    if (a == TK_NONE) { return 0; }
+    let o: u32 = a;
+    while (o != TK_NONE && ui.node[o].menu == TK_NONE) { o = ui.node[o].parent; }
+    if (o == TK_NONE) { return 0; }
+    let at: u32 = a;
+    let k: u32 = ui.node[a].kind;
+    if ((k == TK_LIST || k == TK_TREE || k == TK_TABLE) && ui.node[a].sel != TK_NONE) { at = ui.node[a].sel; }
+    tk_menu_open(ui, ui.node[o].menu, ui.node[at].x + TK_ROW_PADX, ui.node[at].y + ui.node[at].h, TK_NONE, 1);
+    return 1;
+}
+
+// A key while a menu is open: Up and Down light the items, wrapping; Home
+// and End the first and the last; Enter and Space choose; Esc, F10 or Alt
+// close every menu; on a bar's menu, Left and Right open the menu beside
+// it (Serenity's MenuManager). Anything else is ignored.
+fn tk_menu_key(ui: *tk_ui, code: u32, held: u32) -> void {
+    let m: u32 = ui.pop[ui.pop_n - 1];
+    let s: u32 = ui.node[m].sel;
+    let to: u32 = s;
+    if (code == KC_DOWN) { to = tk_menu_step(ui, m, s, 0); }
+    else if (code == KC_UP) { to = tk_menu_step(ui, m, s, 1); }
+    else if (code == KC_HOME) { to = tk_menu_step(ui, m, TK_NONE, 0); }
+    else if (code == KC_END) { to = tk_menu_step(ui, m, TK_NONE, 1); }
+    else if (code == KC_ENTER || code == KC_KP_ENTER || code == KC_SPACE) {
+        if (tk_menu_can(ui, s) == 1) { tk_menu_choose(ui, s); }
+        return;
+    }
+    else if (code == KC_ESC || code == TK_KC_F10 || code == KC_LALT || code == KC_RALT) { tk_menu_close_all(ui); return; }
+    else if ((code == KC_LEFT || code == KC_RIGHT) && ui.bar != TK_NONE) {
+        let b: u32 = ui.bar;
+        let back: u32 = 0;
+        if (code == KC_LEFT) { back = 1; }
+        let o: u32 = tk_bar_step(ui, b, m, back);
+        if (o != m) { tk_menu_close_all(ui); tk_bar_open(ui, b, o, 1); }
+        return;
+    }
+    if (to != s) { ui.node[m].sel = to; tk_damage_node(ui, m); }
+}
+
+// The item of menu m under device y, or TK_NONE.
+fn tk_menu_item_at(ui: *tk_ui, m: u32, y: i32) -> u32 {
+    let it: u32 = ui.node[m].first;
+    while (it != TK_NONE) {
+        let n: *tk_node = &ui.node[it];
+        if (tk_shown(ui, it) == 1 && n.dh > 0 && y >= (n.dy as i32) && y < (n.dy as i32) + (n.dh as i32)) { return it; }
+        it = n.next;
+    }
+    return TK_NONE;
+}
+
+// The pointer while a menu is open: the item under it is lit; over another
+// title of the bar, that menu opens instead. A press outside every menu
+// closes them (and goes no further). A release over an item chooses it
+// once the pointer has been pressed in the menu or moved since the menu
+// opened, so a press that opens a menu and its release do not choose.
+fn tk_menu_pointer(ui: *tk_ui, x: i32, y: i32, was: u32, now: u32, rwas: u32, rnow: u32) -> void {
+    let m: u32 = ui.pop[ui.pop_n - 1];
+    let inm: u32 = tk_in_box(ui, m, x, y);
+    if (inm == 1) {
+        let it: u32 = tk_menu_item_at(ui, m, y);
+        if (tk_menu_can(ui, it) == 0) { it = TK_NONE; }
+        if (it != ui.node[m].sel) { ui.node[m].sel = it; tk_damage_node(ui, m); }
+    } else if (ui.bar != TK_NONE) {
+        let o: u32 = tk_bar_menu_at(ui, ui.bar, x, y);
+        if (o != TK_NONE && o != m) {
+            let b: u32 = ui.bar;
+            tk_menu_close_all(ui);
+            tk_bar_open(ui, b, o, 0);
+            ui.pop_px = x;
+            ui.pop_py = y;
+            return;
+        }
+    }
+    let press: u32 = 0;
+    if ((was == 0 && now == 1) || (rwas == 0 && rnow == 1)) { press = 1; }
+    let release: u32 = 0;
+    if ((was == 1 && now == 0) || (rwas == 1 && rnow == 0)) { release = 1; }
+    if (press == 1) {
+        if (inm == 1) { ui.menu_armed = 1; return; }
+        tk_menu_close_all(ui);
+        return;
+    }
+    if (release == 1 && inm == 1) {
+        let it: u32 = ui.node[m].sel;
+        if (tk_menu_can(ui, it) == 1 && (ui.menu_armed == 1 || x != ui.pop_px || y != ui.pop_py)) { tk_menu_choose(ui, it); }
+    }
+}
+
+fn tk_draw_menubar(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
+    let n: *tk_node = &ui.node[i];
+    let line: i32 = tk_len(ui, 1);
+    tk_box(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, ui.theme.raised);
+    tk_box(ui, c, n.dx as i32, (n.dy as i32) + (n.dh as i32) - line, n.dw as i32, line, ui.theme.border);
+    let open: u32 = TK_NONE;
+    if (ui.bar == i && ui.pop_n > 0) { open = ui.pop[ui.pop_n - 1]; }
+    let chh: i32 = tk_char_h(ui) as i32;
+    let m: u32 = n.first;
+    while (m != TK_NONE) {
+        if (tk_shown(ui, m) == 1) {
+            let x0: i32 = 0;
+            let x1: i32 = 0;
+            tk_bar_span(ui, i, m, &x0, &x1);
+            let a: i32 = tk_dev(ui, x0) as i32;
+            let b: i32 = tk_dev(ui, x1) as i32;
+            if (m == open) { tk_box(ui, c, a, n.dy as i32, b - a, (n.dh as i32) - line, ui.theme.pressed); }
+            tk_text(ui, c, a + tk_len(ui, TK_TAB_PADX), (n.dy as i32) + ((n.dh as i32) - chh) / 2, tk_text_of(ui, m), tk_text_colour(ui, &ui.node[m]), 0);
+        }
+        m = ui.node[m].next;
+    }
+}
+
+fn tk_draw_menu(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
+    let n: *tk_node = &ui.node[i];
+    let r: i32 = tk_len(ui, TK_RADIUS);
+    tk_shape(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, r, 0, ui.theme.border);
+    tk_shape(ui, c, (n.dx as i32) + 1, (n.dy as i32) + 1, (n.dw as i32) - 2, (n.dh as i32) - 2, tk_imax(r - 1, 0), 0, ui.theme.raised);
+    let chh: i32 = tk_char_h(ui) as i32;
+    let cw: i32 = tk_char_w(ui) as i32;
+    let padx: i32 = tk_len(ui, TK_ROW_PADX);
+    let key: [32]u8;
+    let it: u32 = n.first;
+    while (it != TK_NONE) {
+        let m: *tk_node = &ui.node[it];
+        if (tk_shown(ui, it) == 1 && m.dh > 0) {
+            let ix: i32 = m.dx as i32;
+            let iy: i32 = m.dy as i32;
+            let iw: i32 = m.dw as i32;
+            let ih: i32 = m.dh as i32;
+            if (m.text == TK_NONE) {
+                tk_box(ui, c, ix + padx, iy + ih / 2, iw - 2 * padx, tk_len(ui, 1), ui.theme.border);
+            } else {
+                let fg: u32 = tk_text_colour(ui, m);
+                let kc: u32 = ui.theme.muted;
+                if (it == n.sel) {
+                    tk_shape(ui, c, ix, iy, iw, ih, r, 0, ui.theme.accent);
+                    fg = ui.theme.on_accent;
+                    kc = ui.theme.on_accent;
+                }
+                let ty: i32 = iy + (ih - chh) / 2;
+                tk_text(ui, c, ix + padx, ty, tk_text_of(ui, it), fg, 0);
+                let kn: u32 = tk_item_key(ui, it, &key[0]);
+                if (kn > 0) {
+                    let kw: i32 = (tk_utf8_count(&key[0], kn) as i32) * cw;
+                    tk_text(ui, c, ix + iw - padx - kw, ty, &key[0], kc, 0);
+                }
+            }
+        }
+        it = m.next;
+    }
+}
+
+// Give a widget a context menu (a menu not in a bar; 0: none): 0, or E_INVALID_ARGS.
+fn tk_set_context(ui: *tk_ui, id: u32, menu: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    if (menu == 0) { ui.node[i].menu = TK_NONE; return 0; }
+    let m: u32 = tk_index(ui, menu);
+    if (m == TK_NONE || ui.node[m].kind != TK_MENU || ui.node[ui.node[m].parent].kind == TK_MENUBAR) { return E_INVALID_ARGS; }
+    ui.node[i].menu = m;
+    return 0;
+}
+
+// Open a menu that is not a bar's at device (x, y), as a press would: 0, or E_INVALID_ARGS.
+fn tk_popup(ui: *tk_ui, menu: u32, x: i32, y: i32) -> i32 {
+    let m: u32 = tk_index(ui, menu);
+    if (m == TK_NONE || ui.node[m].kind != TK_MENU || ui.node[ui.node[m].parent].kind == TK_MENUBAR) { return E_INVALID_ARGS; }
+    if (ui.relayout == 1) { tk_layout(ui); tk_damage_all(ui); }
+    tk_menu_open(ui, m, tk_lpos(ui, x), tk_lpos(ui, y), TK_NONE, 0);
+    ui.pop_px = x;
+    ui.pop_py = y;
+    return 0;
+}
+
+fn tk_menus_close(ui: *tk_ui) -> void { tk_menu_close_all(ui); }
+
+// What is open on top (a menu or a dialog), by id; 0 for nothing.
+fn tk_open_top(ui: *tk_ui) -> u32 {
+    if (ui.pop_n == 0) { return 0; }
+    return tk_id(ui, ui.pop[ui.pop_n - 1]);
+}
+
+// The item lit in a menu, by id; 0 for none.
+fn tk_menu_lit(ui: *tk_ui, menu: u32) -> u32 {
+    let m: u32 = tk_index(ui, menu);
+    if (m == TK_NONE || ui.node[m].kind != TK_MENU) { return 0; }
+    return tk_id(ui, ui.node[m].sel);
+}
+
+// ---- dialogs ----
+
+fn tk_dlg_label(code: u32) -> *u8 {
+    if (code == TK_DLG_DISCARD) { return "Discard"; }
+    if (code == TK_DLG_APPLY) { return "Apply"; }
+    if (code == TK_DLG_CLOSE) { return "Close"; }
+    if (code == TK_DLG_CANCEL) { return "Cancel"; }
+    if (code == TK_DLG_NO) { return "No"; }
+    if (code == TK_DLG_YES) { return "Yes"; }
+    return "OK";
+}
+
+// A dialog over the window, closed: its title, its text (0 for none), a
+// body for the app's own widgets (tk_dialog_body), and a row of the
+// TK_DLG_* buttons asked for. Discard stands alone at the left; the rest
+// keep to the right in the order of the TK_DLG_* values, OK last (as
+// Haiku's BAlert, whose last button is the default). Enter presses OK,
+// else Yes, else Close, else the last; Esc presses Cancel, else Close.
+// A button closes the dialog and the app hears TK_EV_DIALOG, value the
+// button. Its id, or 0 (no buttons, unknown ones, the pool or arena full).
+fn tk_dialog(ui: *tk_ui, title: *u8, text: *u8, buttons: u32) -> u32 {
+    if (buttons == 0 || (buttons & ~TK_DLG_ALL) != 0) { return 0; }
+    let d: u32 = tk_add(ui, tk_root(ui), TK_DIALOG, 0 as *u8);
+    if (d == 0) { return 0; }
+    tk_set_spacing(ui, d, 3, 5);
+    if (title != (0 as *u8) && tk_add(ui, d, TK_HEADING, title) == 0) { return 0; }
+    if (text != (0 as *u8) && tk_add(ui, d, TK_LABEL, text) == 0) { return 0; }
+    let body: u32 = tk_add(ui, d, TK_COLUMN, 0 as *u8);
+    let row: u32 = tk_add(ui, d, TK_ROW, 0 as *u8);
+    if (body == 0 || row == 0) { return 0; }
+    tk_set_spacing(ui, body, 2, 0);
+    tk_set_spacing(ui, row, 2, 0);
+    tk_set_flags(ui, row, TK_F_FILL, 0);
+    let dflt: u32 = 0;
+    let cancel: u32 = 0;
+    let last: u32 = 0;
+    let code: u32 = TK_DLG_DISCARD;
+    while (code <= TK_DLG_OK) {
+        if (code == TK_DLG_APPLY) {
+            // what pushes the rest to the right
+            let gap: u32 = tk_add(ui, row, TK_COLUMN, 0 as *u8);
+            if (gap == 0) { return 0; }
+            tk_set_flags(ui, gap, TK_F_GROW, 0);
+        }
+        if ((buttons & code) != 0) {
+            let b: u32 = tk_add(ui, row, TK_BUTTON, tk_dlg_label(code));
+            if (b == 0) { return 0; }
+            ui.node[tk_index(ui, b)].value = code as i32;
+            last = b;
+            if (code == TK_DLG_CLOSE || code == TK_DLG_YES || code == TK_DLG_OK) { dflt = b; }
+            if (code == TK_DLG_CANCEL || (code == TK_DLG_CLOSE && cancel == 0)) { cancel = b; }
+        }
+        code = code * 2;
+    }
+    if (dflt == 0) { dflt = last; }
+    tk_set_flags(ui, dflt, TK_F_DEFAULT, 0);
+    if (cancel != 0) { tk_set_flags(ui, cancel, TK_F_CANCEL, 0); }
+    ui.node[tk_index(ui, d)].sel = tk_index(ui, body);
+    return d;
+}
+
+// Where the app adds a dialog's own widgets: its id, or 0.
+fn tk_dialog_body(ui: *tk_ui, id: u32) -> u32 {
+    let d: u32 = tk_index(ui, id);
+    if (d == TK_NONE || ui.node[d].kind != TK_DIALOG) { return 0; }
+    return tk_id(ui, ui.node[d].sel);
+}
+
+// Open a dialog over the window: the menus close, what is under it is
+// dimmed and out of reach, and the focus goes to the first widget of its
+// body that takes it, else its default button. 0, E_INVALID_ARGS, or
+// E_NO_RESOURCES (TK_POPS_MAX open).
+fn tk_dialog_open(ui: *tk_ui, id: u32) -> i32 {
+    let d: u32 = tk_index(ui, id);
+    if (d == TK_NONE || ui.node[d].kind != TK_DIALOG) { return E_INVALID_ARGS; }
+    if (tk_is_open(ui, d) == 1) { return 0; }
+    tk_menu_close_all(ui);
+    if (ui.pop_n >= TK_POPS_MAX) { return E_NO_RESOURCES; }
+    tk_tip_hide(ui);
+    ui.tip_for = TK_NONE;
+    if (ui.capture != TK_NONE) { tk_set_bit(ui, ui.capture, TK_F_PRESSED, 0); ui.capture = TK_NONE; }
+    ui.drag = TK_NONE;
+    ui.pop[ui.pop_n] = d;
+    ui.pop_focus[ui.pop_n] = ui.focus;
+    ui.pop_n = ui.pop_n + 1;
+    if (ui.relayout == 1) { tk_layout(ui); } else { tk_pop_place(ui, d); }
+    let f: u32 = TK_NONE;
+    let body: u32 = ui.node[d].sel;
+    let a: u32 = body;
+    while (a != TK_NONE && f == TK_NONE) {
+        if (tk_focusable(ui, a) == 1) { f = a; }
+        a = tk_after_in(ui, a, body);
+    }
+    a = d;
+    while (a != TK_NONE && f == TK_NONE) {
+        if (ui.node[a].kind == TK_BUTTON && (ui.node[a].flags & TK_F_DEFAULT) != 0 && tk_focusable(ui, a) == 1) { f = a; }
+        a = tk_after_in(ui, a, d);
+    }
+    tk_focus_set(ui, f);
+    tk_damage_all(ui);
+    return 0;
+}
+
+fn tk_dialog_shut(ui: *tk_ui, d: u32) -> void {
+    if (tk_is_open(ui, d) == 0) { return; }
+    tk_menu_close_all(ui);
+    if (ui.pop[ui.pop_n - 1] == d) { tk_pop_remove(ui); return; }
+    // under another: taken out from under it
+    let k: u32 = 0;
+    while (ui.pop[k] != d) { k = k + 1; }
+    while (k + 1 < ui.pop_n) {
+        ui.pop[k] = ui.pop[k + 1];
+        ui.pop_focus[k] = ui.pop_focus[k + 1];
+        k = k + 1;
+    }
+    ui.pop_n = ui.pop_n - 1;
+    tk_damage_all(ui);
+}
+
+// A dialog's button was pressed.
+fn tk_dialog_done(ui: *tk_ui, d: u32, code: u32) -> void {
+    tk_dialog_shut(ui, d);
+    tk_push(ui, TK_EV_DIALOG, d, code as i32, 0);
+}
+
+// Close a dialog without an answer: 0, or E_INVALID_ARGS.
+fn tk_dialog_close(ui: *tk_ui, id: u32) -> i32 {
+    let d: u32 = tk_index(ui, id);
+    if (d == TK_NONE || ui.node[d].kind != TK_DIALOG) { return E_INVALID_ARGS; }
+    tk_dialog_shut(ui, d);
+    return 0;
+}
+
+fn tk_draw_dialog(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
+    let r: i32 = tk_len(ui, 2 * TK_RADIUS);
+    tk_shape(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, r, 0, ui.theme.border);
+    tk_shape(ui, c, (n.dx as i32) + 1, (n.dy as i32) + 1, (n.dw as i32) - 2, (n.dh as i32) - 2, tk_imax(r - 1, 0), 0, ui.theme.raised);
+}
+
+// What is under a dialog, dimmed.
+fn tk_scrim(ui: *tk_ui, r: *ds_rect) -> void {
+    let s: u32 = ds_fade(0xFF000000, 96);
+    let y: u32 = r.y;
+    while (y < r.y + r.h) {
+        let row: *u32 = ds_row(&ui.canvas, y);
+        let x: u32 = r.x;
+        while (x < r.x + r.w) { row[x] = ds_over(s, row[x]); x = x + 1; }
+        y = y + 1;
+    }
+}
+
+// ---- tooltips ----
+
+// A widget's tooltip (0: none), also its accessible description: 0,
+// E_INVALID_ARGS, or E_NO_RESOURCES.
+fn tk_set_tip(ui: *tk_ui, id: u32, text: *u8) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    let at: u32 = tk_store(ui, text);
+    if (at == TK_NONE && text != (0 as *u8)) { return E_NO_RESOURCES; }
+    ui.node[i].tip = at;
+    return 0;
+}
+
+// Whose tooltip the pointer at (x, y) asks for: the nearest with one, from
+// what is under it up.
+fn tk_tip_owner(ui: *tk_ui, x: i32, y: i32) -> u32 {
+    let a: u32 = tk_hit_any(ui, tk_scope(ui), x, y);
+    while (a != TK_NONE && ui.node[a].tip == TK_NONE) { a = ui.node[a].parent; }
+    return a;
+}
+
+// The pointer moved, no button held: a new owner's tooltip shows after
+// TK_TIP_MS still, or at once when another is showing (Serenity's
+// Application: a 700 ms show timer, and a switch at once while one is up).
+fn tk_tip_track(ui: *tk_ui, x: i32, y: i32) -> void {
+    let o: u32 = tk_tip_owner(ui, x, y);
+    if (o == ui.tip_for) { return; }
+    if (o == TK_NONE) { tk_tip_hide(ui); ui.tip_for = TK_NONE; ui.tip_due = 0; return; }
+    if (ui.tip_up == 1) { tk_tip_show(ui, o); return; }
+    ui.tip_for = o;
+    ui.tip_due = ui.now + TK_TIP_MS;
+}
+
+// Show i's tooltip under it (above, if there is no room below), on the canvas.
+fn tk_tip_show(ui: *tk_ui, i: u32) -> void {
+    tk_tip_hide(ui);
+    if (ui.node[i].tip == TK_NONE || ui.canvas.px == 0) { return; }
+    let s: *u8 = &ui.arena[ui.node[i].tip];
+    let n: *tk_node = &ui.node[i];
+    let w: i32 = tk_dev(ui, tk_str_lw(ui, s) + 2 * TK_ROW_PADX) as i32;
+    let h: i32 = tk_dev(ui, tk_logical(ui, tk_char_h(ui)) + 2 * TK_POP_PAD) as i32;
+    let gap: i32 = tk_len(ui, TK_POP_PAD);
+    let cw: i32 = ui.canvas.width as i32;
+    let ch: i32 = ui.canvas.height as i32;
+    let x: i32 = n.dx as i32;
+    let y: i32 = (n.dy as i32) + (n.dh as i32) + gap;
+    if (y + h > ch) { y = (n.dy as i32) - h - gap; }
+    if (x + w > cw) { x = cw - w; }
+    x = tk_imax(x, 0);
+    y = tk_imax(y, 0);
+    ui.tip_x = x; ui.tip_y = y; ui.tip_w = w; ui.tip_h = h;
+    ui.tip_up = 1;
+    ui.tip_for = i;
+    ui.tip_due = 0;
+    tk_damage_rect(ui, x, y, w, h);
+}
+
+fn tk_tip_hide(ui: *tk_ui) -> void {
+    if (ui.tip_up == 0) { return; }
+    tk_damage_rect(ui, ui.tip_x, ui.tip_y, ui.tip_w, ui.tip_h);
+    ui.tip_up = 0;
+}
+
+fn tk_draw_tip(ui: *tk_ui, r: *ds_rect) -> void {
+    if (ui.tip_for == TK_NONE || ui.node[ui.tip_for].tip == TK_NONE) { return; }
+    let tr: ds_rect;
+    let c: ds_rect;
+    if (tk_drect(ui, &tr, ui.tip_x, ui.tip_y, ui.tip_w, ui.tip_h) == 0 || ds_rect_and(&c, &tr, r) == 0) { return; }
+    tk_shape(ui, &c, ui.tip_x, ui.tip_y, ui.tip_w, ui.tip_h, tk_len(ui, TK_RADIUS), 0, ui.theme.text);
+    let chh: i32 = tk_char_h(ui) as i32;
+    tk_text(ui, &c, ui.tip_x + tk_len(ui, TK_ROW_PADX), ui.tip_y + (ui.tip_h - chh) / 2, &ui.arena[ui.node[ui.tip_for].tip], ui.theme.surface, 0);
+}
+
+// Whose tooltip shows, by id; 0 for none.
+fn tk_tip_shown(ui: *tk_ui) -> u32 {
+    if (ui.tip_up == 0) { return 0; }
+    return tk_id(ui, ui.tip_for);
+}
+
+// The time, in ms from any start: what waits for it (a tooltip) happens.
+fn tk_tick(ui: *tk_ui, now: u64) -> void {
+    ui.now = now;
+    if (ui.tip_for != TK_NONE && ui.tip_up == 0 && ui.tip_due != 0 && now >= ui.tip_due) {
+        tk_tip_show(ui, ui.tip_for);
+    }
+}
+
+// How long until tk_tick has something to do, in ms: 0 now, TK_NONE never.
+fn tk_due(ui: *tk_ui) -> u32 {
+    if (ui.tip_for == TK_NONE || ui.tip_up == 1 || ui.tip_due == 0) { return TK_NONE; }
+    if (ui.now >= ui.tip_due) { return 0; }
+    return (ui.tip_due - ui.now) as u32;
+}
+
+// ---- text grids ----
+
+// A text grid of cols x rows cells, all blank, the cursor at the corner:
+// 0, E_INVALID_ARGS, or E_NO_RESOURCES (TK_CELLS_MAX between every grid).
+// A grid made smaller keeps its cells; one made bigger gets new ones.
+fn tk_grid_size(ui: *tk_ui, id: u32, cols: u32, rows: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].kind != TK_TEXTGRID || cols == 0 || rows == 0 || cols > 255 || rows > 255) { return E_INVALID_ARGS; }
+    let n: *tk_node = &ui.node[i];
+    let need: u32 = cols * rows;
+    if (n.rows == 0 || n.cols * n.rows < need) {
+        if (ui.cell_n + need > TK_CELLS_MAX) { return E_NO_RESOURCES; }
+        n.cells = ui.cell_n;
+        ui.cell_n = ui.cell_n + need;
+    }
+    n.cols = cols;
+    n.rows = rows;
+    let k: u32 = 0;
+    while (k < need) { ui.cell[n.cells + k] = 0; k = k + 1; }
+    n.sx = 0;
+    n.sy = 0;
+    ui.relayout = 1;
+    return 0;
+}
+
+fn tk_grid_of(ui: *tk_ui, id: u32) -> u32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].kind != TK_TEXTGRID || ui.node[i].rows == 0) { return TK_NONE; }
+    return i;
+}
+
+// A cell: its character (0 blank), its colours (0 the theme's, 1 to 16 tk_palette's).
+fn tk_grid_pack(cp: u32, fg: u32, bg: u32) -> u32 {
+    return (cp & 0x1FFFFF) | ((fg & 31) << 21) | ((bg & 31) << 26);
+}
+
+fn tk_palette(k: u32) -> u32 {
+    if (k == 1) { return 0xFF1B1F24; }  if (k == 2) { return 0xFFC0392B; }
+    if (k == 3) { return 0xFF2E8B57; }  if (k == 4) { return 0xFFB8860B; }
+    if (k == 5) { return 0xFF2F6FDB; }  if (k == 6) { return 0xFF8E44AD; }
+    if (k == 7) { return 0xFF16A085; }  if (k == 8) { return 0xFFC3CAD4; }
+    if (k == 9) { return 0xFF5B6470; }  if (k == 10) { return 0xFFE74C3C; }
+    if (k == 11) { return 0xFF2ECC71; } if (k == 12) { return 0xFFF1C40F; }
+    if (k == 13) { return 0xFF5B93F0; } if (k == 14) { return 0xFFB07CC6; }
+    if (k == 15) { return 0xFF1ABC9C; }
+    return 0xFFFFFFFF;
+}
+
+// Cell (col, row)'s device box's corner.
+fn tk_grid_xy(ui: *tk_ui, i: u32, col: u32, row: u32, x: *i32, y: *i32) -> void {
+    let n: *tk_node = &ui.node[i];
+    *x = (n.dx as i32) + tk_len(ui, TK_GRID_PAD) + (col * tk_char_w(ui)) as i32;
+    *y = (n.dy as i32) + tk_len(ui, TK_GRID_PAD) + (row * tk_char_h(ui)) as i32;
+}
+
+fn tk_grid_damage(ui: *tk_ui, i: u32, col: u32, row: u32) -> void {
+    let x: i32 = 0;
+    let y: i32 = 0;
+    tk_grid_xy(ui, i, col, row, &x, &y);
+    tk_damage_rect(ui, x, y, tk_char_w(ui) as i32, tk_char_h(ui) as i32);
+}
+
+// Put a character in a cell: 0, or E_INVALID_ARGS.
+fn tk_grid_put(ui: *tk_ui, id: u32, col: u32, row: u32, cp: u32, fg: u32, bg: u32) -> i32 {
+    let i: u32 = tk_grid_of(ui, id);
+    if (i == TK_NONE || col >= ui.node[i].cols || row >= ui.node[i].rows || cp > 0x10FFFF || fg > 16 || bg > 16) { return E_INVALID_ARGS; }
+    ui.cell[ui.node[i].cells + row * ui.node[i].cols + col] = tk_grid_pack(cp, fg, bg);
+    tk_grid_damage(ui, i, col, row);
+    return 0;
+}
+
+// Write UTF-8 text from a cell along its row (a byte that is not UTF-8 is
+// '?'), stopping at the row's end: the cells written.
+fn tk_grid_write(ui: *tk_ui, id: u32, col: u32, row: u32, s: *u8, fg: u32, bg: u32) -> u32 {
+    let i: u32 = tk_grid_of(ui, id);
+    if (i == TK_NONE || s == (0 as *u8)) { return 0; }
+    let len: u32 = strlen(s);
+    let at: u32 = 0;
+    let n: u32 = 0;
+    while (at < len && col + n < ui.node[i].cols) {
+        let cp: u32 = 63;
+        let l: u32 = tk_utf8_at(s, len, at, &cp);
+        if (l == 0) { l = 1; cp = 63; }
+        if (tk_grid_put(ui, id, col + n, row, cp, fg, bg) != 0) { return n; }
+        at = at + l;
+        n = n + 1;
+    }
+    return n;
+}
+
+// Blank every cell: 0, or E_INVALID_ARGS.
+fn tk_grid_clear(ui: *tk_ui, id: u32) -> i32 {
+    let i: u32 = tk_grid_of(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    let k: u32 = 0;
+    let all: u32 = ui.node[i].cols * ui.node[i].rows;
+    while (k < all) { ui.cell[ui.node[i].cells + k] = 0; k = k + 1; }
+    tk_damage_node(ui, i);
+    return 0;
+}
+
+// Move every row up by lines, blank ones coming in at the bottom: 0, or E_INVALID_ARGS.
+fn tk_grid_scroll(ui: *tk_ui, id: u32, lines: u32) -> i32 {
+    let i: u32 = tk_grid_of(ui, id);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    let n: *tk_node = &ui.node[i];
+    if (lines > n.rows) { lines = n.rows; }
+    let keep: u32 = (n.rows - lines) * n.cols;
+    let from: u32 = lines * n.cols;
+    let k: u32 = 0;
+    while (k < keep) { ui.cell[n.cells + k] = ui.cell[n.cells + from + k]; k = k + 1; }
+    while (k < n.rows * n.cols) { ui.cell[n.cells + k] = 0; k = k + 1; }
+    tk_damage_node(ui, i);
+    return 0;
+}
+
+// Put the cursor on a cell, shown (show 1) or not: 0, or E_INVALID_ARGS.
+fn tk_grid_cursor(ui: *tk_ui, id: u32, col: u32, row: u32, show: u32) -> i32 {
+    let i: u32 = tk_grid_of(ui, id);
+    if (i == TK_NONE || col >= ui.node[i].cols || row >= ui.node[i].rows) { return E_INVALID_ARGS; }
+    let n: *tk_node = &ui.node[i];
+    tk_grid_damage(ui, i, n.sx as u32, n.sy as u32);
+    n.sx = col as i32;
+    n.sy = row as i32;
+    if (show == 1) { n.flags = n.flags | TK_F_CURSOR; } else { n.flags = n.flags & ~TK_F_CURSOR; }
+    tk_grid_damage(ui, i, col, row);
+    return 0;
+}
+
+// A cell as tk_grid_pack made it; 0 for a blank or no such cell.
+fn tk_grid_cell(ui: *tk_ui, id: u32, col: u32, row: u32) -> u32 {
+    let i: u32 = tk_grid_of(ui, id);
+    if (i == TK_NONE || col >= ui.node[i].cols || row >= ui.node[i].rows) { return 0; }
+    return ui.cell[ui.node[i].cells + row * ui.node[i].cols + col];
+}
+
+fn tk_draw_textgrid(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
+    let n: *tk_node = &ui.node[i];
+    tk_box(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, ui.theme.raised);
+    if (n.rows > 0) {
+        let cw: i32 = tk_char_w(ui) as i32;
+        let chh: i32 = tk_char_h(ui) as i32;
+        let gx: i32 = 0;
+        let gy: i32 = 0;
+        tk_grid_xy(ui, i, 0, 0, &gx, &gy);
+        // only the rows the clip meets
+        let r0: i32 = tk_imax(((c.y as i32) - gy) / chh, 0);
+        let r1: i32 = tk_imin(((c.y + c.h) as i32 - gy + chh - 1) / chh, n.rows as i32);
+        let buf: [4]u8;
+        let row: i32 = r0;
+        while (row < r1) {
+            let col: u32 = 0;
+            while (col < n.cols) {
+                let v: u32 = ui.cell[n.cells + (row as u32) * n.cols + col];
+                let cur: u32 = 0;
+                if (tk_on(n, TK_F_CURSOR) == 1 && n.sx == (col as i32) && n.sy == row) { cur = 1; }
+                if (v != 0 || cur == 1) {
+                    let fi: u32 = (v >> 21) & 31;
+                    let bi: u32 = (v >> 26) & 31;
+                    let fg: u32 = ui.theme.text;
+                    let bg: u32 = ui.theme.raised;
+                    if (fi > 0) { fg = tk_palette(fi); }
+                    if (bi > 0) { bg = tk_palette(bi); }
+                    if (cur == 1) { let t: u32 = fg; fg = bg; bg = t; }
+                    let x: i32 = gx + (col as i32) * cw;
+                    let y: i32 = gy + row * chh;
+                    if (bi > 0 || cur == 1) { tk_box(ui, c, x, y, cw, chh, bg); }
+                    let cp: u32 = v & 0x1FFFFF;
+                    if (cp > 32) {
+                        let l: u32 = tk_utf8_put(cp, &buf[0]);
+                        tk_text_n(ui, c, x, y, &buf[0], l, fg, 0);
+                    }
+                }
+                col = col + 1;
+            }
+            row = row + 1;
+        }
+    }
+    let edge: u32 = ui.theme.border;
+    let t: i32 = tk_len(ui, 1);
+    if (tk_on(n, TK_F_FOCUS) == 1 || tk_on(n, TK_F_SHOW_RING) == 1) { edge = ui.theme.ring; t = tk_len(ui, TK_RING_T); }
+    tk_shape(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, 0, t, edge);
 }

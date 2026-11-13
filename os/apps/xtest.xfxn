@@ -1294,7 +1294,7 @@ fn w_hung(arg: u64) -> i32 {
     if (wx.w.client[cb].kill != 1) { return 229; }
     // waiting for an event again is answering
     wx.w.client[cb].kill = 0;
-    wm_wait(&wx.w, cb, 0);
+    wm_wait(&wx.w, cb, 0, 0);
     if (wx.w.client[cb].hung != 0) { return 230; }
     wx_down();
     return 0;
@@ -1318,6 +1318,43 @@ fn w_gone(arg: u64) -> i32 {
     wx_draw();
     if (wx.w.focus != WM_NONE || wx_at(80, 90) != WX_DESK) { return 247; }
     wm_press(&wx.w, 97, 0);                  // nobody to tell: nothing goes wrong
+    wx_down();
+    return 0;
+}
+
+// 6200: a timed wait is answered with WM_EV_TIMER when its time runs out
+// with nothing to give, once; an untimed one never is, nor one that had
+// an event to give (2.8a3: what a tooltip's delay waits on)
+fn w_timed(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 6200; }
+    let c: u32 = wm_client_new(&wx.w);
+    if (wx_window(c, 100, 60, 0, 0xFFAA0000) == WM_NONE) { return 6200; }
+    wx_draw();
+    wx_clear(c);
+    // a token no reply is sent on: the test reads the ring itself
+    let tok: i32 = 0x7FFF0000;
+    wm_tick(&wx.w, 1000);
+    wm_wait(&wx.w, c, tok, 50);
+    wm_tick(&wx.w, 1049);
+    if (wx.w.client[c].n != 0) { return 6201; }
+    wm_tick(&wx.w, 1050);
+    let ev: wm_event;
+    if (wx.w.client[c].n != 1) { return 6202; }
+    wx_next(c, &ev);
+    if (ev.kind != WM_EV_TIMER) { return 6203; }
+    wm_tick(&wx.w, 2000);
+    if (wx.w.client[c].n != 0) { return 6204; }
+    wx.w.client[c].waiter = 0;
+    wm_wait(&wx.w, c, tok, 0);
+    wm_tick(&wx.w, 100000);
+    if (wx.w.client[c].n != 0) { return 6205; }
+    wx.w.client[c].waiter = 0;
+    wm_wait(&wx.w, c, tok, 50);
+    wm_push(&wx.w, c, WM_EV_FOCUS, WM_NONE, 1, 0, 0);
+    wm_tick(&wx.w, 100100);
+    wx_next(c, &ev);
+    if (ev.kind != WM_EV_FOCUS || wx.w.client[c].n != 0) { return 6206; }
+    wx.w.client[c].waiter = 0;
     wx_down();
     return 0;
 }
@@ -3250,7 +3287,7 @@ fn gx_key(code: u32, ch: u32, mods: u32) -> void {
     if (tk_clip_take(&gx_ui) == TK_CLIP_GET) { tk_paste_text(&gx_ui, &wx.w.clip[0], wx.w.clip_n); }
     let ev: tk_event;
     while (tk_next(&gx_ui, &ev) == 1) {
-        if (ev.kind == TK_EV_COMMAND && gp_command(&gx_ui, ev.value as u32) == 1) {
+        if (gp_event(&gx_ui, &ev) == 1) {
             let w: u32 = 0;
             let h: u32 = 0;
             tk_fit(&gx_ui, &w, &h);
@@ -3285,8 +3322,9 @@ fn gx_gallery(arg: u64) -> i32 {
     if (gx_matches(120000) == 0) { rc = 4604; }
     let k: u32 = 0;
     // each Tab its own frame: one whose damage misses the frame before's
-    // shows a back buffer given only its own damage keeping an old ring
-    while (rc == 0 && k < 10) {
+    // shows a back buffer given only its own damage keeping an old ring.
+    // The first is the tab strip's (2.8a3); the eleventh, the first radio.
+    while (rc == 0 && k < 11) {
         gx_key(KC_TAB, 0, 0);
         if (gx_matches(GX_KEY_MS) == 0) { rc = 4605; }
         k = k + 1;
@@ -3332,6 +3370,30 @@ fn gx_gallery(arg: u64) -> i32 {
     if (rc == 0) { gx_key(KC_END, 0, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4622; } }
     if (rc == 0) { gx_key(KC_V, 118, KEYMOD_CTRL); if (gx_matches(GX_KEY_MS) == 0) { rc = 4623; } }
     if (rc == 0 && strlen(tk_field_text(&gx_ui, tk_focused(&gx_ui))) != 6) { rc = 4624; }
+    // 2.8a3: Ctrl+Tab to the second page, the focus going to the tabs from
+    // the field put away; a list chosen in and scrolled to its end; a tree
+    // item closed (a new layout)
+    if (rc == 0) { gx_key(KC_TAB, 0, KEYMOD_CTRL); if (gx_matches(GX_KEY_MS) == 0) { rc = 4625; } }
+    if (rc == 0 && gx_ui.node[gx_ui.focus].kind != TK_TABS) { rc = 4626; }
+    if (rc == 0) { gx_key(KC_TAB, 0, 0); gx_key(KC_DOWN, 0, 0); gx_key(KC_DOWN, 0, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4627; } }
+    if (rc == 0) { gx_key(KC_END, 0, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4628; } }
+    if (rc == 0 && gx_ui.node[gx_ui.node[gx_ui.focus].parent].sy <= 0) { rc = 4629; }
+    if (rc == 0) { gx_key(KC_TAB, 0, 0); gx_key(KC_DOWN, 0, 0); gx_key(KC_LEFT, 0, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4630; } }
+    // the third page: F10 opens the bar's first menu, Right the next, Esc
+    // closes them
+    if (rc == 0) { gx_key(KC_TAB, 0, KEYMOD_CTRL); gx_key(TK_KC_F10, 0, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4631; } }
+    if (rc == 0 && tk_open_top(&gx_ui) == 0) { rc = 4632; }
+    if (rc == 0) { gx_key(KC_RIGHT, 0, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4633; } }
+    if (rc == 0) { gx_key(KC_ESC, 27, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4634; } }
+    if (rc == 0 && tk_open_top(&gx_ui) != 0) { rc = 4635; }
+    // a tooltip shown at once by Tab; a dialog opened by its button, its
+    // Cancel pressed by Esc
+    if (rc == 0) { gx_key(KC_TAB, 0, 0); gx_key(KC_TAB, 0, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4636; } }
+    if (rc == 0 && tk_tip_shown(&gx_ui) == 0) { rc = 4637; }
+    if (rc == 0) { gx_key(KC_TAB, 0, KEYMOD_SHIFT); gx_key(KC_SPACE, 32, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4638; } }
+    if (rc == 0 && tk_open_top(&gx_ui) != gp_dlg) { rc = 4639; }
+    if (rc == 0) { gx_key(KC_ESC, 27, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4640; } }
+    if (rc == 0 && tk_open_top(&gx_ui) != 0) { rc = 4641; }
     if (rc == 0) {
         let was: u32 = gx_ui.canvas.width;
         gx_key(KC_1 + 1, 50, KEYMOD_CTRL);
@@ -3383,6 +3445,7 @@ fn all() -> void {
     test_run("windows: transparency",                  w_alpha,                    30000);
     test_run("windows: not answering, grey and ended", w_hung,                     30000);
     test_run("windows: a client gone takes its own",   w_gone,                     30000);
+    test_run("windows: a timed wait runs out once",     w_timed,                    30000);
     test_run("windows: how many a client may have",    w_limits,                   30000);
     test_run("windows: a title's pixels",              w_text,                     30000);
     test_run("windows: real clients, the whole way",   w_real,                     400000);
@@ -3412,6 +3475,14 @@ fn all() -> void {
     test_run("toolkit: commands and their keys",        tt_commands,                30000);
     test_run("toolkit: the text field",                 tt_field,                   30000);
     test_run("toolkit: dead keys",                      tt_dead,                    30000);
+    test_run("toolkit: a scroll view",                 tt_scroll,                  30000);
+    test_run("toolkit: a list and a table",            tt_list,                    30000);
+    test_run("toolkit: a tree",                        tt_tree,                    30000);
+    test_run("toolkit: tabs",                          tt_tabs,                    30000);
+    test_run("toolkit: menus",                         tt_menus,                   30000);
+    test_run("toolkit: tooltips",                      tt_tips,                    30000);
+    test_run("toolkit: a dialog",                      tt_dialog,                  30000);
+    test_run("toolkit: a text grid",                   tt_textgrid,                30000);
     test_run("gallery: the window holds what was drawn", gx_gallery,                300000);
 }
 

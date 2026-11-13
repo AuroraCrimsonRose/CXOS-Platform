@@ -1469,6 +1469,16 @@ language work in `language/CX_X_PLAN.md`.
      with selection and undo; the clipboard in the server, set or read only
      by the focused client in the second after a press, one read a press;
      the input-method interface and the dead-key method.
+     **2.8a3 done 2026-11-13** (`system/CX_TOOLKIT.md` §6, §9): scroll
+     views that bring the focus into sight; lists, trees and tables with
+     one chosen row, a tree's keys as Serenity's TreeView, a table's
+     header; tabs, Ctrl+Tab wrapping; a menu bar (F10) and context menus
+     (right press, Shift+F10, the Menu key) whose items run commands;
+     tooltips after 700 ms, on the server's new timed wait
+     (`DS_OP_WAIT` flags, `WM_EV_TIMER`); dialogs with the standard
+     buttons in Haiku's BAlert order, modal to the window; the text grid
+     the terminal (2.8b) will draw in. The gallery is three pages in tabs.
+     Not yet seen on the FX rig (it is out of reach for a while).
      **Design goals** (Aurora, 2026-11-11), where other systems are weak:
      (1) one toolkit, no legacy layers beside it; (2) logical units and a
      scale per window from the first day, snapped to device pixels, so
