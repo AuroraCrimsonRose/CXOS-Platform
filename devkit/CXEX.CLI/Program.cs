@@ -156,6 +156,24 @@ app.Configure(config =>
             .WithDescription("Reports an .xfnt's geometry and slot usage, and can print one glyph as ASCII art.");
     });
 
+    // ---- localisation (roadmap 2.8a4, system/CX_TOOLKIT.md §10) ----
+    config.AddBranch("strings", strings =>
+    {
+        strings.SetDescription("Builds XSTR string tables from Fluent sources, with CLDR's plural rules.");
+
+        strings.AddCommand<StringsBuildCommand>("build")
+            .WithDescription("Compiles an app's .ftl sources into one locale's .xstr; --base holds a translation to the English, --pseudo writes the pseudo-locale.");
+        strings.AddCommand<StringsPluralsCommand>("plurals")
+            .WithDescription("Writes every CLDR locale's plural rules with CLDR's samples (.xplt), for the boot test.");
+    });
+    config.AddBranch("unicode", unicode =>
+    {
+        unicode.SetDescription("Generates tables from the Unicode Character Database.");
+
+        unicode.AddCommand<UnicodeBidiCommand>("bidi")
+            .WithDescription("Writes os/std/unibidi.xfxn, the tables of the UAX #9 implementation; --check compares instead.");
+    });
+
     // ---- the OS build (replaces tools/build.bat) ----
     config.AddBranch("os", os =>
     {

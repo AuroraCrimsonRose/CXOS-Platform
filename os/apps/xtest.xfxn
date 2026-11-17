@@ -26,6 +26,7 @@ import "bochsdrv.xfxn";
 import "virtiogpu.xfxn";
 import "toolkit_tests.xfxn";
 import "gallery_pages.xfxn";
+import "locale_tests.xfxn";
 
 const MS: u64 = 1000000;
 
@@ -3309,8 +3310,11 @@ fn gx_gallery(arg: u64) -> i32 {
     let blob: [16]u8;
     let n: u32 = strcopy(&blob[0], "gallery", 16) + 1;
     if (dsv_launch(&wx, "/Shared/Programs/gallery.xuex", &blob[0], n) < 0) { wx_down(); return 4601; }
-    // the test's server has no font: nor has the replay
+    // the test's server has no font: nor has the replay. It has the
+    // gallery's English (2.8a4), as the gallery has from the server
     tk_init(&gx_ui, 4, 0 as *ds_font);
+    if (lt_tables() != 0) { wx_down(); return 4642; }
+    tk_set_locale(&gx_ui, &lt_en, 0 as *lc_table);
     if (gp_build(&gx_ui) != 0) { wx_down(); return 4602; }
     let w: u32 = 0;
     let h: u32 = 0;
@@ -3405,6 +3409,45 @@ fn gx_gallery(arg: u64) -> i32 {
     return rc;
 }
 
+// 6900: the gallery in the pseudo-locale (2.8a4), its tables handed over
+// by a server whose locale is qps: right to left and mirrored, it draws
+// what the headless ui draws with the same tables, after the keys that
+// mirroring changes: Tab, Left (Right, mirrored) on a radio, Alt+F (a
+// mnemonic) and Esc, the third page with its text grid, Alt+D, Esc.
+fn gx_gallery_qps(arg: u64) -> i32 {
+    if (lt_tables() != 0) { return 6900; }
+    if (wx_up() != 0) { return 6901; }
+    if (dsv_set_locale(&wx, "qps") != 0 || dsv_set_locale(&wx, "no/such") != E_INVALID_ARGS) { wx_down(); return 6902; }
+    let blob: [16]u8;
+    let n: u32 = strcopy(&blob[0], "gallery", 16) + 1;
+    if (dsv_launch(&wx, "/Shared/Programs/gallery.xuex", &blob[0], n) < 0) { wx_down(); return 6903; }
+    tk_init(&gx_ui, 4, 0 as *ds_font);
+    tk_set_locale(&gx_ui, &lt_qps, &lt_en);
+    if (gx_ui.mirror != 1 || gp_build(&gx_ui) != 0) { wx_down(); return 6904; }
+    let w: u32 = 0;
+    let h: u32 = 0;
+    tk_fit(&gx_ui, &w, &h);
+    if (tk_size(&gx_ui, w, h) != 0) { wx_down(); return 6905; }
+    let d: ds_damage;
+    tk_paint(&gx_ui, &d);
+    let rc: i32 = 0;
+    if (gx_matches(120000) == 0) { rc = 6906; }
+    let k: u32 = 0;
+    while (rc == 0 && k < 11) { gx_key(KC_TAB, 0, 0); k = k + 1; }
+    if (rc == 0 && gx_matches(GX_KEY_MS) == 0) { rc = 6907; }
+    if (rc == 0) { gx_key(KC_LEFT, 0, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 6908; } }
+    if (rc == 0) { gx_key(KC_F, 102, KEYMOD_ALT); if (gx_matches(GX_KEY_MS) == 0) { rc = 6909; } }
+    if (rc == 0 && tk_open_top(&gx_ui) == 0) { rc = 6910; }
+    if (rc == 0) { gx_key(KC_ESC, 27, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 6911; } }
+    if (rc == 0) { gx_key(KC_TAB, 0, KEYMOD_CTRL); gx_key(KC_TAB, 0, KEYMOD_CTRL); if (gx_matches(GX_KEY_MS) == 0) { rc = 6912; } }
+    if (rc == 0) { gx_key(KC_D, 100, KEYMOD_ALT); if (gx_matches(GX_KEY_MS) == 0) { rc = 6913; } }
+    if (rc == 0 && tk_open_top(&gx_ui) != gp_dlg) { rc = 6914; }
+    if (rc == 0) { gx_key(KC_ESC, 27, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 6915; } }
+    tk_free(&gx_ui);
+    wx_down();
+    return rc;
+}
+
 fn all() -> void {
     test_run("threads: create refusals",               t_create_refused,           30000);
     test_run("threads: workers joined with codes",     t_workers_joined,           30000);
@@ -3483,7 +3526,14 @@ fn all() -> void {
     test_run("toolkit: tooltips",                      tt_tips,                    30000);
     test_run("toolkit: a dialog",                      tt_dialog,                  30000);
     test_run("toolkit: a text grid",                   tt_textgrid,                30000);
+    test_run("locale: tables, lookup, plurals, fallback", lt_locale,                30000);
+    test_run("locale: CLDR's plural samples",          lt_plurals,                 60000);
+    test_run("bidi: classes and hand cases",           lt_bidi_cases,              30000);
+    test_run("toolkit: bidi text, mirrored, mnemonics drawn", lt_bidi_text,        30000);
+    test_run("toolkit: mnemonics",                     lt_mnemonic,                30000);
+    test_run("toolkit: the pseudo-locale, mirrored",   lt_pseudo,                  120000);
     test_run("gallery: the window holds what was drawn", gx_gallery,                300000);
+    test_run("gallery: in the pseudo-locale",          gx_gallery_qps,             300000);
 }
 
 fn _start() -> void { test_main(all); }

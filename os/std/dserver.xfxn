@@ -39,7 +39,8 @@ struct dsv {
     launched: u32,      // clients started, ever
     proc: [16]i32,      // each client's process; WM_CLIENT_MAX
     frames: u32,
-    pixels: u64
+    pixels: u64,
+    locale: [16]u8      // its clients' locale (2.8a4; empty: en): dsv_set_locale
 }
 
 global dsv_inbox: [65536]u8;    // IPC_MSG_MAX, so that any message can be taken
@@ -85,6 +86,75 @@ fn dsv_init(s: *dsv, width: u32, height: u32, cursor_w: u32, cursor_h: u32) -> i
     return 0;
 }
 
+// The locale the server's clients are started in (a tag, at most 15 bytes
+// of letters, digits and '-'; "" or "en": English alone). 0 or E_INVALID_ARGS.
+fn dsv_set_locale(s: *dsv, tag: *u8) -> i32 {
+    let n: u32 = strlen(tag);
+    if (n > 15) { return E_INVALID_ARGS; }
+    let i: u32 = 0;
+    while (i < n) {
+        let c: u8 = tag[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-')) { return E_INVALID_ARGS; }
+        i += 1;
+    }
+    memzero(&s.locale[0], 16);
+    memcpy(&s.locale[0], tag, n);
+    return 0;
+}
+
+global dsv_lpath: [128]u8;
+
+// /System/Locale/<program>-<tag>.xstr, program the last name of path
+// without its extension, into the memory at p (at most WIN_LOCALE_ONE): its
+// length, or 0 (no such file, too big, or the name too long).
+fn dsv_locale_read(path: *u8, tag: *u8, p: *u8) -> u32 {
+    let n: u32 = strlen(path);
+    let b: u32 = 0;
+    let e: u32 = n;
+    let i: u32 = 0;
+    while (i < n) {
+        if (path[i] == 47) { b = i + 1; e = n; }
+        if (path[i] == 46) { e = i; }
+        i += 1;
+    }
+    if (e <= b || e - b + strlen(tag) + 22 > 127) { return 0; }
+    let k: u32 = strcopy(&dsv_lpath[0], "/System/Locale/", 128);
+    memcpy(&dsv_lpath[k], &path[b], e - b);
+    k += e - b;
+    dsv_lpath[k] = '-';
+    k += 1;
+    k += strcopy(&dsv_lpath[k], tag, 128 - k);
+    strcopy(&dsv_lpath[k], ".xstr", 128 - k);
+    let h: i32 = file_open(&dsv_lpath[0], FOPEN_READ);
+    if (h <= 0) { return 0; }
+    let got: i32 = file_read(h, p, WIN_LOCALE_ONE as u64);
+    // one byte more is a table too big for the client's (LC_TABLE_MAX)
+    let more: [1]u8;
+    if (got == (WIN_LOCALE_ONE as i32) && file_read(h, &more[0], 1) > 0) { got = 0; }
+    file_close(h);
+    if (got <= 0) { return 0; }
+    return got as u32;
+}
+
+// The memory object of path's string tables (window.xfxn WIN_LOCALE_SLOT),
+// or 0 if it has none. The server keeps no mapping of it.
+fn dsv_locale_mem(s: *dsv, path: *u8) -> i32 {
+    let addr: u64 = 0;
+    let m: i32 = ds_mem(WIN_LOCALE_BYTES as u64, &addr);
+    if (m <= 0) { return 0; }
+    let p: *u8 = addr as *u8;
+    let h: *u32 = p as *u32;
+    h[0] = 0;
+    if (s.locale[0] != 0 && streq(&s.locale[0], "en") == 0) {
+        h[0] = dsv_locale_read(path, &s.locale[0], &p[8]);
+    }
+    h[1] = dsv_locale_read(path, "en", &p[8 + h[0]]);
+    let any: u32 = h[0] + h[1];
+    vm_unmap(addr, 0);
+    if (any == 0) { handle_close(m); return 0; }
+    return m;
+}
+
 // Start `path` as a client: its process handle's slot, or an error. args and
 // args_len are the argument blob, as spawn_args takes it.
 fn dsv_launch(s: *dsv, path: *u8, args: *u8, args_len: u32) -> i32 {
@@ -94,13 +164,20 @@ fn dsv_launch(s: *dsv, path: *u8, args: *u8, args_len: u32) -> i32 {
     if (send <= 0) { s.w.client[c].used = 0; return send; }
     // the connection, and the server's font, shared read-only: a client
     // draws its own text (system/CX_TOOLKIT.md §2) and needs no GRANT_DISK
-    let sh: [2]spawn_handle;
+    let sh: [3]spawn_handle;
     sh[0].handle = send; sh[0].op = IPC_HANDLE_MOVE; sh[0].rights = IPC_RIGHTS_SAME; sh[0].slot = WIN_SLOT;
     let nh: u32 = 1;
     if (s.font.bits != (0 as *u8) && s.font.mem > 0) {
         sh[1].handle = s.font.mem; sh[1].op = IPC_HANDLE_COPY;
         sh[1].rights = HRIGHT_MAP | HRIGHT_INSPECT; sh[1].slot = WIN_FONT_SLOT;
         nh = 2;
+    }
+    // its string tables, the client's alone (2.8a4)
+    let lm: i32 = dsv_locale_mem(s, path);
+    if (lm > 0) {
+        sh[nh].handle = lm; sh[nh].op = IPC_HANDLE_COPY;
+        sh[nh].rights = HRIGHT_MAP | HRIGHT_INSPECT; sh[nh].slot = WIN_LOCALE_SLOT;
+        nh += 1;
     }
     let a: spawn_args;
     memzero((&a) as *u8, sizeof a);
@@ -112,6 +189,7 @@ fn dsv_launch(s: *dsv, path: *u8, args: *u8, args_len: u32) -> i32 {
     a.handles = (&sh[0]) as u64;
     a.handle_count = nh;
     let ph: i32 = exec_path(path, &a);
+    if (lm > 0) { handle_close(lm); }
     if (ph <= 0) { handle_close(send); s.w.client[c].used = 0; return ph; }
     let rc: i32 = queue_register(s.queue, ph, SIGNAL_PROCESS_ENDED, DSV_KEY_PROC + (c as u64));
     if (rc != 0) { process_kill(ph); handle_close(ph); s.w.client[c].used = 0; return rc; }

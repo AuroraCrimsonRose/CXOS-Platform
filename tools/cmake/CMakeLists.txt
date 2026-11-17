@@ -570,6 +570,40 @@ add_custom_command(
     COMMENT "FONT ter-u16n.bdf -> console_16.xfnt (CP437)"
 )
 
+# ---- string tables: Fluent sources -> .xstr, staged to /System/Locale (2.8a4) ----
+#
+# An app's table is built from the toolkit's source and its own at once, so a
+# key is unique across them (system/CX_TOOLKIT.md §10), in English and in the
+# pseudo-locale qps. The display server hands a client its program's tables.
+# plurals.xplt is every CLDR locale's rules with CLDR's own samples, which the
+# boot holds std/locale.xfxn to (vendor/cldr, Unicode-3.0).
+set(LOCALE_DIR    ${SRC_DIR}/os/locale)
+set(TK_FTL        ${LOCALE_DIR}/toolkit/en.ftl)
+set(GALLERY_FTL   ${LOCALE_DIR}/gallery/en.ftl)
+set(GALLERY_EN    ${BUILD_DIR}/gallery-en.xstr)
+set(GALLERY_QPS   ${BUILD_DIR}/gallery-qps.xstr)
+set(PLURALS_XML   ${SRC_DIR}/vendor/cldr/plurals.xml)
+set(PLURALS_XPLT  ${BUILD_DIR}/plurals.xplt)
+add_custom_command(
+    OUTPUT ${GALLERY_EN}
+    COMMAND ${CXK} strings build ${TK_FTL} ${GALLERY_FTL} --locale en --plurals ${PLURALS_XML} -o ${GALLERY_EN}
+    DEPENDS ${TK_FTL} ${GALLERY_FTL} ${PLURALS_XML} ${CXK}
+    COMMENT "STRINGS gallery -> gallery-en.xstr"
+)
+add_custom_command(
+    OUTPUT ${GALLERY_QPS}
+    COMMAND ${CXK} strings build ${TK_FTL} ${GALLERY_FTL} --locale qps --pseudo --plurals ${PLURALS_XML} -o ${GALLERY_QPS}
+    DEPENDS ${TK_FTL} ${GALLERY_FTL} ${PLURALS_XML} ${CXK}
+    COMMENT "STRINGS gallery -> gallery-qps.xstr (pseudo-locale)"
+)
+add_custom_command(
+    OUTPUT ${PLURALS_XPLT}
+    COMMAND ${CXK} strings plurals ${PLURALS_XML} -o ${PLURALS_XPLT}
+    DEPENDS ${PLURALS_XML} ${CXK}
+    COMMENT "STRINGS plurals.xml -> plurals.xplt (CLDR's samples)"
+)
+set(LOCALE_FILES ${GALLERY_EN} ${GALLERY_QPS} ${PLURALS_XPLT})
+
 # ---- the X programs ----
 # Every program is staged onto the disk as a file and started with
 # SYS_EXEC_PATH, the shell too: the executive starts
@@ -705,6 +739,9 @@ set(CXK_STAGED_PROGRAMS
 )
 set(CXK_STAGED_SHARED
     --stage System/Fonts/console_16.xfnt=${CONSOLE16_XFNT}
+    --stage System/Locale/gallery-en.xstr=${GALLERY_EN}
+    --stage System/Locale/gallery-qps.xstr=${GALLERY_QPS}
+    --stage System/Locale/plurals.xplt=${PLURALS_XPLT}
     --stage Shared/Source/xc.xfxn=${SRC_DIR}/os/xc/xc.xfxn
     --stage Shared/Source/front.xfxn=${SRC_DIR}/os/xc/front.xfxn
     --stage Shared/Source/ir.xfxn=${SRC_DIR}/os/xc/ir.xfxn
@@ -740,7 +777,7 @@ add_custom_command(
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_DISK_ELF} ${EXEC_XOEX} ${DISK_APP_XUEX}
             ${SUPERVISOR_XSEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
             ${SETCHECK_XUEX} ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX} ${FUTEX_XUEX} ${XTEST_XUEX} ${DISPLAYD_XUEX} ${WDEMO_XUEX} ${GALLERY_XUEX} ${BOCHS_XUEX} ${VIRTGPU_XUEX} ${PROCMAN_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
-            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${CXK}
+            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${LOCALE_FILES} ${CXK}
     COMMENT "Building the CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})

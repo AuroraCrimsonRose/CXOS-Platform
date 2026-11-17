@@ -7,7 +7,8 @@
 //   run +screen +spawn +endpoint +disk displayd gallery
 //
 // Every widget in every state (gallery_pages.xfxn). Started by the display
-// server, which gives it the connection and the font. Keys: Tab, Space,
+// server, which gives it the connection, the font and its strings
+// (2.8a4: /System/Locale/gallery-<tag>.xstr, displayd --locale). Keys: Tab, Space,
 // Enter and the arrows go to the widgets; Ctrl+Tab turns the page; F10
 // opens the menus; Ctrl+D turns dark on and off; Ctrl+1, 2, 3 show it at
 // 100, 150 and 200 %.
@@ -24,6 +25,7 @@ fn _start() -> void {
     let font: *ds_font = 0 as *ds_font;
     if (tk_win_font(&ga_win) == 1) { font = &ga_win.font; }
     tk_init(&ga_ui, 4, font);
+    tk_win_locale(&ga_win, &ga_ui);     // its strings, as the server's locale has them (2.8a4)
     if (gp_build(&ga_ui) != 0) { exit(3); }
     if (tk_win_open(&ga_win, &ga_ui, ep, "Widget gallery", 0) != 0) { exit(4); }
     let ev: tk_event;

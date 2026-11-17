@@ -17,6 +17,10 @@
 // `displayd --empty` starts nobody and waits for Ctrl+Alt+F2.
 // `displayd --virtio-gpu [...]`, which comes first and needs +driver as well,
 // shows on the machine's virtio-gpu display and not on the screen.
+// `displayd --locale <tag> [...]` (after --virtio-gpu, before the rest)
+// starts its clients in that locale: their strings from
+// /System/Locale/<program>-<tag>.xstr, English from -en.xstr (2.8a4; `en`
+// by default, `qps` the pseudo-locale).
 // `displayd --reduce-motion [client ...]` starts with motion reduced for every
 // client (Super+R turns it on and off).
 //
@@ -114,6 +118,10 @@ fn _start() -> void {
     dd_paint_desktop(&dd.desktop);
     dd_paint_cursor(&dd.cursor);
 
+    if (argc > first + 1 && streq((ai.base + (page[1 + first] as u64)) as *u8, "--locale") != 0) {
+        if (dsv_set_locale(&dd, (ai.base + (page[2 + first] as u64)) as *u8) != 0) { dd_fail("a locale is a tag such as en or qps", E_INVALID_ARGS); }
+        first = first + 2;
+    }
     if (argc > first && strlen((ai.base + (page[1 + first] as u64)) as *u8) == 15
         && strneq((ai.base + (page[1 + first] as u64)) as *u8, "--reduce-motion", 15) != 0) {
         dd.w.reduce = 1;

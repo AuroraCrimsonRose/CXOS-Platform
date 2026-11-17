@@ -1,0 +1,298 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// bidicheck.xfxn - std/bidi.xfxn against Unicode's conformance files.
+// Aurora Tejeda / CATX Systems
+//
+//   bidicheck vendor/unicode/BidiTest.txt vendor/unicode/BidiCharacterTest.txt
+//
+// A host program, built as the compiler's dump programs are (HostBuild), and
+// run by the Differential test BidiConformance: every case of both files,
+// each paragraph direction BidiTest.txt asks for, levels and visual order.
+// Prints each file's count of cases and failures, the first failures in full,
+// and exits 1 if any case failed. A line it cannot read is a failure too, so
+// a file it misreads cannot pass by having nothing in it.
+
+import "xc_sys.xfxn";
+import "bidi.xfxn";
+
+global names: [23]*u8 = [
+    "L", "R", "AL", "EN", "ES", "ET", "AN", "CS", "NSM", "BN", "B", "S", "WS", "ON",
+    "LRE", "LRO", "RLE", "RLO", "PDF", "LRI", "RLI", "FSI", "PDI",
+];
+
+global src: *u8;
+global srclen: u32;
+global at: u32;            // the cursor
+global eol: u32;           // the end of the current line
+
+global want_lvl: [256]u8;  // 0xFF: x
+global want_n: u32;
+global want_ord: [256]u32;
+global want_m: u32;
+global cls: [256]u8;
+global cps: [256]u32;
+
+global cases: u32;
+global failed: u32;
+global shown: u32;
+global out: buf;
+
+fn skip_sp() -> void { while (at < eol && (src[at] == ' ' || src[at] == 9)) { at += 1; } }
+
+// a decimal number, or false
+fn read_dec(v: *u32) -> bool {
+    skip_sp();
+    if (at >= eol || src[at] < '0' || src[at] > '9') { return false; }
+    let x: u32 = 0;
+    while (at < eol && src[at] >= '0' && src[at] <= '9') { x = x * 10 + (src[at] - '0') as u32; at += 1; }
+    *v = x;
+    return true;
+}
+
+fn hexval(c: u8) -> u32 {
+    if (c >= '0' && c <= '9') { return (c - '0') as u32; }
+    if (c >= 'A' && c <= 'F') { return (c - 'A') as u32 + 10; }
+    if (c >= 'a' && c <= 'f') { return (c - 'a') as u32 + 10; }
+    return 99;
+}
+
+fn read_hex(v: *u32) -> bool {
+    skip_sp();
+    let x: u32 = 0;
+    let n: u32 = 0;
+    while (at < eol && hexval(src[at]) < 16) { x = x * 16 + hexval(src[at]); at += 1; n += 1; }
+    *v = x;
+    return n > 0;
+}
+
+// up to `;` or the line's end: levels, x for a removed character
+fn read_levels(end: u32) -> bool {
+    want_n = 0;
+    while (true) {
+        skip_sp();
+        if (at >= end) { return true; }
+        if (want_n == 256) { return false; }
+        if (src[at] == 'x') { want_lvl[want_n] = 0xFF; at += 1; }
+        else {
+            let v: u32 = 0;
+            if (!read_dec(&v)) { return false; }
+            want_lvl[want_n] = v as u8;
+        }
+        want_n += 1;
+    }
+    return true;
+}
+
+fn read_order(end: u32) -> bool {
+    want_m = 0;
+    while (true) {
+        skip_sp();
+        if (at >= end) { return true; }
+        if (want_m == 256) { return false; }
+        let v: u32 = 0;
+        if (!read_dec(&v)) { return false; }
+        want_ord[want_m] = v;
+        want_m += 1;
+    }
+    return true;
+}
+
+// the next `;` in the line, or eol
+fn field_end() -> u32 {
+    let e: u32 = at;
+    while (e < eol && src[e] != ';') { e += 1; }
+    return e;
+}
+
+fn class_named(s: u32, n: u32) -> u8 {
+    let k: u32 = 0;
+    while (k < 23) {
+        let nm: *u8 = names[k];
+        let j: u32 = 0;
+        while (j < n && nm[j] != 0 && nm[j] == src[s + j]) { j += 1; }
+        if (j == n && nm[j] == 0) { return k as u8; }
+        k += 1;
+    }
+    return BD_NONE;
+}
+
+fn show_line(line: u32, why: *u8, p: *bd_para) -> void {
+    failed += 1;
+    if (shown >= 20) { return; }
+    shown += 1;
+    buf_str(&out, "  line ");
+    buf_u32(&out, line);
+    buf_str(&out, ": ");
+    buf_str(&out, why);
+    buf_str(&out, ": ");
+    let b: u32 = eol;          // the whole line, from its start
+    while (b > 0 && src[b - 1] != 10) { b -= 1; }
+    buf_append(&out, &src[b], eol - b);
+    if (p as usize != 0) {
+        buf_str(&out, "  (got ");
+        let i: u32 = 0;
+        while (i < p.n) {
+            if (i > 0) { buf_push(&out, 32); }
+            if (p.rm[i] != 0) { buf_push(&out, 120); } else { buf_u32(&out, p.lvl[i] as u32); }
+            i += 1;
+        }
+        buf_str(&out, " para ");
+        buf_u32(&out, p.level);
+        buf_push(&out, 41);
+    }
+    buf_push(&out, 10);
+}
+
+// compares p's result with want_*; the reason it differs, or 0
+fn judge(p: *bd_para) -> *u8 {
+    if (want_n != p.n) { return "the levels line has the wrong count"; }
+    let i: u32 = 0;
+    while (i < p.n) {
+        if (want_lvl[i] == 0xFF) { if (p.rm[i] == 0) { return "a level where x is wanted"; } }
+        else if (p.rm[i] != 0 || p.lvl[i] != want_lvl[i]) { return "levels differ"; }
+        i += 1;
+    }
+    let m: u32 = bd_reorder(p);
+    if (m != want_m) { return "the visual order has the wrong count"; }
+    let k: u32 = 0;
+    while (k < m) { if (p.ord[k] != want_ord[k]) { return "visual order differs"; } k += 1; }
+    return 0 as *u8;
+}
+
+fn check_file(path: *u8, p: *bd_para) -> bool {
+    let b: buf = buf_new();
+    if (!read_file(path, &b)) { err_str("bidicheck: cannot read "); err_str(path); err_str("\n"); return false; }
+    src = b.data;
+    srclen = b.len;
+    at = 0;
+    cases = 0;
+    failed = 0;
+    shown = 0;
+    want_n = 0;
+    want_m = 0;
+    let line: u32 = 0;
+    let fails: buf = buf_new();
+    let keep: buf = out;
+    out = fails;
+    while (at < srclen) {
+        line += 1;
+        eol = at;
+        while (eol < srclen && src[eol] != 10) { eol += 1; }
+        let start: u32 = at;
+        let e: u32 = eol;
+        if (e > start && src[e - 1] == 13) { eol = e - 1; }
+        let semis: u32 = 0;
+        let j: u32 = start;
+        while (j < eol) { if (src[j] == ';') { semis += 1; } j += 1; }
+        if (start == eol || src[start] == '#') { }
+        else if (src[start] == '@') {
+            let k: u32 = start;
+            while (k < eol && src[k] != ':') { k += 1; }
+            at = k + 1;
+            if (k - start == 7 && src[start + 1] == 'L') { if (!read_levels(eol)) { show_line(line, "unreadable @Levels", 0 as *bd_para); } }
+            else if (k - start == 8 && src[start + 1] == 'R') { if (!read_order(eol)) { show_line(line, "unreadable @Reorder", 0 as *bd_para); } }
+            else { show_line(line, "unknown @ line", 0 as *bd_para); }
+        } else if (semis == 1) {
+            // BidiTest.txt: classes; bitset
+            let n: u32 = 0;
+            let ok: bool = true;
+            let fe: u32 = field_end();
+            while (true) {
+                skip_sp();
+                if (at >= fe) { break; }
+                let s: u32 = at;
+                while (at < fe && src[at] != ' ') { at += 1; }
+                let c: u8 = class_named(s, at - s);
+                if (c == BD_NONE || n == 256) { ok = false; break; }
+                cls[n] = c;
+                n += 1;
+            }
+            at = fe + 1;
+            let bits: u32 = 0;
+            if (!ok || !read_dec(&bits) || bits == 0 || bits > 7) { show_line(line, "unreadable case", 0 as *bd_para); }
+            else {
+                let d: u32 = 0;
+                while (d < 3) {
+                    if ((bits & (1 << d)) != 0) {
+                        bd_set_classes(p, &cls[0], n);
+                        let dir: u32 = BD_AUTO;
+                        if (d == 1) { dir = BD_LTR; }
+                        if (d == 2) { dir = BD_RTL; }
+                        bd_run(p, dir);
+                        cases += 1;
+                        let why: *u8 = judge(p);
+                        if (why as usize != 0) { show_line(line, why, p); }
+                    }
+                    d += 1;
+                }
+            }
+        } else if (semis == 4) {
+            // BidiCharacterTest.txt: code points; direction; paragraph level; levels; order
+            let n: u32 = 0;
+            let ok: bool = true;
+            let fe: u32 = field_end();
+            while (true) {
+                skip_sp();
+                if (at >= fe) { break; }
+                let v: u32 = 0;
+                if (n == 256 || !read_hex(&v)) { ok = false; break; }
+                cps[n] = v;
+                n += 1;
+            }
+            at = fe + 1;
+            let dir: u32 = 0;
+            let plev: u32 = 0;
+            if (!read_dec(&dir) || dir > 2) { ok = false; }
+            skip_sp();
+            if (at < eol && src[at] == ';') { at += 1; } else { ok = false; }
+            if (!read_dec(&plev)) { ok = false; }
+            skip_sp();
+            if (at < eol && src[at] == ';') { at += 1; } else { ok = false; }
+            let le: u32 = field_end();
+            if (ok && !read_levels(le)) { ok = false; }
+            at = le + 1;
+            if (ok && !read_order(eol)) { ok = false; }
+            if (!ok) { show_line(line, "unreadable case", 0 as *bd_para); }
+            else {
+                bd_set(p, &cps[0], n);
+                let d: u32 = BD_AUTO;
+                if (dir == 0) { d = BD_LTR; }
+                if (dir == 1) { d = BD_RTL; }
+                bd_run(p, d);
+                cases += 1;
+                let why: *u8 = judge(p);
+                if (why as usize == 0 && p.level != plev) { why = "paragraph level differs"; }
+                if (why as usize != 0) { show_line(line, why, p); }
+            }
+        } else { show_line(line, "not a case", 0 as *bd_para); }
+        at = e + 1;
+    }
+    fails = out;
+    out = keep;
+    buf_str(&out, path);
+    buf_str(&out, ": ");
+    buf_u32(&out, cases);
+    buf_str(&out, " cases, ");
+    buf_u32(&out, failed);
+    buf_str(&out, " failed\n");
+    buf_append(&out, fails.data, fails.len);
+    out_buf(&out);
+    buf_clear(&out);
+    buf_free(&fails);
+    buf_free(&b);
+    return failed == 0 && cases > 0;
+}
+
+fn xc_main() -> i32 {
+    out = buf_new();
+    let p: bd_para;
+    let all: bool = true;
+    let i: u32 = 1;
+    if (xc_argc() < 2) { err_str("usage: bidicheck BidiTest.txt BidiCharacterTest.txt\n"); return 2; }
+    while (i < xc_argc()) {
+        if (!check_file(xc_arg(i), &p)) { all = false; }
+        i += 1;
+    }
+    if (all) { return 0; }
+    return 1;
+}

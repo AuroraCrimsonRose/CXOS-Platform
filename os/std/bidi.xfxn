@@ -1,0 +1,589 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/bidi.xfxn - the Unicode Bidirectional Algorithm (UAX #9), for one
+// paragraph of at most BD_MAX code points (system/CX_TOOLKIT.md §10).
+// Aurora Tejeda / CATX Systems
+// Threads: any thread; a bd_para belongs to its caller.
+//
+//   import "bidi.xfxn";
+//
+//   let p: bd_para;
+//   bd_set(&p, cps, n);          // or bd_set_classes, for BidiTest.txt
+//   bd_run(&p, BD_AUTO);         // levels in p.lvl, removed chars in p.rm
+//   let m: u32 = bd_reorder(&p); // visual order in p.ord[0..m]
+//
+// The whole algorithm, rule by rule, with the names UAX #9 gives them:
+// P2-P3 (the paragraph level), X1-X8 (explicit levels and directions, a
+// stack 125 deep), X9 (embeddings, overrides, PDF and BN removed: they keep
+// no level, p.rm says so), X10 (isolating run sequences), W1-W7, N0 (paired
+// brackets, BD16's stack of 63), N1-N2, I1-I2, L1 and L2. L3 is optional
+// and not done; L4 is bd_mirror. The paragraph is one line: the toolkit
+// lays out labels, not wrapped text.
+//
+// Held to Unicode's own conformance files: os/xc/bidicheck.xfxn runs every
+// case of BidiTest.txt and BidiCharacterTest.txt (vendor/unicode), in the
+// container's Differential run, and must fail none.
+
+import "unibidi.xfxn";
+
+const BD_MAX: u32 = 256;
+const BD_DEPTH: u32 = 125;       // max_depth (BD2)
+const BD_BRACKETS: u32 = 63;     // BD16's stack
+
+const BD_LTR: u32 = 0;           // bd_run's direction
+const BD_RTL: u32 = 1;
+const BD_AUTO: u32 = 2;          // P2-P3, left to right when nothing is strong
+
+// Bidi_Class, numbered as unibidi.xfxn's tables are (BidiTables.Classes)
+const BD_L: u8 = 0;
+const BD_R: u8 = 1;
+const BD_AL: u8 = 2;
+const BD_EN: u8 = 3;
+const BD_ES: u8 = 4;
+const BD_ET: u8 = 5;
+const BD_AN: u8 = 6;
+const BD_CS: u8 = 7;
+const BD_NSM: u8 = 8;
+const BD_BN: u8 = 9;
+const BD_B: u8 = 10;
+const BD_S: u8 = 11;
+const BD_WS: u8 = 12;
+const BD_ON: u8 = 13;
+const BD_LRE: u8 = 14;
+const BD_LRO: u8 = 15;
+const BD_RLE: u8 = 16;
+const BD_RLO: u8 = 17;
+const BD_PDF: u8 = 18;
+const BD_LRI: u8 = 19;
+const BD_RLI: u8 = 20;
+const BD_FSI: u8 = 21;
+const BD_PDI: u8 = 22;
+const BD_CLASSES: u32 = 23;
+const BD_NONE: u8 = 0xFF;
+
+struct bd_para {
+    n: u32,
+    level: u32,              // the paragraph embedding level
+    brackets: u32,           // 0 when only classes were given (no code points, no N0)
+    cp: [256]u32,
+    cls: [256]u8,            // the original classes
+    t: [256]u8,              // the current types, as the rules change them
+    lvl: [256]u8,            // the resolved levels
+    xl: [256]u8,             // the explicit levels (X1-X8), which X10 runs and sos/eos are of
+    rm: [256]u8,             // 1: removed by X9 (no level)
+    mat: [256]u32,           // an isolate initiator's matching PDI (BD9), or n
+    ord: [256]u32,           // bd_reorder: logical indices in visual order
+    // scratch
+    idx: [256]u32,           // the characters X9 kept
+    rs: [256]u32,            // level runs, as ranges of idx
+    re: [256]u32,
+    rtaken: [256]u8,
+    seq: [256]u32,           // one isolating run sequence
+    sl: [128]u8,             // the directional status stack
+    so: [128]u8,             // override: 0 neutral, else BD_L or BD_R + 1
+    si: [128]u8,             // 1: an isolate's entry
+    bo: [128]u32,            // bracket pairs, positions in seq
+    bc: [128]u32,
+    bkc: [64]u32,            // BD16's stack: the closing bracket wanted, where its opener is
+    bkp: [64]u32,
+}
+
+// ---- the tables ----
+
+fn bd_class(cp: u32) -> u8 {
+    if (cp > 0x10FFFF) { return BD_L; }
+    let lo: u32 = 0;
+    let hi: u32 = UB_CLASS_N;
+    while (hi - lo > 1) {
+        let mid: u32 = (lo + hi) / 2;
+        if ((ub_class[mid] >> 5) <= cp) { lo = mid; } else { hi = mid; }
+    }
+    return (ub_class[lo] & 31) as u8;
+}
+
+// index of cp in ub_brk_cp, or UB_BRK_N
+fn bd_bracket(cp: u32) -> u32 {
+    let lo: u32 = 0;
+    let hi: u32 = UB_BRK_N;
+    while (lo < hi) {
+        let mid: u32 = (lo + hi) / 2;
+        if (ub_brk_cp[mid] == cp) { return mid; }
+        if (ub_brk_cp[mid] < cp) { lo = mid + 1; } else { hi = mid; }
+    }
+    return UB_BRK_N;
+}
+
+// L4: the glyph a character at an odd level shows (Bidi_Mirroring_Glyph), or itself
+fn bd_mirror(cp: u32) -> u32 {
+    let lo: u32 = 0;
+    let hi: u32 = UB_MIR_N;
+    while (lo < hi) {
+        let mid: u32 = (lo + hi) / 2;
+        if (ub_mir_cp[mid] == cp) { return ub_mir_to[mid]; }
+        if (ub_mir_cp[mid] < cp) { lo = mid + 1; } else { hi = mid; }
+    }
+    return cp;
+}
+
+// 1 if a character of this class can make text right to left (R, AL, AN,
+// or an explicit one): the toolkit's fast path skips bd_run without one
+fn bd_class_rtl(c: u8) -> bool {
+    return c == BD_R || c == BD_AL || c == BD_AN || c == BD_RLE || c == BD_RLO || c == BD_RLI || c == BD_FSI;
+}
+
+// ---- input ----
+
+// the paragraph's code points; false if there are more than BD_MAX
+fn bd_set(p: *bd_para, cps: *u32, n: u32) -> bool {
+    if (n > BD_MAX) { return false; }
+    p.n = n;
+    p.brackets = 1;
+    let i: u32 = 0;
+    while (i < n) { p.cp[i] = cps[i]; p.cls[i] = bd_class(cps[i]); i += 1; }
+    return true;
+}
+
+// classes alone (BidiTest.txt's cases): no code points, so no brackets
+fn bd_set_classes(p: *bd_para, cls: *u8, n: u32) -> bool {
+    if (n > BD_MAX) { return false; }
+    p.n = n;
+    p.brackets = 0;
+    let i: u32 = 0;
+    while (i < n) { p.cp[i] = 0; p.cls[i] = cls[i]; i += 1; }
+    return true;
+}
+
+fn bd_isolate(c: u8) -> bool { return c == BD_LRI || c == BD_RLI || c == BD_FSI; }
+
+// ---- P2-P3, BD9 ----
+
+// BD9: each isolate initiator's matching PDI
+fn bd_match(p: *bd_para) -> void {
+    let i: u32 = 0;
+    while (i < p.n) {
+        p.mat[i] = p.n;
+        if (bd_isolate(p.cls[i])) {
+            let depth: u32 = 0;
+            let j: u32 = i + 1;
+            while (j < p.n) {
+                let c: u8 = p.cls[j];
+                if (bd_isolate(c)) { depth += 1; }
+                else if (c == BD_PDI) {
+                    if (depth == 0) { p.mat[i] = j; break; }
+                    depth -= 1;
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
+// P2: the first strong character in [from, to), skipping isolates: BD_L, BD_R, or BD_NONE
+fn bd_first_strong(p: *bd_para, from: u32, to: u32) -> u8 {
+    let i: u32 = from;
+    while (i < to) {
+        let c: u8 = p.cls[i];
+        if (c == BD_L) { return BD_L; }
+        if (c == BD_R || c == BD_AL) { return BD_R; }
+        if (bd_isolate(c)) { i = p.mat[i]; if (i >= to) { break; } }
+        i += 1;
+    }
+    return BD_NONE;
+}
+
+// ---- X1-X9 ----
+
+fn bd_least_odd(l: u32) -> u32 { return (l + 1) | 1; }
+fn bd_least_even(l: u32) -> u32 { return (l + 2) & 0xFFFFFFFE; }
+
+fn bd_explicit(p: *bd_para) -> void {
+    let top: u32 = 0;                   // the last entry
+    p.sl[0] = p.level as u8;
+    p.so[0] = 0;
+    p.si[0] = 0;
+    let oiso: u32 = 0;                  // overflow isolate count
+    let oemb: u32 = 0;                  // overflow embedding count
+    let viso: u32 = 0;                  // valid isolate count
+    let i: u32 = 0;
+    while (i < p.n) {
+        let c: u8 = p.cls[i];
+        p.t[i] = c;
+        p.rm[i] = 0;
+        let cur: u32 = p.sl[top] as u32;
+        if (c == BD_RLE || c == BD_LRE || c == BD_RLO || c == BD_LRO) {          // X2-X5
+            p.lvl[i] = cur as u8;
+            p.rm[i] = 1;
+            let nl: u32 = bd_least_even(cur);
+            if (c == BD_RLE || c == BD_RLO) { nl = bd_least_odd(cur); }
+            if (nl <= BD_DEPTH && oiso == 0 && oemb == 0) {
+                top += 1;
+                p.sl[top] = nl as u8;
+                p.so[top] = 0;
+                if (c == BD_LRO) { p.so[top] = BD_L + 1; }
+                if (c == BD_RLO) { p.so[top] = BD_R + 1; }
+                p.si[top] = 0;
+            } else if (oiso == 0) { oemb += 1; }
+        } else if (bd_isolate(c)) {                                              // X5a-X5c
+            p.lvl[i] = cur as u8;
+            if (p.so[top] != 0) { p.t[i] = p.so[top] - 1; }
+            let rtl: bool = c == BD_RLI;
+            if (c == BD_FSI) { rtl = bd_first_strong(p, i + 1, p.mat[i]) == BD_R; }
+            let nl: u32 = bd_least_even(cur);
+            if (rtl) { nl = bd_least_odd(cur); }
+            if (nl <= BD_DEPTH && oiso == 0 && oemb == 0) {
+                viso += 1;
+                top += 1;
+                p.sl[top] = nl as u8;
+                p.so[top] = 0;
+                p.si[top] = 1;
+            } else { oiso += 1; }
+        } else if (c == BD_PDI) {                                                // X6a
+            if (oiso > 0) { oiso -= 1; }
+            else if (viso > 0) {
+                oemb = 0;
+                while (p.si[top] == 0) { top -= 1; }
+                top -= 1;
+                viso -= 1;
+            }
+            p.lvl[i] = p.sl[top];
+            if (p.so[top] != 0) { p.t[i] = p.so[top] - 1; }
+        } else if (c == BD_PDF) {                                                // X7
+            p.lvl[i] = cur as u8;
+            p.rm[i] = 1;
+            if (oiso > 0) { }
+            else if (oemb > 0) { oemb -= 1; }
+            else if (p.si[top] == 0 && top >= 1) { top -= 1; }
+        } else if (c == BD_B) {                                                  // X8
+            p.lvl[i] = p.level as u8;
+        } else if (c == BD_BN) {                                                 // X9
+            p.lvl[i] = cur as u8;
+            p.rm[i] = 1;
+        } else {                                                                 // X6
+            p.lvl[i] = cur as u8;
+            if (p.so[top] != 0) { p.t[i] = p.so[top] - 1; }
+        }
+        i += 1;
+    }
+}
+
+// ---- W1-W7, N0-N2, I1-I2 on one isolating run sequence (p.seq[0..len]) ----
+
+fn bd_dir(l: u32) -> u8 { if ((l & 1) != 0) { return BD_R; } return BD_L; }
+
+// N0-N2's strong direction: L, R (EN and AN count as R), or BD_NONE
+fn bd_strong(c: u8) -> u8 {
+    if (c == BD_L) { return BD_L; }
+    if (c == BD_R || c == BD_AL || c == BD_EN || c == BD_AN) { return BD_R; }
+    return BD_NONE;
+}
+
+fn bd_ni(c: u8) -> bool {
+    return c == BD_B || c == BD_S || c == BD_WS || c == BD_ON || bd_isolate(c) || c == BD_PDI;
+}
+
+fn bd_canon(cp: u32) -> u32 {
+    if (cp == 0x2329) { return 0x3008; }
+    if (cp == 0x232A) { return 0x3009; }
+    return cp;
+}
+
+// BD16: the sequence's bracket pairs, sorted by opener, in p.bo/p.bc; their count
+fn bd_pairs(p: *bd_para, len: u32) -> u32 {
+    let np: u32 = 0;
+    let sp: u32 = 0;
+    let k: u32 = 0;
+    while (k < len) {
+        let i: u32 = p.seq[k];
+        k += 1;
+        if (p.t[i] != BD_ON) { continue; }
+        let b: u32 = bd_bracket(p.cp[i]);
+        if (b == UB_BRK_N) { continue; }
+        let pair: u32 = ub_brk_pair[b];
+        if ((pair & 0x80000000) != 0) {
+            if (sp == BD_BRACKETS) { break; }
+            p.bkc[sp] = bd_canon(pair & 0x7FFFFFFF);
+            p.bkp[sp] = k - 1;
+            sp += 1;
+        } else {
+            let want: u32 = bd_canon(p.cp[i]);
+            let s: u32 = sp;
+            while (s > 0) {
+                s -= 1;
+                if (p.bkc[s] == want) {
+                    p.bo[np] = p.bkp[s];
+                    p.bc[np] = k - 1;
+                    np += 1;
+                    sp = s;
+                    break;
+                }
+            }
+        }
+    }
+    // sort by opener (insertion: a few pairs)
+    let a: u32 = 1;
+    while (a < np) {
+        let o: u32 = p.bo[a];
+        let c: u32 = p.bc[a];
+        let j: u32 = a;
+        while (j > 0 && p.bo[j - 1] > o) { p.bo[j] = p.bo[j - 1]; p.bc[j] = p.bc[j - 1]; j -= 1; }
+        p.bo[j] = o;
+        p.bc[j] = c;
+        a += 1;
+    }
+    return np;
+}
+
+fn bd_set_bracket(p: *bd_para, len: u32, at: u32, d: u8) -> void {
+    p.t[p.seq[at]] = d;
+    let k: u32 = at + 1;
+    while (k < len && p.cls[p.seq[k]] == BD_NSM) { p.t[p.seq[k]] = d; k += 1; }
+}
+
+fn bd_resolve(p: *bd_para, len: u32, sos: u8, eos: u8, elev: u32) -> void {
+    let k: u32 = 0;
+    // W1
+    while (k < len) {
+        let i: u32 = p.seq[k];
+        if (p.t[i] == BD_NSM) {
+            if (k == 0) { p.t[i] = sos; }
+            else {
+                let pt: u8 = p.t[p.seq[k - 1]];
+                if (bd_isolate(pt) || pt == BD_PDI) { p.t[i] = BD_ON; } else { p.t[i] = pt; }
+            }
+        }
+        k += 1;
+    }
+    // W2, W3
+    let last: u8 = sos;
+    k = 0;
+    while (k < len) {
+        let i: u32 = p.seq[k];
+        let c: u8 = p.t[i];
+        if (c == BD_L || c == BD_R || c == BD_AL) { last = c; }
+        else if (c == BD_EN && last == BD_AL) { p.t[i] = BD_AN; }
+        k += 1;
+    }
+    k = 0;
+    while (k < len) { if (p.t[p.seq[k]] == BD_AL) { p.t[p.seq[k]] = BD_R; } k += 1; }
+    // W4
+    k = 1;
+    while (k + 1 < len) {
+        let i: u32 = p.seq[k];
+        let c: u8 = p.t[i];
+        let a: u8 = p.t[p.seq[k - 1]];
+        let b: u8 = p.t[p.seq[k + 1]];
+        if (c == BD_ES && a == BD_EN && b == BD_EN) { p.t[i] = BD_EN; }
+        else if (c == BD_CS && a == b && (a == BD_EN || a == BD_AN)) { p.t[i] = a; }
+        k += 1;
+    }
+    // W5
+    k = 0;
+    while (k < len) {
+        if (p.t[p.seq[k]] != BD_ET) { k += 1; continue; }
+        let e: u32 = k;
+        while (e < len && p.t[p.seq[e]] == BD_ET) { e += 1; }
+        let en: bool = (k > 0 && p.t[p.seq[k - 1]] == BD_EN) || (e < len && p.t[p.seq[e]] == BD_EN);
+        if (en) { while (k < e) { p.t[p.seq[k]] = BD_EN; k += 1; } }
+        k = e;
+    }
+    // W6
+    k = 0;
+    while (k < len) {
+        let c: u8 = p.t[p.seq[k]];
+        if (c == BD_ES || c == BD_ET || c == BD_CS) { p.t[p.seq[k]] = BD_ON; }
+        k += 1;
+    }
+    // W7
+    last = sos;
+    k = 0;
+    while (k < len) {
+        let i: u32 = p.seq[k];
+        let c: u8 = p.t[i];
+        if (c == BD_L || c == BD_R) { last = c; }
+        else if (c == BD_EN && last == BD_L) { p.t[i] = BD_L; }
+        k += 1;
+    }
+    let e: u8 = bd_dir(elev);
+    // N0
+    if (p.brackets != 0) {
+        let np: u32 = bd_pairs(p, len);
+        let q: u32 = 0;
+        while (q < np) {
+            let o: u32 = p.bo[q];
+            let c: u32 = p.bc[q];
+            q += 1;
+            let found_e: bool = false;
+            let found_o: bool = false;
+            k = o + 1;
+            while (k < c) {
+                let s: u8 = bd_strong(p.t[p.seq[k]]);
+                if (s == e) { found_e = true; } else if (s != BD_NONE) { found_o = true; }
+                k += 1;
+            }
+            let d: u8 = BD_NONE;
+            if (found_e) { d = e; }
+            else if (found_o) {
+                let before: u8 = sos;
+                k = o;
+                while (k > 0) {
+                    k -= 1;
+                    let s: u8 = bd_strong(p.t[p.seq[k]]);
+                    if (s != BD_NONE) { before = s; break; }
+                }
+                if (before != e) { d = before; } else { d = e; }
+            }
+            if (d != BD_NONE) { bd_set_bracket(p, len, o, d); bd_set_bracket(p, len, c, d); }
+        }
+    }
+    // N1, N2
+    k = 0;
+    while (k < len) {
+        if (!bd_ni(p.t[p.seq[k]])) { k += 1; continue; }
+        let x: u32 = k;
+        while (x < len && bd_ni(p.t[p.seq[x]])) { x += 1; }
+        let before: u8 = sos;
+        if (k > 0) { before = bd_strong(p.t[p.seq[k - 1]]); }
+        let after: u8 = eos;
+        if (x < len) { after = bd_strong(p.t[p.seq[x]]); }
+        let d: u8 = e;
+        if (before == after) { d = before; }
+        while (k < x) { p.t[p.seq[k]] = d; k += 1; }
+    }
+    // I1, I2
+    k = 0;
+    while (k < len) {
+        let i: u32 = p.seq[k];
+        let c: u8 = p.t[i];
+        let l: u8 = p.lvl[i];
+        if ((l & 1) == 0) {
+            if (c == BD_R) { p.lvl[i] = l + 1; }
+            else if (c == BD_AN || c == BD_EN) { p.lvl[i] = l + 2; }
+        } else if (c == BD_L || c == BD_EN || c == BD_AN) { p.lvl[i] = l + 1; }
+        k += 1;
+    }
+}
+
+// ---- X10 ----
+
+fn bd_sequences(p: *bd_para) -> void {
+    let m: u32 = 0;
+    let i: u32 = 0;
+    while (i < p.n) { if (p.rm[i] == 0) { p.idx[m] = i; m += 1; } i += 1; }
+    // level runs over what X9 kept
+    let nr: u32 = 0;
+    let k: u32 = 0;
+    while (k < m) {
+        let s: u32 = k;
+        let l: u8 = p.xl[p.idx[k]];
+        while (k < m && p.xl[p.idx[k]] == l) { k += 1; }
+        p.rs[nr] = s;
+        p.re[nr] = k;
+        p.rtaken[nr] = 0;
+        nr += 1;
+    }
+    let r: u32 = 0;
+    while (r < nr) {
+        if (p.rtaken[r] != 0) { r += 1; continue; }
+        let len: u32 = 0;
+        let cur: u32 = r;
+        let lastrun: u32 = r;
+        while (true) {
+            p.rtaken[cur] = 1;
+            lastrun = cur;
+            let a: u32 = p.rs[cur];
+            while (a < p.re[cur]) { p.seq[len] = p.idx[a]; len += 1; a += 1; }
+            let tail: u32 = p.seq[len - 1];
+            if (!bd_isolate(p.cls[tail]) || p.mat[tail] >= p.n) { break; }
+            let want: u32 = p.mat[tail];
+            let nx: u32 = cur + 1;
+            while (nx < nr && p.idx[p.rs[nx]] != want) { nx += 1; }
+            if (nx >= nr) { break; }
+            cur = nx;
+        }
+        let first: u32 = p.seq[0];
+        let last: u32 = p.seq[len - 1];
+        let lev: u32 = p.xl[first] as u32;
+        let prev: u32 = p.level;
+        if (p.rs[r] > 0) { prev = p.xl[p.idx[p.rs[r] - 1]] as u32; }
+        let next: u32 = p.level;
+        if (!bd_isolate(p.cls[last]) && p.re[lastrun] < m) { next = p.xl[p.idx[p.re[lastrun]]] as u32; }
+        let sl: u32 = lev;
+        if (prev > sl) { sl = prev; }
+        let el: u32 = p.xl[last] as u32;
+        if (next > el) { el = next; }
+        bd_resolve(p, len, bd_dir(sl), bd_dir(el), lev);
+        r += 1;
+    }
+}
+
+// ---- L1 ----
+
+fn bd_trailing(c: u8) -> bool {
+    return c == BD_WS || bd_isolate(c) || c == BD_PDI;
+}
+
+fn bd_line(p: *bd_para) -> void {
+    let pl: u8 = p.level as u8;
+    let i: u32 = 0;
+    while (i < p.n) {
+        let c: u8 = p.cls[i];
+        if (c == BD_S || c == BD_B) {
+            p.lvl[i] = pl;
+            let j: u32 = i;
+            while (j > 0 && (p.rm[j - 1] != 0 || bd_trailing(p.cls[j - 1]))) { j -= 1; p.lvl[j] = pl; }
+        }
+        i += 1;
+    }
+    let j: u32 = p.n;
+    while (j > 0 && (p.rm[j - 1] != 0 || bd_trailing(p.cls[j - 1]))) { j -= 1; p.lvl[j] = pl; }
+}
+
+// ---- the algorithm ----
+
+// resolves p's levels; dir is BD_LTR, BD_RTL or BD_AUTO (P2-P3)
+fn bd_run(p: *bd_para, dir: u32) -> void {
+    bd_match(p);
+    p.level = 0;
+    if (dir == BD_RTL) { p.level = 1; }
+    else if (dir == BD_AUTO && bd_first_strong(p, 0, p.n) == BD_R) { p.level = 1; }
+    bd_explicit(p);
+    let i: u32 = 0;
+    while (i < p.n) { p.xl[i] = p.lvl[i]; i += 1; }
+    bd_sequences(p);
+    bd_line(p);
+}
+
+// L2: the characters X9 kept, in visual order, in p.ord; their count
+fn bd_reorder(p: *bd_para) -> u32 {
+    let m: u32 = 0;
+    let hi: u8 = 0;
+    let lo_odd: u8 = 0xFF;
+    let i: u32 = 0;
+    while (i < p.n) {
+        if (p.rm[i] == 0) {
+            p.ord[m] = i;
+            m += 1;
+            let l: u8 = p.lvl[i];
+            if (l > hi) { hi = l; }
+            if ((l & 1) != 0 && l < lo_odd) { lo_odd = l; }
+        }
+        i += 1;
+    }
+    if (lo_odd == 0xFF) { return m; }
+    let l: u32 = hi as u32;
+    while (l >= lo_odd as u32) {
+        let k: u32 = 0;
+        while (k < m) {
+            if ((p.lvl[p.ord[k]] as u32) < l) { k += 1; continue; }
+            let e: u32 = k;
+            while (e < m && (p.lvl[p.ord[e]] as u32) >= l) { e += 1; }
+            let a: u32 = k;
+            let b: u32 = e - 1;
+            while (a < b) { let x: u32 = p.ord[a]; p.ord[a] = p.ord[b]; p.ord[b] = x; a += 1; b -= 1; }
+            k = e;
+        }
+        l -= 1;
+    }
+    return m;
+}

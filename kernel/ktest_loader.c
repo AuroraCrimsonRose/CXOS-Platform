@@ -1432,7 +1432,7 @@ int ktest_xtests(int (*report)(const char *, int), int *total) {
     static const char prog[] = "/Shared/Programs/xtest.xuex";
     struct htab *tab = thread_htab(thread_current_id());
     uint32_t caps = thread_current_caps();
-    thread_set_caps(thread_current_id(), GRANT_SPAWN | GRANT_ENDPOINT);
+    thread_set_caps(thread_current_id(), GRANT_SPAWN | GRANT_ENDPOINT | GRANT_DISK);
     for (uint32_t i = 0; i < sizeof prog; i++) path[i] = prog[i];
     out[0] = out[1] = -1;
     int32_t ph = -1;
@@ -1444,8 +1444,9 @@ int ktest_xtests(int (*report)(const char *, int), int *total) {
     step = 1; if (syscall_pipe_create(0, user_addr(out)) != E_OK) goto done;
     sh[0] = (struct spawn_handle){ out[1], IPC_HANDLE_MOVE, IPC_RIGHTS_SAME, ARGS_STDOUT };
     a->image = 0; a->image_len = 0; a->name = user_addr(path);
-    /* GRANT_SPAWN: the window tests start real clients */
-    a->broker_endpoint = -1; a->caps = GRANT_SPAWN | GRANT_ENDPOINT; a->args = 0; a->args_len = 0; a->job = 0;
+    /* GRANT_SPAWN: the window tests start real clients; GRANT_DISK: the
+       locale tests read /System/Locale, as the display server does (2.8a4) */
+    a->broker_endpoint = -1; a->caps = GRANT_SPAWN | GRANT_ENDPOINT | GRANT_DISK; a->args = 0; a->args_len = 0; a->job = 0;
     a->handles = user_addr(sh); a->handle_count = 1;
     ph = syscall_exec_path(user_addr(path), user_addr(a));
     if (ph <= 0) {

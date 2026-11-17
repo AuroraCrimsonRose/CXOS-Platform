@@ -21,6 +21,8 @@
 import "display.xfxn";
 import "string.xfxn";
 import "mem.xfxn";
+import "locale.xfxn";       // 2.8a4: message keys (CX_TOOLKIT.md §10)
+import "bidi.xfxn";
 
 const TK_NODES_MAX: u32 = 512;
 const TK_ARENA_BYTES: u32 = 12288;
@@ -279,7 +281,12 @@ struct tk_node {
     menu: u32,          // its context menu, or TK_NONE
     depth: u32,         // tree items: the level, from 0
     rows: u32,          // text grids: rows (cols: columns)
-    cells: u32          // text grids: the first of its cells in ui.cell
+    cells: u32,         // text grids: the first of its cells in ui.cell
+    // 2.8a4
+    key: u32,           // the message key its text is looked up by, in the arena, or TK_NONE
+    tipkey: u32,        // its tooltip's key, or TK_NONE
+    argn: u32,          // the name of the number its message is formatted with, or TK_NONE
+    argv: i32
 }
 
 struct tk_event {
@@ -367,7 +374,12 @@ struct tk_ui {
     tip_w: i32,
     tip_h: i32,
     cell: [4096]u32,        // TK_CELLS_MAX: the text grids' cells
-    cell_n: u32
+    cell_n: u32,
+    // 2.8a4
+    loc: *lc_table,         // the locale's table, or 0
+    locfb: *lc_table,       // the English one it falls back to, or 0
+    mirror: u32,            // 1: right to left, the ui mirrored where it meets pixels and the pointer
+    tx: i32                 // device pixels every shape moves by (a text grid in a mirrored ui)
 }
 
 // ---- units ----
@@ -445,6 +457,7 @@ fn tk_node_new(ui: *tk_ui, kind: u32) -> u32 {
     n.text = TK_NONE;
     n.field = TK_NONE;
     n.sel = TK_NONE; n.tip = TK_NONE; n.menu = TK_NONE;
+    n.key = TK_NONE; n.tipkey = TK_NONE; n.argn = TK_NONE;
     n.vmax = 100;
     n.step = 1;
     return i;
@@ -578,15 +591,31 @@ fn tk_may_hold(ui: *tk_ui, p: u32, k: u32) -> u32 {
 }
 
 // Copy text into the arena: its offset, or TK_NONE when the arena is full.
-fn tk_store(ui: *tk_ui, text: *u8) -> u32 {
+// The byte before a text is its mnemonic: which character is underlined
+// (tk_mnemonic), TK_MN_NONE for none (2.8a4).
+const TK_MN_NONE: u8 = 0xFF;
+
+fn tk_store_mn(ui: *tk_ui, text: *u8, mn: u8) -> u32 {
     if (text == (0 as *u8)) { return TK_NONE; }
     let n: u32 = strlen(text);
-    if (ui.arena_used + n + 1 > TK_ARENA_BYTES) { return TK_NONE; }
-    let at: u32 = ui.arena_used;
+    if (ui.arena_used + n + 2 > TK_ARENA_BYTES) { return TK_NONE; }
+    let at: u32 = ui.arena_used + 1;
+    ui.arena[at - 1] = mn;
     memcpy(&ui.arena[at], text, n);
     ui.arena[at + n] = 0;
     ui.arena_used = at + n + 1;
     return at;
+}
+
+fn tk_store(ui: *tk_ui, text: *u8) -> u32 { return tk_store_mn(ui, text, TK_MN_NONE); }
+
+// The mnemonic of a text drawn from the arena: its character's index, or
+// TK_MN_NONE (also for text that is not the arena's).
+fn tk_mnemonic(ui: *tk_ui, s: *u8) -> u8 {
+    let a: usize = (&ui.arena[0]) as usize;
+    let p: usize = s as usize;
+    if (p <= a || p >= a + (ui.arena_used as usize)) { return TK_MN_NONE; }
+    return ui.arena[(p - a - 1) as u32];
 }
 
 // A new widget at the end of parent's children: its id, or 0 (the parent is
@@ -711,6 +740,198 @@ fn tk_set_text(ui: *tk_ui, id: u32, text: *u8) -> i32 {
     ui.node[i].text = at;
     ui.relayout = 1;
     return 0;
+}
+
+// ---- message keys (2.8a4, CX_TOOLKIT.md §10) ----
+//
+// A widget made with a key keeps it and shows what the ui's tables say for
+// it: the locale's, then the English, then (the toolkit's own keys) the
+// English built in here, then the key itself. `&` before a character marks
+// its mnemonic (`&&` is an `&`): not shown, the character underlined.
+
+const TK_MSG_BYTES: u32 = 512;
+global tk_old: [12288]u8;           // TK_ARENA_BYTES: what tk_set_locale rebuilds from
+
+// The English of the toolkit's own keys, for a ui with no tables (os/locale/toolkit/en.ftl
+// must say the same; a boot test holds them to it), or 0.
+fn tk_builtin(key: *u8) -> *u8 {
+    if (streq(key, "tk-dialog-ok") != 0) { return "OK"; }
+    if (streq(key, "tk-dialog-cancel") != 0) { return "Cancel"; }
+    if (streq(key, "tk-dialog-yes") != 0) { return "Yes"; }
+    if (streq(key, "tk-dialog-no") != 0) { return "No"; }
+    if (streq(key, "tk-dialog-close") != 0) { return "Close"; }
+    if (streq(key, "tk-dialog-apply") != 0) { return "Apply"; }
+    if (streq(key, "tk-dialog-discard") != 0) { return "Discard"; }
+    if (streq(key, "tk-key-ctrl") != 0) { return "Ctrl"; }
+    if (streq(key, "tk-key-alt") != 0) { return "Alt"; }
+    if (streq(key, "tk-key-shift") != 0) { return "Shift"; }
+    if (streq(key, "tk-key-del") != 0) { return "Del"; }
+    if (streq(key, "tk-key-enter") != 0) { return "Enter"; }
+    if (streq(key, "tk-key-tab") != 0) { return "Tab"; }
+    if (streq(key, "tk-key-space") != 0) { return "Space"; }
+    return 0 as *u8;
+}
+
+// The message for key (formatted with the number argn = argv when argn is
+// not 0) into out[TK_MSG_BYTES], its & marks taken out: its mnemonic's
+// index in *mn, or TK_MN_NONE.
+fn tk_look(ui: *tk_ui, key: *u8, argn: *u8, argv: i32, out: *u8, mn: *u8) -> void {
+    let raw: [512]u8;               // TK_MSG_BYTES
+    let a: lc_arg;
+    let na: u32 = 0;
+    if (argn != (0 as *u8)) { lc_arg_num(&a, argn, argv); na = 1; }
+    let dflt: *u8 = tk_builtin(key);
+    if (dflt != (0 as *u8) && !lc_has(ui.loc, key) && !lc_has(ui.locfb, key)) { strcopy(&raw[0], dflt, TK_MSG_BYTES); }
+    else { lc_format(ui.loc, ui.locfb, key, &a, na, &raw[0], TK_MSG_BYTES); }
+    *mn = TK_MN_NONE;
+    let i: u32 = 0;
+    let o: u32 = 0;
+    let k: u32 = 0;                 // characters out so far
+    while (raw[i] != 0) {
+        if (raw[i] == '&') {
+            if (raw[i + 1] == '&') { out[o] = '&'; o += 1; k += 1; i += 2; continue; }
+            if (raw[i + 1] != 0 && *mn == TK_MN_NONE && k < 255) { *mn = k as u8; }
+            i += 1;
+            continue;
+        }
+        if ((raw[i] & 0xC0) != 0x80) { k += 1; }
+        out[o] = raw[i];
+        o += 1;
+        i += 1;
+    }
+    out[o] = 0;
+}
+
+// Node i's text looked up again from its key and number: in place when it
+// fits, else stored anew. 0 or E_NO_RESOURCES.
+fn tk_relook(ui: *tk_ui, i: u32) -> i32 {
+    let n: *tk_node = &ui.node[i];
+    if (n.key == TK_NONE) { return 0; }
+    let s: [512]u8;
+    let mn: u8 = TK_MN_NONE;
+    let an: *u8 = 0 as *u8;
+    if (n.argn != TK_NONE) { an = &ui.arena[n.argn]; }
+    tk_look(ui, &ui.arena[n.key], an, n.argv, &s[0], &mn);
+    let len: u32 = strlen(&s[0]);
+    if (n.text != TK_NONE && len <= strlen(&ui.arena[n.text])) {
+        strcopy(&ui.arena[n.text], &s[0], len + 1);
+        ui.arena[n.text - 1] = mn;
+    } else {
+        let at: u32 = tk_store_mn(ui, &s[0], mn);
+        if (at == TK_NONE) { return E_NO_RESOURCES; }
+        n.text = at;
+    }
+    ui.relayout = 1;
+    return 0;
+}
+
+// A new widget whose text is key's message: its id, or 0 (as tk_add).
+fn tk_add_key(ui: *tk_ui, parent: u32, kind: u32, key: *u8) -> u32 {
+    let s: [512]u8;
+    let mn: u8 = TK_MN_NONE;
+    tk_look(ui, key, 0 as *u8, 0, &s[0], &mn);
+    let ko: u32 = tk_store(ui, key);
+    if (ko == TK_NONE) { return 0; }
+    let id: u32 = tk_add(ui, parent, kind, &s[0]);
+    if (id == 0) { return 0; }
+    let i: u32 = tk_index(ui, id);
+    ui.node[i].key = ko;
+    ui.arena[ui.node[i].text - 1] = mn;
+    return id;
+}
+
+// Gives a keyed widget's message the number `name` = v (`{ $name }`, and
+// its plural): 0, E_INVALID_ARGS (no such widget, or no key), E_NO_RESOURCES.
+fn tk_set_arg(ui: *tk_ui, id: u32, name: *u8, v: i32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].key == TK_NONE || name == (0 as *u8)) { return E_INVALID_ARGS; }
+    let n: *tk_node = &ui.node[i];
+    if (n.argn == TK_NONE || streq(&ui.arena[n.argn], name) == 0) {
+        let at: u32 = tk_store(ui, name);
+        if (at == TK_NONE) { return E_NO_RESOURCES; }
+        n.argn = at;
+    }
+    n.argv = v;
+    return tk_relook(ui, i);
+}
+
+// A tooltip by key: 0, E_INVALID_ARGS or E_NO_RESOURCES.
+fn tk_set_tip_key(ui: *tk_ui, id: u32, key: *u8) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || key == (0 as *u8)) { return E_INVALID_ARGS; }
+    let s: [512]u8;
+    let mn: u8 = TK_MN_NONE;
+    tk_look(ui, key, 0 as *u8, 0, &s[0], &mn);
+    let ko: u32 = tk_store(ui, key);
+    if (ko == TK_NONE) { return E_NO_RESOURCES; }
+    let rc: i32 = tk_set_tip(ui, id, &s[0]);
+    if (rc == 0) { ui.node[i].tipkey = ko; }
+    return rc;
+}
+
+// The key a widget's text came from, or 0 (none, or no such widget).
+fn tk_key_of(ui: *tk_ui, id: u32) -> *u8 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].key == TK_NONE) { return 0 as *u8; }
+    return &ui.arena[ui.node[i].key];
+}
+
+// One word of the toolkit's (a key's name in a menu) into out[cap].
+fn tk_word(ui: *tk_ui, key: *u8, out: *u8, cap: u32) -> u32 {
+    let s: [512]u8;
+    let mn: u8 = TK_MN_NONE;
+    tk_look(ui, key, 0 as *u8, 0, &s[0], &mn);
+    return strcopy(out, &s[0], cap);
+}
+
+fn tk_arena_copy(ui: *tk_ui, at: u32) -> u32 {
+    if (at == TK_NONE) { return TK_NONE; }
+    return tk_store_mn(ui, &tk_old[at], tk_old[at - 1]);
+}
+
+// The ui's tables: the locale's and the English (either 0), which the ui
+// does not own and which must outlive it. Every keyed text is looked up
+// again, the arena rebuilt rather than grown, the direction taken from the
+// locale's table, and the ui laid out again. 0 or E_NO_RESOURCES (the
+// arena would not hold the new texts; what did not fit has none).
+fn tk_set_locale(ui: *tk_ui, t: *lc_table, fallback: *lc_table) -> i32 {
+    ui.loc = t;
+    ui.locfb = fallback;
+    ui.mirror = 0;
+    if (t as usize != 0 && t.size != 0 && t.rtl != 0) { ui.mirror = 1; }
+    memcpy(&tk_old[0], &ui.arena[0], ui.arena_used);
+    ui.arena_used = 0;
+    let rc: i32 = 0;
+    let i: u32 = 0;
+    while (i < ui.used) {
+        let n: *tk_node = &ui.node[i];
+        n.key = tk_arena_copy(ui, n.key);
+        n.argn = tk_arena_copy(ui, n.argn);
+        n.tipkey = tk_arena_copy(ui, n.tipkey);
+        if (n.key != TK_NONE) {
+            n.text = TK_NONE;
+            if (tk_relook(ui, i) != 0) { rc = E_NO_RESOURCES; }
+        } else { n.text = tk_arena_copy(ui, n.text); }
+        if (n.tipkey != TK_NONE) {
+            let s: [512]u8;
+            let mn: u8 = TK_MN_NONE;
+            tk_look(ui, &ui.arena[n.tipkey], 0 as *u8, 0, &s[0], &mn);
+            n.tip = tk_store(ui, &s[0]);
+        } else { n.tip = tk_arena_copy(ui, n.tip); }
+        i += 1;
+    }
+    let k: u32 = 0;
+    while (k < ui.cmd_n) { ui.cmd[k].name = tk_arena_copy(ui, ui.cmd[k].name); k += 1; }
+    ui.tip_up = 0;
+    ui.tip_for = TK_NONE;
+    ui.relayout = 1;
+    return rc;
+}
+
+// Right to left without a table (the self-tests' mirror checks): 0 or 1.
+fn tk_set_mirror(ui: *tk_ui, on: u32) -> void {
+    ui.mirror = on & 1;
+    ui.relayout = 1;
 }
 
 // A container's spacing, as steps of the design scale.
@@ -978,14 +1199,18 @@ fn tk_str_lw(ui: *tk_ui, s: *u8) -> i32 {
     return tk_logical(ui, tk_utf8_count(s, strlen(s)) * tk_char_w(ui));
 }
 
+// What a word of a key's name may take of its 32 bytes, so the whole fits.
+fn tk_room(n: u32) -> u32 { if (n >= 26) { return 1; } return 26 - n; }
+
 // The name of a key with its modifiers, as a menu shows it ("Ctrl+Shift+Z"):
-// its length in out (room for 32), or 0 for no key.
-fn tk_key_name(key: u32, mods: u32, out: *u8) -> u32 {
+// its length in out (room for 32), or 0 for no key. The words are the
+// ui's locale's (tk-key-*).
+fn tk_key_name(ui: *tk_ui, key: u32, mods: u32, out: *u8) -> u32 {
     if (key == 0) { out[0] = 0; return 0; }
     let n: u32 = 0;
-    if ((mods & KEYMOD_CTRL) != 0) { n = n + strcopy(&out[n], "Ctrl+", 32 - n); }
-    if ((mods & KEYMOD_ALT) != 0) { n = n + strcopy(&out[n], "Alt+", 32 - n); }
-    if ((mods & KEYMOD_SHIFT) != 0) { n = n + strcopy(&out[n], "Shift+", 32 - n); }
+    if ((mods & KEYMOD_CTRL) != 0) { n = n + tk_word(ui, "tk-key-ctrl", &out[n], tk_room(n)); n = n + strcopy(&out[n], "+", 32 - n); }
+    if ((mods & KEYMOD_ALT) != 0) { n = n + tk_word(ui, "tk-key-alt", &out[n], tk_room(n)); n = n + strcopy(&out[n], "+", 32 - n); }
+    if ((mods & KEYMOD_SHIFT) != 0) { n = n + tk_word(ui, "tk-key-shift", &out[n], tk_room(n)); n = n + strcopy(&out[n], "+", 32 - n); }
     if (key >= KC_A && key <= KC_Z) { out[n] = (65 + key - KC_A) as u8; n = n + 1; }
     else if (key >= KC_1 && key <= KC_9) { out[n] = (49 + key - KC_1) as u8; n = n + 1; }
     else if (key == KC_0) { out[n] = 48; n = n + 1; }
@@ -995,10 +1220,10 @@ fn tk_key_name(key: u32, mods: u32, out: *u8) -> u32 {
         if (f >= 10) { out[n] = 49; n = n + 1; f = f - 10; }
         out[n] = (48 + f) as u8; n = n + 1;
     }
-    else if (key == KC_DELETE) { n = n + strcopy(&out[n], "Del", 32 - n); }
-    else if (key == KC_ENTER) { n = n + strcopy(&out[n], "Enter", 32 - n); }
-    else if (key == KC_TAB) { n = n + strcopy(&out[n], "Tab", 32 - n); }
-    else if (key == KC_SPACE) { n = n + strcopy(&out[n], "Space", 32 - n); }
+    else if (key == KC_DELETE) { n = n + tk_word(ui, "tk-key-del", &out[n], tk_room(n)); }
+    else if (key == KC_ENTER) { n = n + tk_word(ui, "tk-key-enter", &out[n], tk_room(n)); }
+    else if (key == KC_TAB) { n = n + tk_word(ui, "tk-key-tab", &out[n], tk_room(n)); }
+    else if (key == KC_SPACE) { n = n + tk_word(ui, "tk-key-space", &out[n], tk_room(n)); }
     else { out[n] = 63; n = n + 1; }
     out[n] = 0;
     return n;
@@ -1008,7 +1233,7 @@ fn tk_key_name(key: u32, mods: u32, out: *u8) -> u32 {
 fn tk_item_key(ui: *tk_ui, i: u32, out: *u8) -> u32 {
     let c: u32 = ui.node[i].cmd;
     if (c == 0 || c > ui.cmd_n) { out[0] = 0; return 0; }
-    return tk_key_name(ui.cmd[c - 1].key, ui.cmd[c - 1].mods, out);
+    return tk_key_name(ui, ui.cmd[c - 1].key, ui.cmd[c - 1].mods, out);
 }
 
 // ---- rows: a list's, tree's or table's items, in the order drawn ----
@@ -1529,8 +1754,10 @@ fn tk_blend(ui: *tk_ui, x: i32, y: i32, argb: u32, cov: u32, c: *ds_rect) -> voi
     if (x >= ((c.x + c.w) as i32) || y >= ((c.y + c.h) as i32)) { return; }
     if (cov == 0) { return; }
     let row: *u32 = ds_row(&ui.canvas, y as u32);
-    if (cov >= 16) { row[x] = argb; return; }
-    row[x] = ds_over(ds_fade(argb, (cov * 255) / 16), row[x]);
+    let dx: i32 = x + ui.tx;
+    if (ui.mirror == 1) { dx = (ui.canvas.width as i32) - 1 - x; }    // 2.8a4
+    if (cov >= 16) { row[dx] = argb; return; }
+    row[dx] = ds_over(ds_fade(argb, (cov * 255) / 16), row[dx]);
 }
 
 fn tk_box(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, w: i32, h: i32, argb: u32) -> void {
@@ -1540,7 +1767,10 @@ fn tk_box(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, w: i32, h: i32, argb: u32) ->
     let x1: i32 = tk_imin(x + w, (c.x + c.w) as i32);
     let y1: i32 = tk_imin(y + h, (c.y + c.h) as i32);
     if (x1 <= x0 || y1 <= y0) { return; }
-    ds_fill(&ui.canvas, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32, argb);
+    // clipped where it is laid out, then mirrored (or moved) to where it shows (2.8a4)
+    let fx: i32 = x0 + ui.tx;
+    if (ui.mirror == 1) { fx = (ui.canvas.width as i32) - x1; }
+    ds_fill(&ui.canvas, fx as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32, argb);
 }
 
 // Is (sx, sy), in eighths of a pixel, inside the rounded rectangle at
@@ -1728,13 +1958,116 @@ fn tk_text(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, argb: u32, bold: u32
     tk_text_n(ui, c, x, y, s, strlen(s), argb, bold);
 }
 
-// n bytes of UTF-8 as text: one glyph a character (a byte that is not
-// UTF-8 is one, as '?').
-fn tk_text_n(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32, bold: u32) -> void {
-    if (s == (0 as *u8) || ui.font == (0 as *ds_font)) { return; }
+// One character's glyph from (gx, y), underlined when under is 1.
+fn tk_glyph(ui: *tk_ui, c: *ds_rect, gx: i32, y: i32, cp: u32, argb: u32, bold: u32, under: u32) -> void {
     let f: *ds_font = ui.font;
     let g: i32 = ui.glyph as i32;
     let cw: i32 = (f.width as i32) * g;
+    if (gx >= ((c.x + c.w) as i32) || gx + cw <= (c.x as i32)) { return; }
+    let code: u32 = tk_cp437(cp);
+    if (code < f.count) {
+        let row: u32 = 0;
+        while (row < f.height) {
+            let bits: u32 = f.bits[code * f.height + row] as u32;
+            // each run of set bits is one box
+            let col: u32 = 0;
+            while (col < f.width) {
+                if ((bits & (0x80 >> col)) != 0) {
+                    let end: u32 = col + 1;
+                    while (end < f.width && (bits & (0x80 >> end)) != 0) { end = end + 1; }
+                    let px: i32 = gx + (col as i32) * g;
+                    let py: i32 = y + (row as i32) * g;
+                    tk_box(ui, c, px, py, ((end - col) as i32) * g + (bold as i32), g, argb);
+                    col = end;
+                } else {
+                    col = col + 1;
+                }
+            }
+            row = row + 1;
+        }
+    }
+    // a mnemonic: the cell's last row
+    if (under == 1) { tk_box(ui, c, gx, y + ((f.height as i32) - 1) * g, cw, g, argb); }
+}
+
+// Does the text hold a character that can make it right to left (R, AL,
+// AN, or an explicit one)? Nothing below U+0590 can.
+fn tk_rtl_in(s: *u8, n: u32) -> bool {
+    let at: u32 = 0;
+    while (at < n) {
+        let cp: u32 = 0;
+        let l: u32 = tk_utf8_at(s, n, at, &cp);
+        if (l == 0) { l = 1; cp = 0; }
+        at = at + l;
+        if (cp >= 0x0590 && bd_class_rtl(bd_class(cp))) { return true; }
+    }
+    return false;
+}
+
+global tk_bd: bd_para;              // a ui belongs to one thread, and so does its text
+global tk_cps: [256]u32;            // BD_MAX
+
+// The code points of s[0..n] into tk_cps (at most BD_MAX; a byte that is
+// not UTF-8 is '?'): their count.
+fn tk_decode(s: *u8, n: u32) -> u32 {
+    let k: u32 = 0;
+    let at: u32 = 0;
+    while (at < n && k < BD_MAX) {
+        let cp: u32 = 63;
+        let l: u32 = tk_utf8_at(s, n, at, &cp);
+        if (l == 0) { l = 1; cp = 63; }
+        at = at + l;
+        tk_cps[k] = cp;
+        k = k + 1;
+    }
+    return k;
+}
+
+// Text in UAX #9's visual order (std/bidi.xfxn), the paragraph's direction
+// the ui's; at an odd level a character shows its mirrored glyph (L4). In
+// a mirrored ui the text's box is mirrored and the characters are set in
+// it left to right, never flipped (CX_TOOLKIT.md §10).
+fn tk_text_bidi(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32, bold: u32, mn: u8) -> void {
+    let cw: i32 = (ui.font.width as i32) * (ui.glyph as i32);
+    let cnt: u32 = tk_decode(s, n);
+    let tw: i32 = (tk_utf8_count(s, n) as i32) * cw;
+    bd_set(&tk_bd, &tk_cps[0], cnt);
+    let dir: u32 = BD_LTR;
+    if (ui.mirror == 1) { dir = BD_RTL; }
+    bd_run(&tk_bd, dir);
+    let m: u32 = bd_reorder(&tk_bd);
+    let ox: i32 = x;
+    let cl: ds_rect;
+    ds_rect_set(&cl, c.x, c.y, c.w, c.h);
+    let was: u32 = ui.mirror;
+    if (was == 1) {
+        let w: i32 = ui.canvas.width as i32;
+        ox = w - x - tw + ((cnt - m) as i32) * cw;     // a removed control (X9) leaves its cell at the end
+        let cx: i32 = tk_imax(w - (c.x as i32) - (c.w as i32), 0);
+        ds_rect_set(&cl, cx as u32, c.y, c.w, c.h);
+        ui.mirror = 0;
+    }
+    let v: u32 = 0;
+    while (v < m) {
+        let i: u32 = tk_bd.ord[v];
+        let cp: u32 = tk_cps[i];
+        if ((tk_bd.lvl[i] & 1) != 0) { cp = bd_mirror(cp); }
+        let under: u32 = 0;
+        if (i == (mn as u32)) { under = 1; }
+        tk_glyph(ui, &cl, ox + (v as i32) * cw, y, cp, argb, bold, under);
+        v = v + 1;
+    }
+    ui.mirror = was;
+}
+
+// n bytes of UTF-8 as text: one glyph a character (a byte that is not
+// UTF-8 is one, as '?'). Text with nothing right to left, in a ui that is
+// not mirrored, is set as it comes (2.8a4's fast path).
+fn tk_text_n(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32, bold: u32) -> void {
+    if (s == (0 as *u8) || ui.font == (0 as *ds_font)) { return; }
+    let mn: u8 = tk_mnemonic(ui, s);
+    if (ui.mirror == 1 || tk_rtl_in(s, n)) { tk_text_bidi(ui, c, x, y, s, n, argb, bold, mn); return; }
+    let cw: i32 = (ui.font.width as i32) * (ui.glyph as i32);
     let at: u32 = 0;
     let k: u32 = 0;
     while (at < n) {
@@ -1742,31 +2075,12 @@ fn tk_text_n(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32,
         let l: u32 = tk_utf8_at(s, n, at, &cp);
         if (l == 0) { l = 1; cp = 63; }
         at = at + l;
-        let code: u32 = tk_cp437(cp);
         let gx: i32 = x + (k as i32) * cw;
-        k = k + 1;
         if (gx >= ((c.x + c.w) as i32)) { return; }
-        if (code < f.count && gx + cw > (c.x as i32)) {
-            let row: u32 = 0;
-            while (row < f.height) {
-                let bits: u32 = f.bits[code * f.height + row] as u32;
-                // each run of set bits is one box
-                let col: u32 = 0;
-                while (col < f.width) {
-                    if ((bits & (0x80 >> col)) != 0) {
-                        let end: u32 = col + 1;
-                        while (end < f.width && (bits & (0x80 >> end)) != 0) { end = end + 1; }
-                        let px: i32 = gx + (col as i32) * g;
-                        let py: i32 = y + (row as i32) * g;
-                        tk_box(ui, c, px, py, ((end - col) as i32) * g + (bold as i32), g, argb);
-                        col = end;
-                    } else {
-                        col = col + 1;
-                    }
-                }
-                row = row + 1;
-            }
-        }
+        let under: u32 = 0;
+        if (k == (mn as u32)) { under = 1; }
+        tk_glyph(ui, c, gx, y, cp, argb, bold, under);
+        k = k + 1;
     }
 }
 
@@ -1957,22 +2271,106 @@ fn tk_field_caret_col(f: *tk_field) -> u32 {
     return col;
 }
 
+// Where a field's characters show (2.8a4): tk_fcol[k] is the column of its
+// k-th character (the accent waiting one of them, at the caret), from the
+// first, as laid out (a mirrored ui shows column 0 at the right), or
+// TK_NONE for one UAX #9 removes; the caret's column is returned, at the
+// edge of the character it is before. Text with nothing right to left in
+// a ui that is not mirrored is in logical order, the columns its indices.
+global tk_fcol: [257]u32;
+global tk_fbidi: u32;              // 1: the last tk_field_vis ran bidi (tk_bd holds it)
+global tk_fm: u32;                 // and how many characters it kept
+
+fn tk_field_vis(ui: *tk_ui, f: *tk_field) -> u32 {
+    let cc: u32 = tk_field_caret_col(f);
+    tk_fbidi = 0;
+    if (ui.mirror == 0 && !tk_rtl_in(&f.buf[0], f.len) && (f.dead < 0x0590)) {
+        let k: u32 = 0;
+        while (k < 257) { tk_fcol[k] = k; k += 1; }
+        return cc;
+    }
+    // the characters, the accent at the caret
+    let g: u32 = 0;
+    let at: u32 = 0;
+    while (at <= f.len && g < BD_MAX) {
+        if (at == f.caret && f.dead != 0) { tk_cps[g] = f.dead; g += 1; }
+        if (at == f.len || g >= BD_MAX) { break; }
+        let cp: u32 = 63;
+        let l: u32 = tk_utf8_at(&f.buf[0], f.len, at, &cp);
+        if (l == 0) { l = 1; cp = 63; }
+        tk_cps[g] = cp;
+        g += 1;
+        at = at + l;
+    }
+    bd_set(&tk_bd, &tk_cps[0], g);
+    let dir: u32 = BD_LTR;
+    if (ui.mirror == 1) { dir = BD_RTL; }
+    bd_run(&tk_bd, dir);
+    let m: u32 = bd_reorder(&tk_bd);
+    tk_fbidi = 1;
+    tk_fm = m;
+    let k: u32 = 0;
+    while (k < 257) { tk_fcol[k] = TK_NONE; k += 1; }
+    let v: u32 = 0;
+    while (v < m) {
+        let d: u32 = v;
+        if (ui.mirror == 1) { d = m - 1 - v; }
+        tk_fcol[tk_bd.ord[v]] = d;
+        v += 1;
+    }
+    // the caret: before character cc, at its leading edge (its right one at
+    // an odd level); at the end, after the last one
+    let e: u32 = 0;
+    if (ui.mirror == 1) { e = m; }
+    if (cc < g && tk_fcol[cc] != TK_NONE) {
+        let vv: u32 = tk_fcol[cc];
+        if (ui.mirror == 1) { vv = m - 1 - vv; }
+        e = vv;
+        if ((tk_bd.lvl[cc] & 1) != 0) { e = vv + 1; }
+    } else if (cc > 0 && cc - 1 < g && tk_fcol[cc - 1] != TK_NONE) {
+        let vv: u32 = tk_fcol[cc - 1];
+        if (ui.mirror == 1) { vv = m - 1 - vv; }
+        e = vv + 1;
+        if ((tk_bd.lvl[cc - 1] & 1) != 0) { e = vv; }
+    }
+    if (ui.mirror == 1) { return m - e; }
+    return e;
+}
+
 // Keep the caret in sight: the first character shown moves if it must.
 fn tk_field_scroll(ui: *tk_ui, n: *tk_node, f: *tk_field) -> void {
     let tx: i32 = 0; let ty: i32 = 0; let cap: u32 = 1;
     tk_field_geom(ui, n, &tx, &ty, &cap);
-    let col: u32 = tk_field_caret_col(f);
+    let col: u32 = tk_field_vis(ui, f);
     if (col < f.scroll) { f.scroll = col; }
     if (col > f.scroll + cap - 1) { f.scroll = col - (cap - 1); }
 }
 
 // One character of a field at column col (from the first shown).
-fn tk_field_glyph(ui: *tk_ui, c: *ds_rect, tx: i32, ty: i32, col: u32, s: *u8, l: u32, fg: u32, bg: u32, under: u32) -> void {
+// k is the character's index (tk_field_vis): at an odd level it shows its
+// mirrored glyph, and in a mirrored ui its cell is mirrored, not the glyph.
+fn tk_field_glyph(ui: *tk_ui, c: *ds_rect, tx: i32, ty: i32, col: u32, s: *u8, l: u32, fg: u32, bg: u32, under: u32, k: u32) -> void {
     let cw: i32 = tk_char_w(ui) as i32;
     let ch: i32 = tk_char_h(ui) as i32;
     let gx: i32 = tx + (col as i32) * cw;
     if (bg != 0) { tk_box(ui, c, gx, ty, cw, ch, bg); }
-    tk_text_n(ui, c, gx, ty, s, l, fg, 0);
+    if (ui.font != (0 as *ds_font)) {
+        let cp: u32 = 63;
+        if (tk_utf8_at(s, l, 0, &cp) == 0) { cp = 63; }
+        if (tk_fbidi == 1 && k < BD_MAX && (tk_bd.lvl[k] & 1) != 0) { cp = bd_mirror(cp); }
+        let was: u32 = ui.mirror;
+        let x: i32 = gx;
+        let cl: ds_rect;
+        ds_rect_set(&cl, c.x, c.y, c.w, c.h);
+        if (was == 1) {
+            let w: i32 = ui.canvas.width as i32;
+            x = w - gx - cw;
+            ds_rect_set(&cl, tk_imax(w - (c.x as i32) - (c.w as i32), 0) as u32, c.y, c.w, c.h);
+            ui.mirror = 0;
+        }
+        tk_glyph(ui, &cl, x, ty, cp, fg, 0, 0);
+        ui.mirror = was;
+    }
     if (under == 1) { tk_box(ui, c, gx, ty + ch - tk_len(ui, 1), cw, tk_len(ui, 1), fg); }
 }
 
@@ -1998,6 +2396,7 @@ fn tk_draw_field(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
     ds_rect_set(&mine, (x + 1) as u32, (y + 1) as u32, (tk_imax(w - 2, 0)) as u32, (tk_imax(h - 2, 0)) as u32);
     if (ds_rect_and(&inside, &mine, c) == 0) { tk_draw_ring(ui, n, c); return; }
     tk_field_scroll(ui, n, f);
+    let caret_d: u32 = tk_field_vis(ui, f);     // and tk_fcol: where each character shows
     let tx: i32 = 0; let ty: i32 = 0; let cap: u32 = 1;
     tk_field_geom(ui, n, &tx, &ty, &cap);
     let a: u32 = f.anchor; let b: u32 = f.caret;
@@ -2011,22 +2410,24 @@ fn tk_draw_field(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
     let at: u32 = 0;
     while (at <= f.len) {
         if (at == f.caret && pre_n > 0) {
-            if (col >= f.scroll) { tk_field_glyph(ui, &inside, tx, ty, col - f.scroll, &pre[0], pre_n, fg, 0, 1); }
+            let dd: u32 = tk_fcol[col];
+            if (dd != TK_NONE && dd >= f.scroll) { tk_field_glyph(ui, &inside, tx, ty, dd - f.scroll, &pre[0], pre_n, fg, 0, 1, col); }
             col = col + 1;
         }
         if (at == f.len) { break; }
         let cp: u32 = 0;
         let l: u32 = tk_utf8_at(&f.buf[0], f.len, at, &cp);
         if (l == 0) { l = 1; }
-        if (col >= f.scroll) {
-            if (at >= a && at < b) { tk_field_glyph(ui, &inside, tx, ty, col - f.scroll, &f.buf[at], l, ui.theme.on_accent, ui.theme.accent, 0); }
-            else { tk_field_glyph(ui, &inside, tx, ty, col - f.scroll, &f.buf[at], l, fg, 0, 0); }
+        let d: u32 = tk_fcol[col];
+        if (d != TK_NONE && d >= f.scroll) {
+            if (at >= a && at < b) { tk_field_glyph(ui, &inside, tx, ty, d - f.scroll, &f.buf[at], l, ui.theme.on_accent, ui.theme.accent, 0, col); }
+            else { tk_field_glyph(ui, &inside, tx, ty, d - f.scroll, &f.buf[at], l, fg, 0, 0, col); }
         }
         col = col + 1;
         at = at + l;
     }
     if (tk_on(n, TK_F_FOCUS) == 1) {
-        let cx: i32 = tx + ((tk_field_caret_col(f) - f.scroll) as i32) * (tk_char_w(ui) as i32);
+        let cx: i32 = tx + ((caret_d - f.scroll) as i32) * (tk_char_w(ui) as i32);
         tk_box(ui, &inside, cx, ty, tk_len(ui, 1), tk_char_h(ui) as i32, fg);
     }
     tk_draw_ring(ui, n, c);
@@ -2105,7 +2506,7 @@ fn tk_paint(ui: *tk_ui, out: *ds_damage) -> u32 {
     let k: u32 = 0;
     while (k < ui.damage.n) {
         let r: *ds_rect = &ui.damage.r[k];
-        ds_fill(&ui.canvas, r.x, r.y, r.w, r.h, ui.theme.surface);
+        tk_box(ui, r, r.x as i32, r.y as i32, r.w as i32, r.h as i32, ui.theme.surface);
         tk_paint_node(ui, ui.root, r);
         // what is open, bottom first: a dialog dims what is under it
         let p: u32 = 0;
@@ -2119,6 +2520,11 @@ fn tk_paint(ui: *tk_ui, out: *ds_damage) -> u32 {
         k = k + 1;
     }
     *out = ui.damage;
+    if (ui.mirror == 1) {
+        // painted where laid out; it shows mirrored
+        let q: u32 = 0;
+        while (q < out.n) { out.r[q].x = ui.canvas.width - out.r[q].x - out.r[q].w; q = q + 1; }
+    }
     ds_damage_clear(&ui.damage);
     return out.n;
 }
@@ -2415,9 +2821,86 @@ fn tk_press_flagged(ui: *tk_ui, flag: u32) -> u32 {
 // After the commands: Ctrl+Tab and Ctrl+Shift+Tab turn the pages of the
 // tabs the focus is in (only when no command has the key). The focus
 // moved by a key shows its tooltip at once; any other key puts it away.
+// ---- mnemonics (2.8a4) ----
+
+// The letter node i's mnemonic marks, lower case, or 0 (none, or not a
+// letter a key names).
+fn tk_mn_letter(ui: *tk_ui, i: u32) -> u32 {
+    let n: *tk_node = &ui.node[i];
+    if (n.text == TK_NONE) { return 0; }
+    let mn: u32 = ui.arena[n.text - 1] as u32;
+    if (mn == (TK_MN_NONE as u32)) { return 0; }
+    let s: *u8 = &ui.arena[n.text];
+    let len: u32 = strlen(s);
+    let at: u32 = 0;
+    let k: u32 = 0;
+    while (at < len) {
+        let cp: u32 = 0;
+        let l: u32 = tk_utf8_at(s, len, at, &cp);
+        if (l == 0) { return 0; }
+        if (k == mn) {
+            if (cp >= 65 && cp <= 90) { return cp + 32; }
+            if (cp >= 97 && cp <= 122) { return cp; }
+            return 0;
+        }
+        at = at + l;
+        k = k + 1;
+    }
+    return 0;
+}
+
+// The widget whose mnemonic is the letter of `code` does what a press
+// would: a button, check box, radio or switch is pressed, a menu bar's
+// title opens its menu, a label gives the focus to what follows it; in an
+// open menu, its item is chosen. 1 if one did, the first in the tree.
+fn tk_mnemonic_key(ui: *tk_ui, code: u32) -> u32 {
+    if (code < KC_A || code > KC_Z) { return 0; }
+    let want: u32 = 97 + code - KC_A;
+    if (ui.pop_n > 0 && ui.node[ui.pop[ui.pop_n - 1]].kind == TK_MENU) {
+        let it: u32 = ui.node[ui.pop[ui.pop_n - 1]].first;
+        while (it != TK_NONE) {
+            if (tk_menu_can(ui, it) == 1 && tk_mn_letter(ui, it) == want) { tk_menu_choose(ui, it); return 1; }
+            it = ui.node[it].next;
+        }
+        return 0;
+    }
+    let i: u32 = 0;
+    while (i < ui.used) {
+        if (tk_mn_letter(ui, i) == want) {
+            let n: *tk_node = &ui.node[i];
+            let k: u32 = n.kind;
+            let p: u32 = n.parent;
+            if (k == TK_MENU && p != TK_NONE && ui.node[p].kind == TK_MENUBAR && tk_reachable(ui, p) == 1 && (n.flags & TK_F_DISABLED) == 0) {
+                tk_bar_open(ui, p, i, 1);
+                return 1;
+            }
+            if ((k == TK_BUTTON || k == TK_CHECK || k == TK_RADIO || k == TK_SWITCH) && tk_focusable(ui, i) == 1) {
+                tk_focus_set(ui, i);
+                tk_activate(ui, i);
+                return 1;
+            }
+            if (k == TK_LABEL && tk_reachable(ui, i) == 1) {
+                let j: u32 = tk_after(ui, i);
+                while (j != TK_NONE) {
+                    if (tk_focusable(ui, j) == 1) { tk_focus_set(ui, j); return 1; }
+                    j = tk_after(ui, j);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn tk_key(ui: *tk_ui, code: u32, ch: u32, mods: u32) -> u32 {
     if ((mods & KEYEV_RELEASE) != 0) { return 0; }
+    // a mirrored ui is mirrored for the arrows too, but in a text field,
+    // whose caret goes through the text in its own order (2.8a4)
+    if (ui.mirror == 1 && (ui.focus == TK_NONE || ui.node[ui.focus].kind != TK_TEXTFIELD)) {
+        if (code == KC_LEFT) { code = KC_RIGHT; } else if (code == KC_RIGHT) { code = KC_LEFT; }
+    }
     if (ui.pop_n > 0 && ui.node[ui.pop[ui.pop_n - 1]].kind == TK_MENU) {
+        if ((mods & KEYMOD_HELD & TK_MODS_CAS) == 0 && tk_mnemonic_key(ui, code) == 1) { return 1; }
         tk_menu_key(ui, code, mods & KEYMOD_HELD);
         return 1;
     }
@@ -2448,6 +2931,7 @@ fn tk_key_in(ui: *tk_ui, code: u32, ch: u32, mods: u32) -> u32 {
             if (tk_context_key(ui) == 1) { return 1; }
         }
     }
+    if (held == KEYMOD_ALT && tk_mnemonic_key(ui, code) == 1) { return 1; }
     let cmd: u32 = tk_command_for(ui, code, held);
     if (cmd != 0) {
         // the app's own wait while a dialog is open; a field in it still
@@ -2909,6 +3393,23 @@ fn tk_field_at(ui: *tk_ui, i: u32, x: i32) -> u32 {
     let cw: i32 = tk_imax(tk_char_w(ui) as i32, 1);
     let col: u32 = f.scroll;
     if (x > tx) { col = col + (((x - tx) + cw / 2) / cw) as u32; }
+    // the column's edge to a place between characters, in visual order (2.8a4)
+    tk_field_vis(ui, f);
+    if (tk_fbidi == 1) {
+        let m: u32 = tk_fm;
+        let e: u32 = tk_imin(col as i32, m as i32) as u32;
+        if (ui.mirror == 1) { e = m - e; }
+        if (m == 0) { col = 0; }
+        else if (e < m) {
+            let li: u32 = tk_bd.ord[e];
+            col = li;
+            if ((tk_bd.lvl[li] & 1) != 0) { col = li + 1; }
+        } else {
+            let li: u32 = tk_bd.ord[m - 1];
+            col = li + 1;
+            if ((tk_bd.lvl[li] & 1) != 0) { col = li; }
+        }
+    }
     let at: u32 = 0;
     let k: u32 = 0;
     while (k < col && at < f.len) { at = tk_field_next(f, at); k = k + 1; }
@@ -2978,6 +3479,7 @@ fn tk_set_bit(ui: *tk_ui, i: u32, f: u32, on: u32) -> void {
 // of the nearest widget holding it that has one. While a menu is open it
 // has the pointer; while a dialog is, only what is in it can be hit.
 fn tk_pointer(ui: *tk_ui, x: i32, y: i32, buttons: u32) -> void {
+    if (ui.mirror == 1) { x = (ui.canvas.width as i32) - 1 - x; }     // where it is, as laid out (2.8a4)
     let was: u32 = ui.buttons & 1;
     let now: u32 = buttons & 1;
     let rwas: u32 = (ui.buttons >> 1) & 1;
@@ -4156,14 +4658,15 @@ fn tk_menu_lit(ui: *tk_ui, menu: u32) -> u32 {
 
 // ---- dialogs ----
 
-fn tk_dlg_label(code: u32) -> *u8 {
-    if (code == TK_DLG_DISCARD) { return "Discard"; }
-    if (code == TK_DLG_APPLY) { return "Apply"; }
-    if (code == TK_DLG_CLOSE) { return "Close"; }
-    if (code == TK_DLG_CANCEL) { return "Cancel"; }
-    if (code == TK_DLG_NO) { return "No"; }
-    if (code == TK_DLG_YES) { return "Yes"; }
-    return "OK";
+// The key of a standard button (its English: tk_builtin).
+fn tk_dlg_key(code: u32) -> *u8 {
+    if (code == TK_DLG_DISCARD) { return "tk-dialog-discard"; }
+    if (code == TK_DLG_APPLY) { return "tk-dialog-apply"; }
+    if (code == TK_DLG_CLOSE) { return "tk-dialog-close"; }
+    if (code == TK_DLG_CANCEL) { return "tk-dialog-cancel"; }
+    if (code == TK_DLG_NO) { return "tk-dialog-no"; }
+    if (code == TK_DLG_YES) { return "tk-dialog-yes"; }
+    return "tk-dialog-ok";
 }
 
 // A dialog over the window, closed: its title, its text (0 for none), a
@@ -4199,7 +4702,7 @@ fn tk_dialog(ui: *tk_ui, title: *u8, text: *u8, buttons: u32) -> u32 {
             tk_set_flags(ui, gap, TK_F_GROW, 0);
         }
         if ((buttons & code) != 0) {
-            let b: u32 = tk_add(ui, row, TK_BUTTON, tk_dlg_label(code));
+            let b: u32 = tk_add_key(ui, row, TK_BUTTON, tk_dlg_key(code));
             if (b == 0) { return 0; }
             ui.node[tk_index(ui, b)].value = code as i32;
             last = b;
@@ -4212,6 +4715,31 @@ fn tk_dialog(ui: *tk_ui, title: *u8, text: *u8, buttons: u32) -> u32 {
     tk_set_flags(ui, dflt, TK_F_DEFAULT, 0);
     if (cancel != 0) { tk_set_flags(ui, cancel, TK_F_CANCEL, 0); }
     ui.node[tk_index(ui, d)].sel = tk_index(ui, body);
+    return d;
+}
+
+// tk_dialog with its title and text by key (text 0 for none).
+fn tk_dialog_key(ui: *tk_ui, title: *u8, text: *u8, buttons: u32) -> u32 {
+    if (title == (0 as *u8)) { return 0; }
+    let d: u32 = tk_dialog(ui, "", 0 as *u8, buttons);
+    if (d == 0) { return 0; }
+    let di: u32 = tk_index(ui, d);
+    let h: u32 = ui.node[di].first;             // the heading tk_dialog made
+    let ko: u32 = tk_store(ui, title);
+    if (ko == TK_NONE) { return 0; }
+    ui.node[h].key = ko;
+    if (tk_relook(ui, h) != 0) { return 0; }
+    if (text != (0 as *u8)) {
+        // its label goes after the heading, before the body
+        let l: u32 = tk_node_new(ui, TK_LABEL);
+        let lk: u32 = tk_store(ui, text);
+        if (l == TK_NONE || lk == TK_NONE) { return 0; }
+        ui.node[l].parent = di;
+        ui.node[l].next = ui.node[h].next;
+        ui.node[h].next = l;
+        ui.node[l].key = lk;
+        if (tk_relook(ui, l) != 0) { return 0; }
+    }
     return d;
 }
 
@@ -4296,11 +4824,13 @@ fn tk_draw_dialog(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
 // What is under a dialog, dimmed.
 fn tk_scrim(ui: *tk_ui, r: *ds_rect) -> void {
     let s: u32 = ds_fade(0xFF000000, 96);
+    let x0: u32 = r.x;
+    if (ui.mirror == 1) { x0 = ui.canvas.width - r.x - r.w; }
     let y: u32 = r.y;
     while (y < r.y + r.h) {
         let row: *u32 = ds_row(&ui.canvas, y);
-        let x: u32 = r.x;
-        while (x < r.x + r.w) { row[x] = ds_over(s, row[x]); x = x + 1; }
+        let x: u32 = x0;
+        while (x < x0 + r.w) { row[x] = ds_over(s, row[x]); x = x + 1; }
         y = y + 1;
     }
 }
@@ -4538,15 +5068,33 @@ fn tk_grid_cell(ui: *tk_ui, id: u32, col: u32, row: u32) -> u32 {
 fn tk_draw_textgrid(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
     let n: *tk_node = &ui.node[i];
     tk_box(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, ui.theme.raised);
-    if (n.rows > 0) {
+    // a terminal is left to right: in a mirrored ui its box is mirrored, its
+    // cells are not (2.8a4): drawn unmirrored, moved to the mirrored box
+    let cl: ds_rect;
+    let g: *ds_rect = c;
+    let was: u32 = ui.mirror;
+    let cells: u32 = 1;
+    if (was == 1) {
+        let mine: ds_rect;
+        let inside: ds_rect;
+        ds_rect_set(&mine, tk_imax(n.dx as i32, 0) as u32, tk_imax(n.dy as i32, 0) as u32, n.dw, n.dh);
+        cells = ds_rect_and(&inside, &mine, c);
+        let w: i32 = ui.canvas.width as i32;
+        let delta: i32 = (w - (n.dx as i32) - (n.dw as i32)) - (n.dx as i32);
+        ds_rect_set(&cl, (w - (inside.x as i32) - (inside.w as i32) - delta) as u32, inside.y, inside.w, inside.h);
+        g = &cl;
+        ui.mirror = 0;
+        ui.tx = delta;
+    }
+    if (n.rows > 0 && cells == 1) {
         let cw: i32 = tk_char_w(ui) as i32;
         let chh: i32 = tk_char_h(ui) as i32;
         let gx: i32 = 0;
         let gy: i32 = 0;
         tk_grid_xy(ui, i, 0, 0, &gx, &gy);
         // only the rows the clip meets
-        let r0: i32 = tk_imax(((c.y as i32) - gy) / chh, 0);
-        let r1: i32 = tk_imin(((c.y + c.h) as i32 - gy + chh - 1) / chh, n.rows as i32);
+        let r0: i32 = tk_imax(((g.y as i32) - gy) / chh, 0);
+        let r1: i32 = tk_imin(((g.y + g.h) as i32 - gy + chh - 1) / chh, n.rows as i32);
         let buf: [4]u8;
         let row: i32 = r0;
         while (row < r1) {
@@ -4565,11 +5113,11 @@ fn tk_draw_textgrid(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
                     if (cur == 1) { let t: u32 = fg; fg = bg; bg = t; }
                     let x: i32 = gx + (col as i32) * cw;
                     let y: i32 = gy + row * chh;
-                    if (bi > 0 || cur == 1) { tk_box(ui, c, x, y, cw, chh, bg); }
+                    if (bi > 0 || cur == 1) { tk_box(ui, g, x, y, cw, chh, bg); }
                     let cp: u32 = v & 0x1FFFFF;
                     if (cp > 32) {
                         let l: u32 = tk_utf8_put(cp, &buf[0]);
-                        tk_text_n(ui, c, x, y, &buf[0], l, fg, 0);
+                        tk_text_n(ui, g, x, y, &buf[0], l, fg, 0);
                     }
                 }
                 col = col + 1;
@@ -4577,6 +5125,8 @@ fn tk_draw_textgrid(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
             row = row + 1;
         }
     }
+    ui.mirror = was;
+    ui.tx = 0;
     let edge: u32 = ui.theme.border;
     let t: i32 = tk_len(ui, 1);
     if (tk_on(n, TK_F_FOCUS) == 1 || tk_on(n, TK_F_SHOW_RING) == 1) { edge = ui.theme.ring; t = tk_len(ui, TK_RING_T); }

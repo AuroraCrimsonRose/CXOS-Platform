@@ -111,7 +111,8 @@ Containers: **row**, **column**, **grid**, **stack** (children on top of
 each other; tabs and dialogs). Spacing and padding come only from the
 design scale (`TK_SP_1`... = 4, 8, 12, 16, 24, 32 logical units); an app
 cannot give a raw number, which is how the scale is enforced. Mirrored
-layouts (right-to-left, 2.8a4) reverse a row's order in arrange only.
+layouts (right-to-left, 2.8a4) are not a second layout: the window is
+mirrored where it meets pixels and the pointer (§10).
 
 ## 6. Damage and the frame loop
 
@@ -358,6 +359,153 @@ setting and can be forced per ui (the gallery does).
   `tt_dialog` 6000, `tt_textgrid` 6100), the server's timed wait
   (`w_timed` 6200), the gallery replay through the pages, a menu, a
   tooltip and the dialog (4625-4641), and `tests/sabotage/2.8a3.sab`.
+
+## 10. Localisation and bidirectional text (2.8a4)
+
+**Surveyed 2026-11-13.** Haiku's catalogs are keyed by the English text and
+a context (`B_TRANSLATE(string)`, `headers/os/locale/Catalog.h`), and
+`BCatalog::GetString` (`src/kits/locale/Catalog.cpp`) walks a chain of
+catalogs, the first that has the string winning; plurals go to ICU's
+`MessageFormat` (`headers/os/locale/StringFormat.h`, ICU's
+`{0, plural, one{...} other{...}}`). Serenity's
+`Painter::split_text_into_directional_runs` (`LibGfx/Painter.cpp`) is, by
+its own FIXME, "a very simplified version" of UAX #9: no explicit
+embeddings or isolates, no brackets, one pass for neutrals. Windows
+mirrors a whole window by mirroring its device context
+(`SetLayout(LAYOUT_RTL)`, from memory; NT5 is not on disk), drawing text
+the right way round inside the mirrored box.
+
+**Taken:** keys, never the English text (Haiku's key is the text, so
+changing the English orphans every translation); Haiku's chain as our
+fallback (the locale's table, then English, then the key itself, so a
+missing string is seen, not blank); Fluent's syntax for the source and its
+plural selectors, compiled ahead of time instead of ICU at run time; the
+whole of UAX #9, not Serenity's subset, held to Unicode's own test files;
+Windows' mirroring of the whole window, not a row reversed in arrange (§5
+said so before; a reversed row would leave a check box's box, a slider's
+direction, a scroll bar's side and a tree's indent the LTR way round).
+
+**Data, vendored unmodified** (`THIRD-PARTY-NOTICES.md`): Unicode 18.0's
+`DerivedBidiClass.txt`, `BidiBrackets.txt`, `BidiMirroring.txt`,
+`BidiTest.txt` and `BidiCharacterTest.txt` in `vendor/unicode/`, CLDR 49's
+`plurals.xml` in `vendor/cldr/`, both under the Unicode License v3.
+
+**The source: a Fluent subset** (`os/locale/<domain>/<tag>.ftl`, the
+domains `toolkit` and one per app). Comments (`#`, `##`, `###`); messages
+`key = text`, the key `[a-zA-Z][a-zA-Z0-9_-]*`; text that goes on in
+indented lines (Fluent's line breaks kept, each continuation line's indent removed);
+attributes (`.tip = ...`, looked up as `key.tip`); placeables: a variable
+`{ $name }`, a string literal `{ "{" }` (escapes `\"`, `\\`, `\uXXXX`), and
+a select on a number, `{ $n -> [one] ... *[other] ... }`, whose keys are
+CLDR plural categories or integers, exactly one marked default. Refused
+with the line named: message references, terms, functions, selects on
+anything but a variable. `&` before a character marks its mnemonic, `&&`
+is an `&`.
+
+**`cxk strings build <src.ftl>... --locale <tag> [--base <en.ftl>...]
+[--pseudo] -o <table.xstr>`.** Every source of an app's table at once (the
+toolkit's and the app's), so a key is unique across them. With `--base`,
+a translation is held to the English: a key English lacks is an error, a
+variable it does not have is an error, a missing key is a warning (it falls
+back). A select's category keys must be the locale's CLDR categories. The
+locale's plural rules come from `plurals.xml`, compiled into the table.
+The table is read back through the checker before the command succeeds,
+as `cxk font build` does. `--pseudo` writes the pseudo-locale (below).
+
+**XSTR, the table** (`versions.json` `xstr`), little-endian: a 40-byte
+header (`XSTR`, version, flags with bit 0 right-to-left, the tag in 16
+bytes NUL-padded, the message count, where the index and the plural rules are, the
+whole size), an index of 12-byte records sorted by key bytes (key offset
+and length, body offset and length), then the bytes. A body is a pattern:
+`1 len16 text`, `2 len8 name` (a variable), `3 len8 name count8` and that
+many variants (`kind8` 0 a category, 1 an integer; the key; `default8`;
+`len16` and a pattern). The plural block is a count and, per category but
+`other`, its rule as relations (operand, modulus, `=` or `!=`, ranges)
+joined by `and` and `or`, as CLDR writes them. **The checker** (`lc_parse`)
+copies the bytes into the table's own buffer first (a table can come from
+another process's memory), then refuses anything out of place: a size
+that is not the length, an offset or a length past the end, keys not in
+strictly rising order (so lookup is a binary search and a key is there
+once), text that is not UTF-8, an unknown op, a select with no default or
+two, nesting deeper than 4, a plural rule that runs past its block.
+
+**At run time** (`os/std/locale.xfxn`, `lc_`): `lc_parse`, `lc_find`,
+`lc_format(table, fallback, key, args, out, cap)` (variables by name;
+numbers are integers, written in ASCII digits until CLDR's number formats
+come with the first program that needs them), `lc_plural(table, n)`. The
+operands are CLDR's with no fraction: n = i = |value|, v = w = f = t = e =
+0. **Where a client's tables come from:** the display server, as its font:
+clients have no disk (`dsv_launch`), so the server reads
+`/System/Locale/<program>-<tag>.xstr` and `-en.xstr` for the program it
+starts and hands both over in one read-only memory object
+(`WIN_LOCALE_SLOT`); the client copies and checks them
+(`tk_win_locale`). The server's locale is its own setting (`displayd
+--locale <tag>`, `en` by default) until Settings has a page for it.
+**As built:** the object is `u32` the locale's table's length, `u32` the
+English one's, then the two, each at most `LC_TABLE_MAX` (16 KiB; either
+length 0 for none, and no object at all when a program has no tables); the
+server reads them per launch (`dsv_locale_mem`) and keeps no mapping. The
+build makes `gallery-en.xstr`, `gallery-qps.xstr` and `plurals.xplt`
+(CLDR's samples, for the boot) and stages them in `/System/Locale`
+(`tools/cmake/CMakeLists.txt`).
+
+**In the toolkit.** A widget made with a key (`tk_add_key`, `tk_set_tip_key`,
+`tk_dialog_key`, the standard dialog buttons and the key names in menus)
+keeps the key and shows what it looks up; `tk_set_arg(ui, id, name, n)`
+gives it a number to format with. `tk_set_locale(ui, table, fallback)`
+looks every key up again (the arena is rebuilt, not grown), takes the
+direction from the table, and lays out again. The accessible name is the
+looked-up text; `tk_key_of` gives the key. **Mnemonics:** a key's `&x` is
+shown underlined and not as `&`; Alt+x, or x alone in an open menu, does
+what a press would (a button, a check box, a menu's title), the dialog
+manager's step before the command table.
+
+**Bidirectional text** (`os/std/bidi.xfxn`, `bd_`, the tables generated
+into `os/std/unibidi.xfxn` by `cxk unicode bidi vendor/unicode`, checked in
+and held to the vendored files by a DevKit test, as `cxk_abi.h` is): the
+whole of UAX #9 for one paragraph, P2-P3, X1-X10 with isolates and the
+overflow counts, W1-W7, N0 with BD16's 63-deep bracket stack (canonical
+equivalents of U+2329 and U+232A), N1-N2, I1-I2, L1 and L2, and L4's
+mirrored glyphs; at most 256 characters a run. **Its witness is Unicode's:**
+`os/xc/bidicheck.xfxn`, built for the host as the compiler's dump
+programs are, runs every line of `BidiTest.txt` and
+`BidiCharacterTest.txt` in the CI container and must report no failure; the
+boot runs a set of hand cases through the same code. Text with no
+right-to-left character in a left-to-right ui takes none of it.
+
+**Mirroring.** A right-to-left ui lays out exactly as a left-to-right one
+and is mirrored where it meets pixels and the pointer: every shape is drawn
+at x' = W - x - w, damage goes out mirrored, a pointer's x comes in
+mirrored. Text is the exception: its box is mirrored and its characters are
+set in it in UAX #9's visual order, the paragraph's direction the ui's, not
+reversed glyph by glyph. A text grid's cells are never mirrored (a terminal
+is left to right). The text field sets its text in visual order and puts
+the caret at the edge of the character it is before.
+
+**The pseudo-locale** `qps` (the private-use tag Windows' pseudo-locales
+use): every text run's letters accented with ones code page 437 has (so
+the v1 font shows them), 40% longer (`~` after the text, at least one),
+in `[` `]` (a clipped end shows), and right-to-left. Placeables, mnemonic
+letters and select keys are left alone. **Witness: the gallery in `qps`**,
+through the server, matching the headless ui as the `en` replay does; and
+headless: no widget's shown text without a key, no text wider than its
+box, and the whole canvas (no font, so shapes only) the mirror image of the
+same gallery laid out left to right, the text grid's box aside.
+
+**The checks, as built** (`os/apps/locale_tests.xfxn`, `xtest.xfxn`): the
+staged tables read and checked, five kinds of damage refused, lookup,
+plurals, the fallback chain and cutting at a character; every
+`tk_builtin` key equal to `os/locale/toolkit/en.ftl`; every CLDR sample's
+category (`plurals.xplt`); UAX #9 hand cases, 6500-6515, on the machine (the
+whole files on the host, `BidiConformanceTests`); text read back off the
+canvas through a font whose every glyph names itself (visual order, L4's
+mirrored brackets, an underlined mnemonic, the mirrored box); Alt+letter
+on a menu title, a label, a button, a dialog's check box, and a letter in
+an open menu; the pseudo-locale gallery headless (keyed, unclipped on
+every page and menu, mirrored pixel for pixel, the pointer and damage
+mirrored, Left and Right swapped but in a text field) and through the
+server (`gx_gallery_qps`). The English gallery's replay now loads the same
+English table the server hands the gallery.
 
 The gallery (`os/apps/gallery.xfxn`) shows every widget in every state
 (normal, hovered, pressed, focused, disabled, checked, mixed), light and

@@ -21,7 +21,9 @@ struct tk_win {
     in_flight: u32,
     last: ds_damage,    // what the commit before this one drew
     font: ds_font,
-    has_font: u32
+    has_font: u32,
+    loc: lc_table,      // the program's tables from the server (2.8a4): tk_win_locale
+    en: lc_table
 }
 
 // The server's font, from slot WIN_FONT_SLOT, mapped read-only and checked
@@ -38,6 +40,41 @@ fn tk_win_font(tw: *tk_win) -> u32 {
     if (vm_map(&a) != E_OK) { return 0; }
     if (ds_font_parse(&tw.font, a.addr as *u8, DS_FONT_BYTES_MAX) != 0) { vm_unmap(a.addr, 0); return 0; }
     tw.has_font = 1;
+    return 1;
+}
+
+// The program's string tables, from slot WIN_LOCALE_SLOT (the server's,
+// window.xfxn), mapped read-only, copied and checked (lc_parse) and given
+// to ui (tk_set_locale): the locale's, then English to fall back on. A
+// table that is refused is as none. 1 if either was taken, else 0 (the ui
+// then shows its keys, and the toolkit's own English).
+fn tk_win_locale(tw: *tk_win, ui: *tk_ui) -> u32 {
+    tw.loc.size = 0;
+    tw.en.size = 0;
+    let h: i32 = args_handle(WIN_LOCALE_SLOT);
+    if (h <= 0) { return 0; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = h as u32;
+    a.length = WIN_LOCALE_BYTES as u64;
+    a.prot = MPROT_READ;
+    if (vm_map(&a) != E_OK) { return 0; }
+    let p: *u8 = a.addr as *u8;
+    let nl: u32 = lc_u32(p, 0);
+    let ne: u32 = lc_u32(p, 4);
+    let got: u32 = 0;
+    if (nl <= WIN_LOCALE_ONE && ne <= WIN_LOCALE_ONE) {
+        if (nl > 0 && lc_parse(&tw.loc, &p[8], nl) as usize == 0) { got = 1; } else { tw.loc.size = 0; }
+        if (ne > 0 && lc_parse(&tw.en, &p[8 + nl], ne) as usize == 0) { got = 1; } else { tw.en.size = 0; }
+    }
+    vm_unmap(a.addr, 0);
+    if (got == 0) { return 0; }
+    let t: *lc_table = 0 as *lc_table;
+    let f: *lc_table = 0 as *lc_table;
+    if (tw.loc.size != 0) { t = &tw.loc; }
+    if (tw.en.size != 0) { f = &tw.en; }
+    if (t == (0 as *lc_table)) { t = f; f = 0 as *lc_table; }
+    tk_set_locale(ui, t, f);
     return 1;
 }
 

@@ -21,6 +21,12 @@ import "wm.xfxn";
 
 const WIN_SLOT: u32 = 3;
 const WIN_FONT_SLOT: u32 = 4;       // the server's font, a memory object to map read-only
+// the program's string tables (2.8a4), a memory object to map read-only:
+// u32 the locale's table's length, u32 the English one's, then the two
+// (either length 0: none); each at most LC_TABLE_MAX (std/locale.xfxn)
+const WIN_LOCALE_SLOT: u32 = 5;
+const WIN_LOCALE_ONE: u32 = 16384;      // LC_TABLE_MAX (an xtest holds them equal)
+const WIN_LOCALE_BYTES: u32 = 32776;    // 8 + 2 x WIN_LOCALE_ONE
 
 const DS_OP_WINDOW_NEW: u32 = 1;   // w, h, flags, title; handles: the two buffers
 const DS_OP_COMMIT: u32 = 2;       // win, buffer, nrects, rects; handle: the lease

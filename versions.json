@@ -192,6 +192,15 @@
         { "file": "kernel/lib/gfx/xfnt.h", "pattern": "XFNT_VERSION\\s+([0-9]+)" }
       ]
     },
+    "xstr": {
+      "version": 1,
+      "what": "XSTR - an app's string table for one locale: a 40-byte header, records sorted by key, each message a small program (text, variable, select on a plural category or an integer), then the locale's CLDR cardinal plural rules compiled. XPLT, every locale's rules with CLDR's samples for the boot test, carries the same version.",
+      "bump_when": "the header, the record layout, a message op or the plural rule encoding changes",
+      "checks": [
+        { "file": "devkit/CXEX.Build/Locale/Xstr.cs", "pattern": "Version = ([0-9]+)" },
+        { "file": "os/std/locale.xfxn", "pattern": "LC_VERSION: u32 = ([0-9]+)" }
+      ]
+    },
     "cxsg": {
       "version": 0,
       "what": "The CXSG signature block: 44-byte header, then the signer's .xkpk verbatim, then the signature.",

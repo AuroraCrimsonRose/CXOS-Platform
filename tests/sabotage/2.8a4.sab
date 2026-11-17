@@ -1,0 +1,212 @@
+# Step 2.8a4, localisation and bidirectional text: string tables, plurals,
+# UAX #9, mirroring, mnemonics and the server's tables, run by
+# `cxk test sabotage`. Each must turn red exactly the self-tests named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds at
+# most one sabotage per test.
+#
+# By hand, outside this file (it judges boots only): a sabotage of
+# std/bidi.xfxn must turn the container's BidiConformanceTests red, and one
+# of the DevKit's Xstr writer LocaleTests (the commit message has both).
+
+# ---- the tables (std/locale.xfxn) ----
+
+[lc-order-unchecked]
+# keys out of order are taken (lookup is a binary search: some vanish)
+expect = x: locale: tables, lookup, plurals, fallback @ failed at step 6308
+edit = os/std/locale.xfxn
+<<<
+        if (r > 0 && lc_cmp(&b[pk], pl, &b[ko], kl) >= 0) { return "keys not strictly rising"; }
+===
+>>>
+
+[lc-text-utf8-unchecked]
+# a text that is not UTF-8 is taken
+expect = x: locale: tables, lookup, plurals, fallback @ failed at step 6309
+group = g3
+edit = os/std/locale.xfxn
+<<<
+            if (n > end - at || !lc_utf8_ok(&p[at], n)) { return "a text"; }
+===
+            if (n > end - at) { return "a text"; }
+>>>
+
+[lc-no-fallback]
+# a key the locale lacks is not looked for in English
+expect = x: locale: tables, lookup, plurals, fallback @ failed at step 6317
+group = g4
+edit = os/std/locale.xfxn
+<<<
+    if (r == LC_NONE) { tab = fallback; r = lc_find(fallback, key, kl); }
+===
+>>>
+
+[lc-plural-not-negated]
+# a plural rule's != reads as =
+expect = x: locale: CLDR's plural samples @ failed at step 6405
+edit = os/std/locale.xfxn
+<<<
+            if (neg) { inside = !inside; }
+===
+>>>
+
+[builtin-drift]
+# the toolkit's built-in English is no longer its source's
+expect = x: locale: tables, lookup, plurals, fallback @ failed at step 6322
+group = g5
+edit = os/std/toolkit.xfxn
+<<<
+    if (streq(key, "tk-dialog-discard") != 0) { return "Discard"; }
+===
+    if (streq(key, "tk-dialog-discard") != 0) { return "Discards"; }
+>>>
+
+# ---- UAX #9 (std/bidi.xfxn) and text ----
+
+[bidi-no-n0]
+# bracket pairs are not resolved (N0): the hand case, and a mirrored label
+expect = x: bidi: classes and hand cases @ failed at step 6514
+expect = x: toolkit: bidi text, mirrored, mnemonics drawn @ failed at step 6609
+edit = os/std/bidi.xfxn
+<<<
+    // N0
+    if (p.brackets != 0) {
+===
+    // N0
+    if (p.brackets != 0 && 1 == 0) {
+>>>
+
+[text-no-l4]
+# a character at an odd level shows its own glyph, not its mirror's
+expect = x: toolkit: bidi text, mirrored, mnemonics drawn @ failed at step 6642
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+        if ((tk_bd.lvl[i] & 1) != 0) { cp = bd_mirror(cp); }
+        let under: u32 = 0;
+===
+        let under: u32 = 0;
+>>>
+
+[mnemonic-lost]
+# a text's mnemonic is never found: not underlined
+expect = x: toolkit: bidi text, mirrored, mnemonics drawn @ failed at step 6602
+expect = x: toolkit: mnemonics @ failed at step 6703
+group = g4
+edit = os/std/toolkit.xfxn
+<<<
+    return ui.arena[(p - a - 1) as u32];
+===
+    return TK_MN_NONE;
+>>>
+
+# ---- mnemonics ----
+
+[mn-alt-ignored]
+# Alt+letter does nothing: no menu opens, here or in the server's gallery
+expect = x: toolkit: mnemonics @ failed at step 6704
+expect = x: gallery: in the pseudo-locale @ failed at step 6910
+edit = os/std/toolkit.xfxn
+<<<
+    if (held == KEYMOD_ALT && tk_mnemonic_key(ui, code) == 1) { return 1; }
+===
+>>>
+
+[mn-menu-letter-ignored]
+# a letter in an open menu chooses nothing
+expect = x: toolkit: mnemonics @ failed at step 6705
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+            if (tk_menu_can(ui, it) == 1 && tk_mn_letter(ui, it) == want) { tk_menu_choose(ui, it); return 1; }
+===
+>>>
+
+[mn-label-keeps-focus]
+# a label's mnemonic is taken but the focus does not move
+expect = x: toolkit: mnemonics @ failed at step 6708
+group = g3
+edit = os/std/toolkit.xfxn
+<<<
+                    if (tk_focusable(ui, j) == 1) { tk_focus_set(ui, j); return 1; }
+===
+                    if (tk_focusable(ui, j) == 1) { return 1; }
+>>>
+
+# ---- mirroring ----
+
+[mirror-box-unmirrored]
+# shapes are drawn where laid out, not mirrored
+expect = x: toolkit: the pseudo-locale, mirrored @ failed at step 6814
+expect = x: gallery: in the pseudo-locale @ failed at step 6907
+edit = os/std/toolkit.xfxn
+<<<
+    if (ui.mirror == 1) { fx = (ui.canvas.width as i32) - x1; }
+===
+>>>
+
+[mirror-arrows-unswapped]
+# Left is Left in a right to left ui
+expect = x: toolkit: the pseudo-locale, mirrored @ failed at step 6822
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+        if (code == KC_LEFT) { code = KC_RIGHT; } else if (code == KC_RIGHT) { code = KC_LEFT; }
+===
+>>>
+
+[mirror-arrows-in-field]
+# the arrows are swapped in a text field too
+expect = x: toolkit: the pseudo-locale, mirrored @ failed at step 6823
+group = g3
+edit = os/std/toolkit.xfxn
+<<<
+    if (ui.mirror == 1 && (ui.focus == TK_NONE || ui.node[ui.focus].kind != TK_TEXTFIELD)) {
+===
+    if (ui.mirror == 1) {
+>>>
+
+[mirror-pointer-unmirrored]
+# the pointer is taken where it is, not where the ui laid it out
+expect = x: toolkit: the pseudo-locale, mirrored @ failed at step 6820
+group = g4
+edit = os/std/toolkit.xfxn
+<<<
+    if (ui.mirror == 1) { x = (ui.canvas.width as i32) - 1 - x; }     // where it is, as laid out (2.8a4)
+===
+>>>
+
+[mirror-damage-unmirrored]
+# damage goes out where laid out: the server copies the wrong rects
+expect = x: toolkit: the pseudo-locale, mirrored @ failed at step 6821
+expect = x: gallery: in the pseudo-locale
+group = g5
+edit = os/std/toolkit.xfxn
+<<<
+        while (q < out.n) { out.r[q].x = ui.canvas.width - out.r[q].x - out.r[q].w; q = q + 1; }
+===
+>>>
+
+# ---- the server's tables ----
+
+[server-no-tables]
+# a client is started with no tables: it shows its keys
+expect = x: gallery: the window holds what was drawn @ failed at step 4604
+expect = x: gallery: in the pseudo-locale @ failed at step 6906
+group = g3
+edit = os/std/dserver.xfxn
+<<<
+    let lm: i32 = dsv_locale_mem(s, path);
+===
+    let lm: i32 = 0;
+>>>
+
+[server-locale-ignored]
+# the server's locale is not the client's: English, left to right
+expect = x: gallery: in the pseudo-locale @ failed at step 6906
+group = g2
+edit = os/std/dserver.xfxn
+<<<
+    if (s.locale[0] != 0 && streq(&s.locale[0], "en") == 0) {
+===
+    if (1 == 0) {
+>>>

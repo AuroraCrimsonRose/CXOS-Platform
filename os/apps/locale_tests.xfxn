@@ -1,0 +1,611 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/locale_tests.xfxn - string tables, bidirectional text, mirroring and
+// mnemonics, with no window (roadmap 2.8a4).
+// Aurora Tejeda / CATX Systems
+//
+// Imported by xtest.xfxn, which runs each. The tables are the gallery's, as
+// the build staged them in /System/Locale (os/locale/*.ftl); the plural
+// samples are CLDR's own (plurals.xplt). UAX #9 is held to Unicode's whole
+// test files on the host (os/xc/bidicheck.xfxn); here a set of hand cases
+// runs through the same code on the machine. The gallery in the
+// pseudo-locale through the server is in xtest.xfxn. Codes 6300-6899.
+
+import "toolkit_tests.xfxn";
+import "gallery_pages.xfxn";
+import "window.xfxn";
+
+global lt_en: lc_table;
+global lt_qps: lc_table;
+global lt_raw: [16385]u8;       // LC_TABLE_MAX and one, to see a file too big
+
+// A file into lt_raw: its length, or 0 (none, or more than cap).
+fn lt_read(path: *u8, cap: u32) -> u32 {
+    let h: i32 = file_open(path, FOPEN_READ);
+    if (h <= 0) { return 0; }
+    let n: i32 = file_read(h, &lt_raw[0], (cap + 1) as u64);
+    file_close(h);
+    if (n <= 0 || n as u32 > cap) { return 0; }
+    return n as u32;
+}
+
+// The gallery's table for tag, read and checked into t: 0 or 1.
+fn lt_load(t: *lc_table, path: *u8) -> u32 {
+    let n: u32 = lt_read(path, LC_TABLE_MAX);
+    if (n == 0) { return 1; }
+    if (lc_parse(t, &lt_raw[0], n) as usize != 0) { return 1; }
+    return 0;
+}
+
+fn lt_tables() -> u32 {
+    if (lt_load(&lt_en, "/System/Locale/gallery-en.xstr") != 0) { return 1; }
+    if (lt_load(&lt_qps, "/System/Locale/gallery-qps.xstr") != 0) { return 1; }
+    return 0;
+}
+
+// key formatted from t (fallback f), with the number n if name is not 0,
+// equals want: 1 if so.
+fn lt_says(t: *lc_table, f: *lc_table, key: *u8, name: *u8, n: i32, want: *u8) -> u32 {
+    let a: lc_arg;
+    let na: u32 = 0;
+    if (name != (0 as *u8)) { lc_arg_num(&a, name, n); na = 1; }
+    let o: [256]u8;
+    let len: u32 = lc_format(t, f, key, &a, na, &o[0], 256);
+    if (len != strlen(want) || streq(&o[0], want) == 0) { return 0; }
+    return 1;
+}
+
+// The table's bytes, damaged at `at` to v, through the checker: 1 if it
+// was refused.
+fn lt_refused(n: u32, at: u32, v: u8) -> u32 {
+    let n2: u32 = lt_read("/System/Locale/gallery-en.xstr", LC_TABLE_MAX);
+    if (n2 != n) { return 0; }
+    lt_raw[at] = v;
+    let t: *lc_table = &lt_qps;     // put back by the caller
+    if (lc_parse(t, &lt_raw[0], n) as usize == 0) { return 0; }
+    return 1;
+}
+
+// 6300: the tables the build made are read and checked; a damaged one is
+// refused; lookup, formatting with a plural, falling back, and the
+// toolkit's built-in English is its source's (os/locale/toolkit/en.ftl).
+fn lt_locale(arg: u64) -> i32 {
+    if (WIN_LOCALE_ONE != LC_TABLE_MAX) { return 6300; }
+    if (lt_tables() != 0) { return 6301; }
+    if (lt_en.rtl != 0 || lt_qps.rtl == 0 || streq(&lt_en.tag[0], "en") == 0 || streq(&lt_qps.tag[0], "qps") == 0) { return 6302; }
+    if (lt_en.count != lt_qps.count || lt_en.count < 100) { return 6303; }
+    // damage: the magic, the version, the size, a key's order, a text byte
+    let n: u32 = lt_read("/System/Locale/gallery-en.xstr", LC_TABLE_MAX);
+    if (n == 0) { return 6304; }
+    if (lt_refused(n, 0, 'Y') == 0) { return 6305; }
+    if (lt_refused(n, 4, 99) == 0) { return 6306; }
+    if (lt_refused(n, 36, (n + 1) as u8) == 0) { return 6307; }
+    // the first two keys' offsets swapped: no longer rising
+    let k0: u32 = lc_u32(&lt_en.buf[0], 40);
+    let k1: u32 = lc_u32(&lt_en.buf[0], 52);
+    lt_read("/System/Locale/gallery-en.xstr", LC_TABLE_MAX);
+    lt_raw[40] = k1 as u8; lt_raw[41] = (k1 >> 8) as u8;
+    lt_raw[52] = k0 as u8; lt_raw[53] = (k0 >> 8) as u8;
+    if (lc_parse(&lt_qps, &lt_raw[0], n) as usize == 0) { return 6308; }
+    // a byte that is not UTF-8 in a text: "gallery-file"'s first character
+    // (its body is op 1, a 16-bit length, the text)
+    if (lt_load(&lt_qps, "/System/Locale/gallery-en.xstr") != 0) { return 6324; }
+    let fr: u32 = lc_find(&lt_qps, "gallery-file", 12);
+    if (fr == LC_NONE) { return 6324; }
+    let fb: u32 = lc_u32(&lt_qps.buf[0], 40 + 12 * fr + 8);
+    if (lt_qps.buf[fb] != 1 || lt_qps.buf[fb + 3] != '&') { return 6324; }
+    if (lt_refused(n, fb + 3, 0xFF) == 0) { return 6309; }
+    if (lt_refused(n - 1, 0, 'X') != 0) { return 6310; }    // a short read is not the table's length
+    if (lt_load(&lt_qps, "/System/Locale/gallery-qps.xstr") != 0) { return 6311; }
+    // lookup and format
+    if (!lc_has(&lt_en, "gallery-file") || lc_has(&lt_en, "gallery-nope") || lc_has(0 as *lc_table, "gallery-file")) { return 6312; }
+    if (lt_says(&lt_en, 0 as *lc_table, "gallery-file", 0 as *u8, 0, "&File") == 0) { return 6313; }
+    if (lt_says(&lt_en, 0 as *lc_table, "gallery-count", "n", 1, "One name, one off") == 0) { return 6314; }
+    if (lt_says(&lt_en, 0 as *lc_table, "gallery-count", "n", 12, "12 names, one off") == 0) { return 6315; }
+    if (lt_says(&lt_en, 0 as *lc_table, "gallery-count", "n", 0, "0 names, one off") == 0) { return 6316; }
+    // falling back: the locale's, the English, the key
+    if (lt_says(0 as *lc_table, &lt_en, "gallery-file", 0 as *u8, 0, "&File") == 0) { return 6317; }
+    if (lt_says(&lt_qps, &lt_en, "gallery-nope", 0 as *u8, 0, "gallery-nope") == 0) { return 6318; }
+    if (lt_says(&lt_qps, &lt_en, "gallery-file", 0 as *u8, 0, "&File") == 1) { return 6319; }
+    // a pseudo-locale message: in brackets, longer, the mnemonic kept
+    let o: [256]u8;
+    let pl: u32 = lc_format(&lt_qps, &lt_en, "gallery-file", 0 as *lc_arg, 0, &o[0], 256);
+    if (pl < 8 || o[0] != '[' || o[pl - 1] != ']') { return 6320; }
+    // out of room: cut at a character, never inside one
+    let q: [4]u8;
+    let ql: u32 = lc_format(&lt_qps, &lt_en, "gallery-file", 0 as *lc_arg, 0, &q[0], 4);
+    if (ql >= 4 || q[ql] != 0 || lc_utf8_ok(&q[0], ql) == false) { return 6321; }
+    // every key of the toolkit's, as its source has it, is built in
+    let count: u32 = 0;
+    let r: u32 = 0;
+    while (r < lt_en.count) {
+        let at: u32 = 40 + 12 * r;
+        let ko: u32 = lc_u32(&lt_en.buf[0], at);
+        let kl: u32 = lc_u16(&lt_en.buf[0], at + 4);
+        if (kl > 3 && kl < 64 && lt_en.buf[ko] == 't' && lt_en.buf[ko + 1] == 'k' && lt_en.buf[ko + 2] == '-') {
+            let key: [64]u8;
+            memcpy(&key[0], &lt_en.buf[ko], kl);
+            key[kl] = 0;
+            let b: *u8 = tk_builtin(&key[0]);
+            if (b == (0 as *u8) || lt_says(&lt_en, 0 as *lc_table, &key[0], 0 as *u8, 0, b) == 0) { return 6322; }
+            count += 1;
+        }
+        r += 1;
+    }
+    if (count != 14 || tk_builtin("tk-nope") != (0 as *u8)) { return 6323; }
+    return 0;
+}
+
+// 6400: every CLDR locale's plural rules give CLDR's own samples' categories.
+fn lt_plurals(arg: u64) -> i32 {
+    let h: i32 = file_open("/System/Locale/plurals.xplt", FOPEN_READ);
+    if (h <= 0) { return 6400; }
+    let size: u32 = 65536;
+    let addr: u64 = 0;
+    let m: i32 = ds_mem(size as u64, &addr);
+    if (m <= 0) { file_close(h); return 6401; }
+    let p: *u8 = addr as *u8;
+    let n: i32 = file_read(h, p, size as u64);
+    file_close(h);
+    let rc: i32 = 0;
+    if (n <= 16 || n as u32 >= size || p[0] != 'X' || p[1] != 'P' || p[2] != 'L' || p[3] != 'T') { rc = 6402; }
+    let count: u32 = 0;
+    let tot: u32 = 0;
+    if (rc == 0) {
+        count = lc_u32(p, 8);
+        let at: u32 = 16;
+        let rec: u32 = 0;
+        while (rc == 0 && rec < count) {
+            if (at + 18 > n as u32) { rc = 6403; break; }
+            let bl: u32 = lc_u16(p, at + 16);
+            let blk: *u8 = &p[at + 18];
+            if (at + 20 + bl > n as u32) { rc = 6403; break; }
+            if (lc_check_plurals(blk, bl) as usize != 0) { rc = 6404; break; }
+            at += 18 + bl;
+            let ns: u32 = lc_u16(p, at);
+            at += 2;
+            let s: u32 = 0;
+            while (s < ns) {
+                if (at + 5 > n as u32) { rc = 6403; break; }
+                if (lc_plural_in(blk, lc_u32(p, at)) != p[at + 4] as u32) { rc = 6405; break; }
+                tot += 1;
+                at += 5;
+                s += 1;
+            }
+            rec += 1;
+        }
+    }
+    // CLDR 49 has 228 rule sets and 5781 integer samples: none went unread
+    if (rc == 0 && (count < 200 || tot < 5000)) { rc = 6406; }
+    vm_unmap(addr, 0);
+    handle_close(m);
+    return rc;
+}
+
+// ---- bidirectional text (UAX #9) ----
+
+global lt_bd: bd_para;
+global lt_cp: [16]u32;
+
+// s's code points (ASCII, with H for U+05D0 Hebrew alef and A for U+0627
+// Arabic alef, R for RLO and P for PDF, 1-9 Arabic-Indic digits when
+// arabic is 1) run in direction dir: 1 if the levels are lv and the visual
+// order ord (digits as text).
+fn lt_bidi(s: *u8, dir: u32, arabic: u32, lv: *u8, ord: *u8) -> u32 {
+    let n: u32 = strlen(s);
+    let i: u32 = 0;
+    while (i < n) {
+        let c: u32 = s[i] as u32;
+        if (c == 'H') { c = 0x05D0; }
+        else if (c == 'A') { c = 0x0627; }
+        else if (c == 'R') { c = 0x202E; }
+        else if (c == 'P') { c = 0x202C; }
+        else if (arabic == 1 && c >= '0' && c <= '9') { c = 0x0660 + c - '0'; }
+        lt_cp[i] = c;
+        i += 1;
+    }
+    bd_set(&lt_bd, &lt_cp[0], n);
+    bd_run(&lt_bd, dir);
+    i = 0;
+    while (i < n) {
+        if (lv[i] != 'x' && lt_bd.lvl[i] != lv[i] - '0') { return 0; }
+        i += 1;
+    }
+    let m: u32 = bd_reorder(&lt_bd);
+    if (m != strlen(ord)) { return 0; }
+    let k: u32 = 0;
+    while (k < m) {
+        if (lt_bd.ord[k] != (ord[k] - '0') as u32) { return 0; }
+        k += 1;
+    }
+    return 1;
+}
+
+// 6500: the classes, the mirrored pairs, and hand cases: levels and the
+// order shown, from the rules (the comments name them).
+fn lt_bidi_cases(arg: u64) -> i32 {
+    if (bd_class('a') != BD_L || bd_class(0x05D0) != BD_R || bd_class(0x0627) != BD_AL || bd_class('1') != BD_EN) { return 6500; }
+    if (bd_class(0x0661) != BD_AN || bd_class(' ') != BD_WS || bd_class(',') != BD_CS || bd_class(0x2067) != BD_RLI) { return 6501; }
+    if (bd_mirror('(') != ')' || bd_mirror(']') != '[' || bd_mirror('a') != 'a' || bd_mirror(0x226E) != 0x226F) { return 6502; }
+    if (bd_bracket('(') == UB_BRK_N || bd_bracket('a') != UB_BRK_N) { return 6503; }
+    if (!bd_class_rtl(BD_R) || !bd_class_rtl(BD_AL) || bd_class_rtl(BD_L) || bd_class_rtl(BD_EN)) { return 6504; }
+    // left to right text alone: nothing moves
+    if (lt_bidi("abc", BD_LTR, 0, "000", "012") == 0) { return 6505; }
+    // right to left letters in a left to right paragraph: reversed (I1, L2)
+    if (lt_bidi("HHH", BD_LTR, 0, "111", "210") == 0) { return 6506; }
+    // ab HH 12: the space between R and EN goes with them (N1), the
+    // digits at 2 (I1) keep their order inside the reversed run (L2)
+    if (lt_bidi("ab HH 12", BD_LTR, 0, "00011122", "01267543") == 0) { return 6507; }
+    // left to right letters in a right to left paragraph: 2 (I2), in order
+    if (lt_bidi("abc", BD_RTL, 0, "222", "012") == 0) { return 6508; }
+    // the paragraph's direction from its first strong character (P2, P3)
+    if (lt_bidi("Ha", BD_AUTO, 0, "12", "10") == 0 || lt_bd.level != 1) { return 6509; }
+    if (lt_bidi("1aH", BD_AUTO, 0, "001", "012") == 0 || lt_bd.level != 0) { return 6510; }
+    // Arabic letters make European digits Arabic (W2), Arabic-Indic digits
+    // are AN: at 2 in a left to right paragraph, after the R run
+    if (lt_bidi("A12", BD_LTR, 0, "122", "120") == 0) { return 6511; }
+    if (lt_bidi("a12", BD_LTR, 1, "022", "012") == 0) { return 6512; }
+    // an override (X4..X6) and its end (X7); the controls are removed (X9)
+    // a R b c P d: levels 0 x 1 1 x 0; shown a c b d (RLO, PDF not in ord)
+    if (lt_bidi("aRbcPd", BD_LTR, 0, "0x11x0", "0325") == 0) { return 6513; }
+    // a bracket pair takes the direction inside it (N0): H(a)H in RTL
+    if (lt_bidi("H(a)H", BD_RTL, 0, "11211", "43210") == 0) { return 6514; }
+    // ... and one N1 alone would get wrong: a(b)H in RTL. The pair holds L
+    // and follows a, so takes L (N0); without N0, ) sits between L and R
+    // and takes the paragraph's R (N2): levels 22211, shown 43012
+    if (lt_bidi("a(b)H", BD_RTL, 0, "22221", "40123") == 0) { return 6514; }
+    // the whole of BD_MAX
+    let big: [256]u32;
+    let k: u32 = 0;
+    while (k < 256) { big[k] = 0x05D0; k += 1; }
+    bd_set(&lt_bd, &big[0], 256);
+    bd_run(&lt_bd, BD_LTR);
+    if (bd_reorder(&lt_bd) != 256 || lt_bd.ord[0] != 255 || lt_bd.ord[255] != 0) { return 6515; }
+    return 0;
+}
+
+// ---- drawing: a font whose glyph names itself ----
+
+global lt_fontbuf: [2072]u8;
+global lt_font: ds_font;
+
+// Every row of glyph c is 0x80 | c: the cell's first column always inked,
+// the other seven the code, so a cell read back says which glyph it is.
+fn lt_make_font() -> i32 {
+    let p: *u8 = &lt_fontbuf[0];
+    memzero(p, 2072);
+    p[0] = 88; p[1] = 70; p[2] = 78; p[3] = 84;     // XFNT
+    p[6] = 1; p[7] = 1; p[8] = 8; p[9] = 16; p[10] = 128; p[11] = 0;
+    let c: u32 = 0;
+    while (c < 128) {
+        let r: u32 = 0;
+        while (r < 16) { p[24 + c * 16 + r] = (0x80 | c) as u8; r += 1; }
+        c += 1;
+    }
+    return ds_font_parse(&lt_font, p, 2072);
+}
+
+// The glyph whose cell starts at (x, y) on tt_ui's canvas, ink being any
+// pixel not bg: its code, or 0xFFFF (no glyph there).
+fn lt_cell(x: i32, y: i32, bg: u32) -> u32 {
+    if (tt_pix(x, y) == bg) { return 0xFFFF; }
+    let c: u32 = 0;
+    let col: u32 = 1;
+    while (col < 8) {
+        if (tt_pix(x + (col as i32), y) != bg) { c = c | (0x80 >> col); }
+        col += 1;
+    }
+    return c;
+}
+
+// The background beside a box: the pixel left of it, or right of it, or,
+// for a box as wide as the canvas, the theme's surface. (The pixel right
+// of such a box is past its row: the next row's first, which can be ink.)
+fn lt_bg(id: u32) -> u32 {
+    let r: ds_rect;
+    tk_box_of(&tt_ui, id, &r);
+    if (r.x > 0) { return tt_pix((r.x as i32) - 1, r.y as i32); }
+    if (r.x + r.w < tt_ui.canvas.width) { return tt_pix((r.x + r.w) as i32, r.y as i32); }
+    return tt_ui.theme.surface;
+}
+
+// What a label shows, read off the canvas along row y of its box, from the
+// first inked cell: 0 if it is want (ASCII), else 21 (no ink), or 1 + the
+// index of the first character that is not.
+fn lt_shows(id: u32, dy: i32, want: *u8) -> u32 {
+    let r: ds_rect;
+    tk_box_of(&tt_ui, id, &r);
+    let y: i32 = (r.y as i32) + dy;
+    let bg: u32 = lt_bg(id);
+    let x: i32 = r.x as i32;
+    let end: i32 = (r.x + r.w) as i32;
+    while (x < end && tt_pix(x, y) == bg) { x += 1; }
+    if (x >= end) { return 21; }
+    let n: u32 = strlen(want);
+    let k: u32 = 0;
+    while (k < n) {
+        if (x + 8 > end || lt_cell(x, y, bg) != want[k] as u32) { return 1 + k; }
+        x += 8;
+        k += 1;
+    }
+    return 0;
+}
+
+// The row of a label's box its text's first row is on, at scale 4.
+fn lt_text_row(id: u32) -> i32 {
+    let r: ds_rect;
+    tk_box_of(&tt_ui, id, &r);
+    let bg: u32 = lt_bg(id);
+    let y: i32 = 0;
+    while (y < (r.h as i32)) {
+        let x: i32 = r.x as i32;
+        while (x < ((r.x + r.w) as i32)) {
+            if (tt_pix(x, (r.y as i32) + y) != bg) { return y; }
+            x += 1;
+        }
+        y += 1;
+    }
+    return 0 - 1;
+}
+
+// 6600: text in the order UAX #9 shows it, a character at an odd level its
+// mirrored glyph (L4), and in a mirrored ui the box mirrored with the text
+// set in it, not reversed; a mnemonic underlined, its & not shown.
+fn lt_bidi_text(arg: u64) -> i32 {
+    if (lt_make_font() != 0) { return 6600; }
+    tk_init(&tt_ui, 4, &lt_font);
+    let root: u32 = tk_root(&tt_ui);
+    let a: u32 = tk_add(&tt_ui, root, TK_LABEL, "ab(c)");
+    // an override: "(x)" shown reversed, each bracket its mirror, so "(x)"
+    let ov: [12]u8;                 // q RLO ( x ) PDF z
+    ov[0] = 'q'; ov[1] = 0xE2; ov[2] = 0x80; ov[3] = 0xAE;
+    ov[4] = '('; ov[5] = 'x'; ov[6] = ')';
+    ov[7] = 0xE2; ov[8] = 0x80; ov[9] = 0xAC; ov[10] = 'z'; ov[11] = 0;
+    let b: u32 = tk_add(&tt_ui, root, TK_LABEL, &ov[0]);
+    // a mnemonic, through a key no table has (the key is the text)
+    let c: u32 = tk_add_key(&tt_ui, root, TK_LABEL, "&mn");
+    if (c == 0 || tt_show(4) != 0) { return 6601; }
+    if (streq(tk_text_of(&tt_ui, tk_index(&tt_ui, c)), "mn") == 0 || tk_mnemonic(&tt_ui, tk_text_of(&tt_ui, tk_index(&tt_ui, c))) != 0) { return 6602; }
+    let ya: i32 = lt_text_row(a);
+    let yb: i32 = lt_text_row(b);
+    let yc: i32 = lt_text_row(c);
+    if (ya < 0 || yb < 0 || yc < 0) { return 6603; }
+    // steps 6610-6631 for a, 6640-6661 for b, 6670-6691 for c: 1 + the
+    // character that differs, 21 no ink (lt_shows)
+    let s: u32 = lt_shows(a, ya + 3, "ab(c)");
+    if (s != 0) { return 6610 + (s as i32); }
+    s = lt_shows(b, yb + 3, "q(x)z");
+    if (s != 0) { return 6640 + (s as i32); }
+    s = lt_shows(c, yc + 3, "mn");
+    if (s != 0) { return 6670 + (s as i32); }
+    // the underline: m's last row full, n's not. Every row of a glyph here
+    // is the same, so look where the glyphs are blank: column 3 of m
+    // (0x6D) and of n (0x6E). On m's last row it is inked, on the row
+    // above it is not; on n's last row it stays blank.
+    let rc: ds_rect;
+    tk_box_of(&tt_ui, c, &rc);
+    let bg: u32 = lt_bg(c);
+    let x: i32 = rc.x as i32;
+    while (tt_pix(x, (rc.y as i32) + yc) == bg) { x += 1; }
+    let last: i32 = (rc.y as i32) + yc + 15;
+    if (tt_pix(x + 3, last) == bg || tt_pix(x + 3, last - 1) != bg || tt_pix(x + 8 + 3, last) != bg) { return 6607; }
+    // mirrored: each box at W - x - w, the text in it left to right
+    let ra: ds_rect;
+    tk_box_of(&tt_ui, a, &ra);
+    let w: i32 = tt_ui.canvas.width as i32;
+    let ax: i32 = 0 - 1;
+    let ry: i32 = (ra.y as i32) + ya;
+    x = ra.x as i32;
+    while (x < ((ra.x + ra.w) as i32)) { if (tt_pix(x, ry) != bg) { ax = x; break; } x += 1; }
+    if (ax < 0) { return 6608; }
+    tk_set_mirror(&tt_ui, 1);
+    if (tt_show(4) != 0) { return 6608; }
+    // its first cell's left edge was ax: mirrored, the text's right edge
+    // is W - ax. A paragraph right to left: ab and c are L (level 2), the
+    // brackets hold L and follow L, so take L (N0): shown as written
+    let mx: i32 = w - ax - 5 * 8;
+    let y: i32 = ry + 3;
+    let k: u32 = 0;
+    let want: *u8 = "ab(c)";
+    while (k < 5) {
+        if (lt_cell(mx + (k as i32) * 8, y, bg) != want[k] as u32) { return 6609; }
+        k += 1;
+    }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// The node whose key is key in tt_ui: its index, or TK_NONE.
+fn lt_keyed(key: *u8) -> u32 {
+    let i: u32 = 0;
+    while (i < tt_ui.used) {
+        if (tt_ui.node[i].key != TK_NONE && streq(&tt_ui.arena[tt_ui.node[i].key], key) != 0) { return i; }
+        i += 1;
+    }
+    return TK_NONE;
+}
+
+// 6700: mnemonics. Alt+letter does what a press would: a menu bar's title
+// opens its menu, where the letter alone chooses; a label gives the focus
+// to what follows; a button is pressed; a check box in a dialog changes.
+fn lt_mnemonic(arg: u64) -> i32 {
+    if (lt_tables() != 0) { return 6700; }
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    tk_set_locale(&tt_ui, &lt_en, 0 as *lc_table);
+    if (gp_build(&tt_ui) != 0 || tt_show(4) != 0) { return 6701; }
+    let file: u32 = lt_keyed("gallery-file");
+    let fnew: u32 = lt_keyed("gallery-new");
+    if (file == TK_NONE || fnew == TK_NONE) { return 6702; }
+    if (streq(tk_text_of(&tt_ui, file), "File") == 0 || tk_mnemonic(&tt_ui, tk_text_of(&tt_ui, file)) != 0) { return 6703; }
+    // Alt+F: the File menu, open; N: New chosen, the menu gone
+    if (tk_key(&tt_ui, KC_F, 'f', KEYMOD_ALT) != 1 || tt_ui.pop_n != 1 || tt_ui.pop[0] != file) { return 6704; }
+    let ev: tk_event;
+    tt_drain();
+    if (tk_key(&tt_ui, KC_N, 'n', 0) != 1 || tt_ui.pop_n != 0) { return 6705; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_ACTIVATE || ev.id != tk_id(&tt_ui, fnew)) { return 6706; }
+    // a letter no mnemonic has: nothing
+    if (tk_key(&tt_ui, KC_J, 'j', KEYMOD_ALT) == 1) { return 6707; }
+    // Alt+X, the text field's label: the focus to the field
+    // (the focus checked before it indexes: with none, node[TK_NONE] faults)
+    if (tk_key(&tt_ui, KC_X, 'x', KEYMOD_ALT) != 1 || tt_ui.focus == TK_NONE || tt_ui.node[tt_ui.focus].kind != TK_TEXTFIELD) { return 6708; }
+    // Alt+D on the first page: the dialog's button is not shown, so nothing
+    if (tk_key(&tt_ui, KC_D, 'd', KEYMOD_ALT) == 1) { return 6709; }
+    // the third page: Alt+D presses "Open a dialog"
+    tt_press(KC_TAB, KEYMOD_CTRL);
+    tt_press(KC_TAB, KEYMOD_CTRL);
+    tt_drain();
+    if (tk_key(&tt_ui, KC_D, 'd', KEYMOD_ALT) != 1) { return 6710; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_ACTIVATE || ev.id != gp_open) { return 6711; }
+    gp_event(&tt_ui, &ev);
+    tt_drain();
+    // in the dialog: Alt+A changes "Do not ask again"
+    let ask: u32 = lt_keyed("gallery-do-not-ask-again");
+    if (ask == TK_NONE || (tt_ui.node[ask].flags & TK_F_CHECKED) != 0) { return 6712; }
+    if (tk_key(&tt_ui, KC_A, 'a', KEYMOD_ALT) != 1 || (tt_ui.node[ask].flags & TK_F_CHECKED) == 0) { return 6713; }
+    // and Alt+F is not the menu bar's while the dialog is up
+    if (tk_key(&tt_ui, KC_F, 'f', KEYMOD_ALT) == 1) { return 6714; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// Kinds whose text is drawn in their own box.
+fn lt_boxed(k: u32) -> u32 {
+    if (k == TK_LABEL || k == TK_BUTTON || k == TK_CHECK || k == TK_RADIO || k == TK_SWITCH || k == TK_HEADING || k == TK_MENUITEM) { return 1; }
+    return 0;
+}
+
+// Every shown text in tt_ui has a key, and none is wider than its box: 0,
+// or 1 (unkeyed), 2 (clipped).
+fn lt_all_keyed() -> u32 {
+    let i: u32 = 0;
+    while (i < tt_ui.used) {
+        let n: *tk_node = &tt_ui.node[i];
+        if (n.text != TK_NONE && n.key == TK_NONE && strlen(&tt_ui.arena[n.text]) > 0) { return 1; }
+        if (n.tip != TK_NONE && n.tipkey == TK_NONE) { return 1; }
+        if (n.text != TK_NONE && lt_boxed(n.kind) == 1 && tk_reachable(&tt_ui, i) == 1) {
+            let s: *u8 = &tt_ui.arena[n.text];
+            if (tk_utf8_count(s, strlen(s)) * tk_char_w(&tt_ui) > n.dw) { return 2; }
+        }
+        i += 1;
+    }
+    return 0;
+}
+
+// 6800: the gallery in the pseudo-locale with no window: no text without a
+// key, none clipped on any page or in any menu; and with no font the whole
+// canvas is the mirror image of the same gallery laid out left to right,
+// the text grid's box aside (CX_TOOLKIT.md §10).
+fn lt_pseudo(arg: u64) -> i32 {
+    if (lt_tables() != 0 || tt_make_font() != 0) { return 6800; }
+    tk_init(&tt_ui, 4, &tt_font);
+    if (tk_set_locale(&tt_ui, &lt_qps, &lt_en) != 0 || tt_ui.mirror != 1) { return 6801; }
+    if (gp_build(&tt_ui) != 0 || tt_show(4) != 0) { return 6802; }
+    let p: u32 = 0;
+    while (p < 3) {
+        let k: u32 = lt_all_keyed();
+        if (k == 1) { return 6803; }
+        if (k == 2) { return 6804 + (p as i32); }
+        tt_press(KC_TAB, KEYMOD_CTRL);
+        tt_show(4);
+        p += 1;
+    }
+    // each menu of the bar, open: its items
+    let file: u32 = lt_keyed("gallery-file");
+    let m: u32 = file;
+    p = 0;
+    while (m != TK_NONE) {
+        if (tt_ui.node[m].kind == TK_MENU) {
+            tk_bar_open(&tt_ui, tt_ui.node[m].parent, m, 1);
+            tt_show(4);
+            if (lt_all_keyed() == 2) { return 6807 + (p as i32); }
+            tt_press(KC_ESC, 0);
+            p += 1;
+        }
+        m = tt_ui.node[m].next;
+    }
+    if (p != 3) { return 6810; }
+    tk_free(&tt_ui);
+    // no font: left to right, then the same mirrored
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    tk_set_locale(&tt_ui, &lt_qps, &lt_en);
+    tk_set_mirror(&tt_ui, 0);
+    if (gp_build(&tt_ui) != 0 || tt_show(4) != 0) { return 6811; }
+    let rc: i32 = 0;
+    p = 0;
+    while (rc == 0 && p < 3) {
+        tk_set_mirror(&tt_ui, 0);
+        tt_show(4);
+        let w: u32 = tt_ui.canvas.width;
+        let h: u32 = tt_ui.canvas.height;
+        let ltr: ds_surface;
+        if (ds_surface_new(&ltr, w, h) != 0) { return 6812; }
+        let y: u32 = 0;
+        while (y < h) { memcpy(ds_row(&ltr, y) as *u8, ds_row(&tt_ui.canvas, y) as *u8, w * 4); y += 1; }
+        let g: ds_rect;
+        ds_rect_set(&g, 0, 0, 0, 0);
+        let gi: u32 = lt_keyed("gallery-text-grid");
+        if (gi != TK_NONE && tk_reachable(&tt_ui, gi) == 1) { tk_box_of(&tt_ui, tk_id(&tt_ui, gi), &g); }
+        tk_set_mirror(&tt_ui, 1);
+        tt_show(4);
+        if (tt_ui.canvas.width != w || tt_ui.canvas.height != h) { rc = 6813; }
+        y = 0;
+        while (rc == 0 && y < h) {
+            let a: *u32 = ds_row(&ltr, y);
+            let b: *u32 = ds_row(&tt_ui.canvas, y);
+            let x: u32 = 0;
+            while (x < w) {
+                let gx: u32 = w - 1 - x;    // where x went
+                let in_grid: u32 = 0;
+                if (y >= g.y && y < g.y + g.h && ((x >= g.x && x < g.x + g.w) || (gx >= g.x && gx < g.x + g.w))) { in_grid = 1; }
+                if (in_grid == 0 && a[x] != b[gx]) { rc = 6814 + (p as i32); break; }
+                x += 1;
+            }
+            y += 1;
+        }
+        ds_surface_free(&ltr);
+        tt_press(KC_TAB, KEYMOD_CTRL);
+        p += 1;
+    }
+    if (rc != 0) { return rc; }
+    // the pointer comes in mirrored: a click where the "Yes" check box
+    // shows reaches it; its damage goes out mirrored
+    tk_set_mirror(&tt_ui, 1);
+    tt_show(4);
+    let yes: u32 = lt_keyed("gallery-yes");
+    let r: ds_rect;
+    tk_box_of(&tt_ui, tk_id(&tt_ui, yes), &r);
+    let w: i32 = tt_ui.canvas.width as i32;
+    let cx: i32 = w - 1 - ((r.x + r.w / 2) as i32);
+    let cy: i32 = (r.y + r.h / 2) as i32;
+    tk_pointer(&tt_ui, cx, cy, 1);
+    tk_pointer(&tt_ui, cx, cy, 0);
+    if ((tt_ui.node[yes].flags & TK_F_CHECKED) != 0) { return 6820; }
+    let d: ds_damage;
+    tk_paint(&tt_ui, &d);
+    let seen: u32 = 0;
+    let k: u32 = 0;
+    while (k < d.n) {
+        let q: *ds_rect = &d.r[k];
+        if ((cx as u32) >= q.x && (cx as u32) < q.x + q.w && (cy as u32) >= q.y && (cy as u32) < q.y + q.h) { seen = 1; }
+        k += 1;
+    }
+    if (seen == 0) { return 6821; }
+    // Left and Right swap in a mirrored ui: Left from "One" is "Two", as
+    // Right is left to right; but not in a text field, whose caret goes
+    // through its text in the text's order
+    let one: u32 = lt_keyed("gallery-one");
+    let two: u32 = lt_keyed("gallery-two");
+    tk_focus_set(&tt_ui, one);
+    tt_press(KC_LEFT, 0);
+    if ((tt_ui.node[two].flags & TK_F_CHECKED) == 0) { return 6822; }
+    let name: u32 = lt_keyed("gallery-name");
+    tk_focus_set(&tt_ui, name);
+    tt_type("ab");
+    tt_press(KC_LEFT, 0);
+    tt_type("c");
+    if (tt_text_is(tk_id(&tt_ui, name), "acb") == 0) { return 6823; }
+    tk_free(&tt_ui);
+    return 0;
+}
