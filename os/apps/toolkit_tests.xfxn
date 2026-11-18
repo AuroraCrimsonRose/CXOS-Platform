@@ -1212,6 +1212,17 @@ fn tt_menus(arg: u64) -> i32 {
     tk_pointer(&tt_ui, x + 300, y + 300, 1);
     tk_pointer(&tt_ui, x + 300, y + 300, 0);
     if (tk_open_top(&tt_ui) != 0) { return 5818; }
+    // the window's menu bar is flush: at the top left, as wide as the
+    // window, whatever the root's padding; the padding goes round the rest
+    tk_set_spacing(&tt_ui, root, 3, 4);
+    if (tt_show(4) != 0) { return 5819; }
+    let rb: ds_rect;
+    let rbtn: ds_rect;
+    tk_box_of(&tt_ui, bar, &rb);
+    tk_box_of(&tt_ui, b, &rbtn);
+    if (rb.x != 0 || rb.y != 0 || rb.w != tt_ui.canvas.width || rb.h == 0) { return 5820; }
+    let pad: u32 = tk_dev(&tt_ui, tk_sp(4));
+    if (rbtn.x != pad || rbtn.y != rb.h + pad) { return 5821; }
     tk_free(&tt_ui);
     return 0;
 }

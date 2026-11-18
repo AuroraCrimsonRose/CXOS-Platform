@@ -1,0 +1,24 @@
+# The window's menu bar laid out flush (2026-11-18, after 2.8a4): the root's
+# first menu bar sits at the window's top left, as wide as it, and the
+# root's padding goes only round what follows. Run by `cxk test sabotage`;
+# format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+[menubar-padded]
+# no window bar: the menu bar is laid out inside the root's padding again
+expect = x: toolkit: menus @ failed at step 5820
+edit = os/std/toolkit.xfxn
+<<<
+    if (i != ui.root) { return TK_NONE; }
+===
+    if (i != ui.root || i == ui.root) { return TK_NONE; }
+>>>
+
+[menubar-overlaps]
+# the bar placed flush, but the content not moved down under it
+expect = x: toolkit: menus @ failed at step 5821
+edit = os/std/toolkit.xfxn
+<<<
+    let iy: i32 = y + top + pad;
+===
+    let iy: i32 = y + pad;
+>>>

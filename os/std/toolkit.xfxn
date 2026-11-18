@@ -1193,6 +1193,23 @@ fn tk_flows(ui: *tk_ui, i: u32) -> u32 {
     return 1;
 }
 
+// The window's menu bar: the root's first child in the flow, when that is a
+// menu bar. It is the window's, not the content's: flush under the title
+// bar and as wide as the window, the root's padding only around what
+// follows (Haiku's BMenuBar, a Windows or GTK menu bar). TK_NONE otherwise.
+fn tk_window_bar(ui: *tk_ui, i: u32) -> u32 {
+    if (i != ui.root) { return TK_NONE; }
+    let c: u32 = ui.node[i].first;
+    while (c != TK_NONE) {
+        if (tk_flows(ui, c) == 1) {
+            if (ui.node[c].kind == TK_MENUBAR) { return c; }
+            return TK_NONE;
+        }
+        c = ui.node[c].next;
+    }
+    return TK_NONE;
+}
+
 // A string's width in logical units.
 fn tk_str_lw(ui: *tk_ui, s: *u8) -> i32 {
     if (s == (0 as *u8)) { return 0; }
@@ -1451,9 +1468,12 @@ fn tk_measure(ui: *tk_ui, i: u32) -> void {
         while (k < TK_GRID_COLS_MAX) { colw[k] = 0; k = k + 1; }
         let rowh: i32 = 0;
         let rows: i32 = 0;
+        let bar: u32 = tk_window_bar(ui, i);
         let c: u32 = n.first;
         while (c != TK_NONE) {
-            if (tk_flows(ui, c) == 1) {
+            if (c == bar) {
+                tk_measure(ui, c);
+            } else if (tk_flows(ui, c) == 1) {
                 tk_measure(ui, c);
                 let cn: *tk_node = &ui.node[c];
                 if (n.kind == TK_COLUMN || n.kind == TK_DIALOG) {
@@ -1487,6 +1507,10 @@ fn tk_measure(ui: *tk_ui, i: u32) -> void {
         }
         n.pw = w + 2 * pad;
         n.ph = h + 2 * pad;
+        if (bar != TK_NONE) {
+            n.pw = tk_imax(n.pw, ui.node[bar].pw);
+            n.ph = n.ph + ui.node[bar].ph;
+        }
     }
     n.pw = tk_imax(n.pw, n.minw);
     n.ph = tk_imax(n.ph, n.minh);
@@ -1610,10 +1634,17 @@ fn tk_arrange(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
     if (tk_is_container(n.kind) == 0) { return; }
     let gap: i32 = tk_sp(n.gap);
     let pad: i32 = tk_sp(n.pad);
+    // the window's menu bar first, flush and full width; the rest below it
+    let bar: u32 = tk_window_bar(ui, i);
+    let top: i32 = 0;
+    if (bar != TK_NONE) {
+        top = tk_imin(ui.node[bar].ph, h);
+        tk_arrange(ui, bar, x, y, w, top);
+    }
     let ix: i32 = x + pad;
-    let iy: i32 = y + pad;
+    let iy: i32 = y + top + pad;
     let iw: i32 = tk_imax(w - 2 * pad, 0);
-    let ih: i32 = tk_imax(h - 2 * pad, 0);
+    let ih: i32 = tk_imax(h - top - 2 * pad, 0);
     let growers: i32 = tk_growers(ui, i);
     let extra: i32 = 0;
     // what the children asked for along the axis (not the container's own
@@ -1622,7 +1653,7 @@ fn tk_arrange(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
     let shown: i32 = 0;
     let c: u32 = n.first;
     while (c != TK_NONE) {
-        if (tk_flows(ui, c) == 1) {
+        if (c != bar && tk_flows(ui, c) == 1) {
             if (n.kind == TK_COLUMN || n.kind == TK_DIALOG) { asked = asked + ui.node[c].ph; }
             if (n.kind == TK_ROW) { asked = asked + ui.node[c].pw; }
             shown = shown + 1;
@@ -1661,7 +1692,7 @@ fn tk_arrange(ui: *tk_ui, i: u32, x: i32, y: i32, w: i32, h: i32) -> void {
     let rowh: i32 = 0;
     c = n.first;
     while (c != TK_NONE) {
-        if (tk_flows(ui, c) == 1) {
+        if (c != bar && tk_flows(ui, c) == 1) {
             let cn: *tk_node = &ui.node[c];
             let grows: u32 = 0;
             if ((cn.flags & TK_F_GROW) != 0) { grows = 1; }
