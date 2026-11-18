@@ -1,12 +1,13 @@
-# The rig's USB mouse that never moved, run by `cxk test sabotage`. Format:
-# docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The rig's USB mouse, run by `cxk test sabotage`. Format:
+# docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A mouse is read only as
+# its report descriptor says (2026-11-18): asked for at the HID descriptor's
+# length, extended usages taken, never put in the boot protocol.
 
 [buffer-of-four]
 # the buffer is short of the packet again: the report overruns and is lost
-expect = USB mouse: a report longer than three bytes moves it @ usb mouse test failed at step 1
 expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
+expect = USB mouse: extended usages name their own page @ usb mouse test failed at step 1
 expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
-group = g1
 edit = kernel/drivers/usb/usb_hid.c
 <<<
     int n = dev->ops->interrupt_poll(dev, dev->ep_int_in, rpt, want);
@@ -16,10 +17,9 @@ edit = kernel/drivers/usb/usb_hid.c
 
 [short-report-dropped]
 # a report shorter than the packet no longer counts
-expect = USB mouse: a report longer than three bytes moves it @ usb mouse test failed at step 2
 expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
+expect = USB mouse: extended usages name their own page @ usb mouse test failed at step 1
 expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
-group = g2
 edit = kernel/drivers/usb/usb_hid.c
 <<<
     if (n < 3) return;
@@ -31,37 +31,57 @@ edit = kernel/drivers/usb/usb_hid.c
     if (!h->told) {
 >>>
 
-[layout-ignored]
-# the descriptor is read and the boot format is decoded anyway: X's top byte as Y
-expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
-expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
+[boot-fallback]
+# a mouse with no usable layout is attached anyway
+expect = USB mouse: no usable layout, not attached and not boot
+group = g1
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+    if (mse && !mouse_layout(h, dev)) { h->in_use = 0; return 0; }
+===
+    if (mse) (void)mouse_layout(h, dev);
+>>>
+
+[boot-protocol-for-mouse]
+# a mouse read by its descriptor is put in the protocol that descriptor does not describe
+expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 4
+expect = USB mouse: extended usages name their own page @ usb mouse test failed at step 3
+expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 4
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+                                mse ? HID_PROTOCOL_REPORT : HID_PROTOCOL_BOOT,
+===
+                                HID_PROTOCOL_BOOT,
+>>>
+
+[length-guessed]
+# the report descriptor is asked for at a guess, not the HID descriptor's length
+expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 5
+expect = USB mouse: extended usages name their own page @ usb mouse test failed at step 4
+expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 5
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+    uint32_t want = dev->hid_report_len ? dev->hid_report_len : HID_DESC_GUESS;
+===
+    uint32_t want = HID_DESC_GUESS;
+>>>
+
+[page-not-from-usage]
+# a 4-byte usage loses its page: X and Y take the buttons' and are not found
+expect = USB mouse: extended usages name their own page
 group = g3
 edit = kernel/drivers/usb/usb_hid.c
 <<<
-    if (h->layout) {
-        const uint8_t *r = rpt;
+            uint32_t lu = sz == 4 ? v : (v & 0xFFFF);
 ===
-    if (0) {
-        const uint8_t *r = rpt;
->>>
-
-[boot-protocol-with-layout]
-# a mouse read by its descriptor is put in the protocol that descriptor does not describe
-expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 3
-expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 4
-group = g4
-edit = kernel/drivers/usb/usb_hid.c
-<<<
-                      h->layout ? HID_PROTOCOL_REPORT : HID_PROTOCOL_BOOT,
-===
-                      HID_PROTOCOL_BOOT,
+            uint32_t lu = v & 0xFFFF;
 >>>
 
 [field-not-signed]
 # a field's sign is dropped: left and up become huge moves right and down
 expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
+expect = USB mouse: extended usages name their own page @ usb mouse test failed at step 1
 expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
-group = g5
 edit = kernel/drivers/usb/usb_hid.c
 <<<
     if (size < 32 && (v >> (size - 1)) & 1) v |= ~0u << size;
@@ -71,7 +91,7 @@ edit = kernel/drivers/usb/usb_hid.c
 [report-offset-carried]
 # a new report number does not restart the bit count
 expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
-group = g6
+group = g3
 edit = kernel/drivers/usb/usb_hid.c
 <<<
                 bit = 0;                    /* each report counts from its own start */
@@ -81,17 +101,20 @@ edit = kernel/drivers/usb/usb_hid.c
 [other-report-taken]
 # a report with another number is read as movement
 expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 2
-group = g7
+group = g2
 edit = kernel/drivers/usb/usb_hid.c
 <<<
-            if (rpt[0] != h->report_id) return;     /* some other report of its */
+        if (rpt[0] != h->report_id) return;     /* some other report of its */
 ===
 >>>
 
+# (not with report-offset-carried: the numbered descriptor's first report is an
+# array, uncounted here, so the offset is 0 anyway when report 2 starts)
 [constant-field-counted]
 # padding is not counted, so everything after it is read from the wrong bits
 expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
-group = g8
+expect = USB mouse: extended usages name their own page @ usb mouse test failed at step 1
+group = g1
 edit = kernel/drivers/usb/usb_hid.c
 <<<
                     bit += size;

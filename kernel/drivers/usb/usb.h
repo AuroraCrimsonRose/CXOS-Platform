@@ -121,6 +121,12 @@ struct usb_device {
        at the wrong endpoint. */
     uint8_t  ep_int_in;
     uint16_t ep_int_mps;
+
+    /* A HID interface's report descriptor length, from the HID class
+       descriptor beside the interface (HID 1.11, 6.2.1); 0 if none was
+       given. Asked for at exactly this length, as Haiku
+       (usb_hid/HIDDevice.cpp) and SerenityOS (USB/Drivers/HID.cpp) do. */
+    uint16_t hid_report_len;
     uint8_t  ep_int_interval;  /* bInterval, in frames or 2^(n-1) microframes */
 
     /* In the device tree (drivers/devtree.h): its controller's node, set at

@@ -2387,13 +2387,14 @@ struct ms_report {
     uint32_t btns;
 };
 static const struct ms_report *ms_reports;
-static int ms_count, ms_next, ms_protocol;
+static int ms_count, ms_next, ms_protocol, ms_asked;
 static const uint8_t *ms_desc;
 static int ms_desc_len;
 
 static int ms_control(struct usb_device *d, uint8_t t, uint8_t r, uint16_t v, uint16_t i,
                       void *data, uint16_t len) {
     (void)d; (void)t; (void)i;
+    if (r == 0x06 && v == 0x2200) ms_asked = len;   /* what length it was asked for */
     if (r == 0x06 && v == 0x2200 && ms_desc) {
         int n = ms_desc_len < (int)len ? ms_desc_len : (int)len;
         memcpy(data, ms_desc, (size_t)n);
@@ -2416,7 +2417,9 @@ static const struct usb_hc_ops ms_ops = { .name = "ktest-mouse", .control = ms_c
 static struct usb_device ms_dev;
 
 /* 0 when every report did what it said and the protocol is the one expected;
-   otherwise the 1-based report that did not, or count + 1 for the protocol. */
+   otherwise the 1-based report that did not, count + 1 for the protocol, or
+   count + 2 when the descriptor was not asked for at the length the HID
+   descriptor gave (desc_len here). */
 static int ms_run(const struct ms_report *reports, int count,
                   const uint8_t *desc, int desc_len, int protocol) {
     if (usb_hid_present()) {
@@ -2424,7 +2427,7 @@ static int ms_run(const struct ms_report *reports, int count,
         return 1;
     }
     ms_reports = reports; ms_count = count; ms_next = 0;
-    ms_desc = desc; ms_desc_len = desc_len; ms_protocol = -1;
+    ms_desc = desc; ms_desc_len = desc_len; ms_protocol = -1; ms_asked = -1;
     memset(&ms_dev, 0, sizeof ms_dev);
     ms_dev.ops = &ms_ops;
     ms_dev.if_class = USB_CLASS_HID;
@@ -2432,6 +2435,7 @@ static int ms_run(const struct ms_report *reports, int count,
     ms_dev.if_protocol = 2;            /* mouse */
     ms_dev.ep_int_in = 0x81;
     ms_dev.ep_int_mps = 8;
+    ms_dev.hid_report_len = (uint16_t)desc_len;
     if (!usb_hid_attach(&ms_dev)) return 0;
     int x = mouse_x(), y = mouse_y(), step = 0;
     for (int i = 0; i < count && !step; i++) {
@@ -2441,6 +2445,7 @@ static int ms_run(const struct ms_report *reports, int count,
         if (mouse_x() != x || mouse_y() != y || mouse_buttons() != reports[i].btns) step = i + 1;
     }
     if (!step && ms_protocol != protocol) step = count + 1;
+    if (!step && ms_asked != desc_len) step = count + 2;
     (void)usb_hid_detach(&ms_dev);
     if (step) {
         klog_u32("KTEST", SEV_ERR, "usb mouse test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
@@ -2448,13 +2453,25 @@ static int ms_run(const struct ms_report *reports, int count,
     return !step && !usb_hid_present();
 }
 
-/* No usable descriptor: the boot report, and the whole packet still offered. */
-static int ktest_usb_mouse_long_report(void) {
-    static const struct ms_report r[] = {
-        { 8, { 1, 5, 0xFD }, 5, -3, 1 },
-        { 3, { 0, 0xFB, 3 }, -5, 3, 0 },   /* shorter than the buffer: still a report */
+/* A mouse whose descriptor gives no layout is not attached, and is not put
+   in the boot protocol to be read as three bytes: the rig's ignored that and
+   sent six, so Y was read from the top of X. Neither one with no descriptor
+   nor one whose descriptor has no relative X and Y moves the pointer. */
+static int ktest_usb_mouse_no_layout(void) {
+    if (usb_hid_present()) {
+        klog("KTEST", SEV_WARN, "USB mouse refusal NOT checked: a HID device is attached");
+        return 1;
+    }
+    static const uint8_t keys_only[] = {
+        0x05,0x01, 0x09,0x06, 0xA1,0x01, 0x05,0x07, 0x19,0xE0, 0x29,0xE7,
+        0x15,0x00, 0x25,0x01, 0x75,0x01, 0x95,0x08, 0x81,0x02, 0xC0,
     };
-    return ms_run(r, 2, 0, 0, 0);
+    static const struct ms_report r[] = { { 3, { 1, 5, 0xFD }, 0, 0, 0 } };
+    int x = mouse_x(), y = mouse_y();
+    if (ms_run(r, 1, 0, 0, 0) || ms_protocol != -1) return 0;
+    if (ms_run(r, 1, keys_only, (int)sizeof keys_only, 0) || ms_protocol != -1) return 0;
+    usb_hid_poll();
+    return mouse_x() == x && mouse_y() == y && ms_next == 0 && !usb_hid_present();
 }
 
 /* The rig's: three buttons, padding, X and Y of 16 bits each. */
@@ -2464,6 +2481,26 @@ static int ktest_usb_mouse_16_bit(void) {
         0x05,0x09, 0x19,0x01, 0x29,0x03, 0x15,0x00, 0x25,0x01, 0x95,0x03, 0x75,0x01, 0x81,0x02,
         0x95,0x01, 0x75,0x05, 0x81,0x03,
         0x05,0x01, 0x09,0x30, 0x09,0x31, 0x16,0x01,0x80, 0x26,0xFF,0x7F, 0x75,0x10, 0x95,0x02, 0x81,0x06,
+        0xC0, 0xC0,
+    };
+    static const struct ms_report r[] = {
+        { 5, { 1, 0xFB, 0xFF, 0x07, 0x00 }, -5, 7, 1 },
+        { 5, { 0, 0x05, 0x00, 0xF9, 0xFF }, 5, -7, 0 },
+        { 8, { 1, 0x02, 0x00, 0x03, 0x00 }, 2, 3, 1 },   /* a whole packet: still a report */
+    };
+    return ms_run(r, 3, d, (int)sizeof d, 1);
+}
+
+/* X and Y named by extended (4-byte) usages, page 1 in their high half,
+   while the Usage Page in force is still the buttons': the page is the
+   usage's own (HID 1.11, 6.2.2.8). */
+static int ktest_usb_mouse_extended_usages(void) {
+    static const uint8_t d[] = {
+        0x05,0x01, 0x09,0x02, 0xA1,0x01, 0x09,0x01, 0xA1,0x00,
+        0x05,0x09, 0x19,0x01, 0x29,0x03, 0x15,0x00, 0x25,0x01, 0x95,0x03, 0x75,0x01, 0x81,0x02,
+        0x95,0x01, 0x75,0x05, 0x81,0x03,
+        0x0B,0x30,0x00,0x01,0x00, 0x0B,0x31,0x00,0x01,0x00,
+        0x16,0x01,0x80, 0x26,0xFF,0x7F, 0x75,0x10, 0x95,0x02, 0x81,0x06,
         0xC0, 0xC0,
     };
     static const struct ms_report r[] = {
@@ -3744,8 +3781,9 @@ void ktest_run(void) {
     total++; passed += report("input: the keys as a handle, one holder", usermode_input_handle_test());
     total++; passed += report("lease: a buffer stays unwritable while it is lent", usermode_lease_test());
     total++; passed += report("USB keyboard: found after its reader went to sleep", ktest_usb_kbd_after_reader());
-    total++; passed += report("USB mouse: a report longer than three bytes moves it", ktest_usb_mouse_long_report());
+    total++; passed += report("USB mouse: no usable layout, not attached and not boot", ktest_usb_mouse_no_layout());
     total++; passed += report("USB mouse: 16-bit X and Y, from its report descriptor", ktest_usb_mouse_16_bit());
+    total++; passed += report("USB mouse: extended usages name their own page", ktest_usb_mouse_extended_usages());
     total++; passed += report("USB mouse: numbered reports and 12-bit fields", ktest_usb_mouse_numbered());
     total++; passed += report("display server: real screen, real keys, given back", ktest_display_server());
     total++; passed += report("screen: one holder, mapped write-combining, given back", usermode_screen_test());

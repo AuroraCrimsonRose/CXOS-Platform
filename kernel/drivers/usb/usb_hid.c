@@ -33,9 +33,7 @@ struct hid_device {
     uint8_t prev_keys[6];     /* for edge detection - see poll_keyboard */
     uint8_t prev_mods;
     uint8_t told;             /* the mouse's first report is in the log */
-    /* A mouse whose report descriptor we could read: where its fields are.
-       With layout 0 the report is the boot format, three bytes. */
-    uint8_t layout;
+    /* A mouse: where its fields are, from its report descriptor. */
     uint8_t report_id;        /* 0: the device numbers no reports */
     uint8_t x_size, y_size, btn_count;
     uint16_t x_bit, y_bit, btn_bit;
@@ -96,12 +94,18 @@ static void poll_keyboard(struct hid_device *h) {
  * Only what a pointer needs: the first report with relative X and Y, and its
  * buttons. Global and local state, an Input item at a time; Push, Pop and
  * delimiters are for layouts no mouse uses. */
-#define HID_DESC_MAX     256
+#define HID_DESC_MAX     1024       /* a gaming mouse's runs to a few hundred */
+#define HID_DESC_GUESS   256        /* no HID descriptor gave the length: Haiku's guess */
 #define HID_USAGES_MAX   8
 #define HID_PAGE_DESKTOP 0x01
 #define HID_PAGE_BUTTON  0x09
-#define HID_USAGE_X      0x30
-#define HID_USAGE_Y      0x31
+/* Usages as the parser keeps them: page in the high 16 bits. A 4-byte
+   Usage item says its own page ("extended", HID 1.11, 6.2.2.8); a shorter
+   one takes the Usage Page in force at its Main item, as Haiku's
+   HIDParser.cpp makes every usage extended there. */
+#define HID_USAGE_X      0x00010030u
+#define HID_USAGE_Y      0x00010031u
+#define HID_USAGE_BTN1   0x00090001u
 #define HID_IN_CONSTANT  0x01
 #define HID_IN_VARIABLE  0x02
 #define HID_IN_RELATIVE  0x04
@@ -137,22 +141,28 @@ static int parse_mouse_report(struct hid_device *h, const uint8_t *d, int n) {
                 have_x = have_y = have_btn = 0;
             }
         } else if (type == 2) {             /* local */
-            if (tag == 0 && nusage < HID_USAGES_MAX) usage[nusage++] = v & 0xFFFF;
-            else if (tag == 1) { umin = v & 0xFFFF; range = 1; }
-            else if (tag == 2) umax = v & 0xFFFF;
+            /* sz 4: extended, the page in the high half; else the page comes later */
+            uint32_t lu = sz == 4 ? v : (v & 0xFFFF);
+            if (tag == 0 && nusage < HID_USAGES_MAX) usage[nusage++] = lu;
+            else if (tag == 1) { umin = lu; range = 1; }
+            else if (tag == 2) umax = lu;
         } else if (type == 0) {             /* main: it uses up the local state */
             if (tag == 8) {                 /* Input */
                 if (count > 1024 || size > 32) return 0;
+                uint32_t pg = (page & 0xFFFF) << 16;
+                if (range && umin <= 0xFFFF) umin |= pg;
+                if (range && umax <= 0xFFFF) umax |= pg;
                 for (uint32_t i = 0; i < count; i++) {
                     uint32_t u = range ? umin + i
                                : nusage ? usage[i < nusage ? i : nusage - 1] : 0;
                     if (range && u > umax) u = 0;
+                    if (!range && u && u <= 0xFFFF) u |= pg;
                     int data = !(v & HID_IN_CONSTANT) && (v & HID_IN_VARIABLE);
-                    if (data && (v & HID_IN_RELATIVE) && page == HID_PAGE_DESKTOP && size) {
+                    if (data && (v & HID_IN_RELATIVE) && size) {
                         if (u == HID_USAGE_X && !have_x) { h->x_bit = (uint16_t)bit; h->x_size = (uint8_t)size; have_x = 1; }
                         if (u == HID_USAGE_Y && !have_y) { h->y_bit = (uint16_t)bit; h->y_size = (uint8_t)size; have_y = 1; }
                     }
-                    if (data && page == HID_PAGE_BUTTON && size == 1 && u == 1 && !have_btn) {
+                    if (data && size == 1 && u == HID_USAGE_BTN1 && !have_btn) {
                         h->btn_bit = (uint16_t)bit;
                         h->btn_count = (uint8_t)(count > 3 ? 3 : count);
                         have_btn = 1;
@@ -206,26 +216,70 @@ static void poll_mouse(struct hid_device *h) {
                  LOG_COLOR_VALUE, "");
     }
 
-    if (h->layout) {
-        const uint8_t *r = rpt;
-        uint32_t bits = (uint32_t)n * 8;
-        if (h->report_id) {
-            if (rpt[0] != h->report_id) return;     /* some other report of its */
-            r++;
-            bits -= 8;
-        }
-        if (h->x_bit + h->x_size > bits || h->y_bit + h->y_size > bits) return;
-        uint32_t btns = 0;
-        for (uint32_t i = 0; i < h->btn_count && h->btn_bit + i < bits; i++)
-            if ((r[(h->btn_bit + i) / 8] >> ((h->btn_bit + i) % 8)) & 1) btns |= 1u << i;
-        mouse_inject(report_field(r, h->x_bit, h->x_size),
-                     report_field(r, h->y_bit, h->y_size), btns);
-        return;
+    const uint8_t *r = rpt;
+    uint32_t bits = (uint32_t)n * 8;
+    if (h->report_id) {
+        if (rpt[0] != h->report_id) return;     /* some other report of its */
+        r++;
+        bits -= 8;
     }
+    if (h->x_bit + h->x_size > bits || h->y_bit + h->y_size > bits) return;
+    uint32_t btns = 0;
+    for (uint32_t i = 0; i < h->btn_count && h->btn_bit + i < bits; i++)
+        if ((r[(h->btn_bit + i) / 8] >> ((h->btn_bit + i) % 8)) & 1) btns |= 1u << i;
+    mouse_inject(report_field(r, h->x_bit, h->x_size),
+                 report_field(r, h->y_bit, h->y_size), btns);
+}
 
-    int8_t dx = (int8_t)rpt[1];
-    int8_t dy = (int8_t)rpt[2];
-    mouse_inject(dx, dy, (uint32_t)(rpt[0] & 0x07));
+/* Up to 64 bytes of a descriptor we could not use, 16 to a log line, so a
+   rig's log says what the mouse declared. */
+static void log_bytes(const uint8_t *d, int n) {
+    static const char hex[] = "0123456789ABCDEF";
+    if (n > 64) n = 64;
+    for (int at = 0; at < n; at += 16) {
+        char line[16 * 3 + 1];
+        int k = 0;
+        for (int i = at; i < n && i < at + 16; i++) {
+            line[k++] = hex[d[i] >> 4];
+            line[k++] = hex[d[i] & 15];
+            line[k++] = ' ';
+        }
+        line[k] = 0;
+        klog_child(line);
+    }
+}
+
+/* A mouse is read only as its report descriptor says: Haiku and SerenityOS
+   never put a mouse in the boot protocol. Many mice that claim the boot
+   interface ignore SET_PROTOCOL(boot) and go on sending their own reports
+   (the FX's 10C4:0005 sent six bytes), and three bytes read as the boot
+   format then are the wrong fields. A descriptor we cannot read or use
+   leaves the mouse unattached, with the reason and the bytes in the log. */
+static int mouse_layout(struct hid_device *h, struct usb_device *dev) {
+    static uint8_t desc[HID_DESC_MAX];
+    uint32_t want = dev->hid_report_len ? dev->hid_report_len : HID_DESC_GUESS;
+    if (want > HID_DESC_MAX) {
+        klog_u32("USBHID", SEV_WARN, "mouse skipped: its report descriptor is too long, bytes ",
+                 want, LOG_COLOR_VALUE, "");
+        return 0;
+    }
+    int got = dev->ops->control(dev, 0x81, USB_REQ_GET_DESC, HID_DESC_REPORT << 8,
+                                dev->if_number, desc, (uint16_t)want);
+    if (got <= 0) {
+        klog_u32("USBHID", SEV_WARN, "mouse skipped: its report descriptor was not read, asked for bytes ",
+                 want, LOG_COLOR_VALUE, "");
+        return 0;
+    }
+    if (dev->hid_report_len && (uint32_t)got < want)
+        klog_u32("USBHID", SEV_WARN, "mouse's report descriptor came short, bytes ",
+                 (uint32_t)got, LOG_COLOR_VALUE, "");
+    if (!parse_mouse_report(h, desc, got)) {
+        klog_u32("USBHID", SEV_WARN, "mouse skipped: no relative X and Y in its report descriptor, bytes ",
+                 (uint32_t)got, LOG_COLOR_VALUE, "");
+        log_bytes(desc, got);
+        return 0;
+    }
+    return 1;
 }
 
 int usb_hid_attach(struct usb_device *dev) {
@@ -255,22 +309,17 @@ int usb_hid_attach(struct usb_device *dev) {
     h->is_keyboard = (uint8_t)kbd;
     h->in_use = 1;
 
-    /* A mouse's descriptor, if it gives one we can use. It describes the report
-       protocol only, so a mouse read this way must be in that one. */
-    if (mse) {
-        static uint8_t desc[HID_DESC_MAX];
-        int got = dev->ops->control(dev, 0x81, USB_REQ_GET_DESC, HID_DESC_REPORT << 8,
-                                    dev->if_number, desc, sizeof desc);
-        if (got > 0 && parse_mouse_report(h, desc, got)) h->layout = 1;
-    }
+    if (mse && !mouse_layout(h, dev)) { h->in_use = 0; return 0; }
 
     /* SET_PROTOCOL. A device powers up in report mode, and a keyboard's reports
        then have whatever shape its descriptor declares, which we do not read;
-       so it, and a mouse with no usable descriptor, go to boot. wValue is the
-       protocol, wIndex the interface. */
-    dev->ops->control(dev, 0x21, HID_REQ_SET_PROTOCOL,
-                      h->layout ? HID_PROTOCOL_REPORT : HID_PROTOCOL_BOOT,
-                      dev->if_number, 0, 0);
+       so it goes to boot. A mouse is set to report explicitly: firmware that
+       drove it in boot may have left it there. wValue is the protocol, wIndex
+       the interface. */
+    int prc = dev->ops->control(dev, 0x21, HID_REQ_SET_PROTOCOL,
+                                mse ? HID_PROTOCOL_REPORT : HID_PROTOCOL_BOOT,
+                                dev->if_number, 0, 0);
+    if (prc < 0) klog("USBHID", SEV_INFO, "SET_PROTOCOL refused; it is read as it reports anyway");
 
     /* SET_IDLE(0) - report only on change rather than re-sending forever. Some
        devices STALL this; it is an optimisation, not a requirement. */
@@ -280,9 +329,10 @@ int usb_hid_attach(struct usb_device *dev) {
     keyboard_usb_arrived();     /* the shell is usually asleep by now */
     keyboards += kbd;
     klog("USBHID", SEV_OK, kbd ? "keyboard online (boot protocol)"
-                     : h->layout ? "mouse online (its own report layout)"
-                                 : "mouse online (boot protocol)");
-    if (h->layout) {
+                               : "mouse online (its own report layout)");
+    if (mse) {
+        klog_u32("USBHID", SEV_INFO, "-> report descriptor, bytes ", dev->hid_report_len, LOG_COLOR_VALUE, "");
+        klog_u32("USBHID", SEV_INFO, "-> report id ", h->report_id, LOG_COLOR_VALUE, "");
         klog_u32("USBHID", SEV_INFO, "-> X at bit ", h->x_bit, LOG_COLOR_VALUE, "");
         klog_u32("USBHID", SEV_INFO, "-> Y at bit ", h->y_bit, LOG_COLOR_VALUE, "");
         klog_u32("USBHID", SEV_INFO, "-> bits in each ", h->x_size, LOG_COLOR_VALUE, "");

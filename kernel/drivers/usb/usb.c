@@ -107,6 +107,10 @@ static void read_configuration(struct usb_device *dev) {
             } else {
                 in_first_interface = 0;     /* only the first interface's endpoints */
             }
+        } else if (type == 0x21 && in_first_interface && len >= 9 && cfg[off + 6] == 0x22) {
+            /* HID: bcdHID, bCountryCode, bNumDescriptors, then the first
+               class descriptor's type (0x22, the report's) and its length */
+            dev->hid_report_len = (uint16_t)(cfg[off + 7] | cfg[off + 8] << 8);
         } else if (type == USB_DESC_ENDPOINT && in_first_interface) {
             const struct usb_endpoint_descriptor *ed =
                 (const struct usb_endpoint_descriptor *)&cfg[off];

@@ -3,13 +3,15 @@
 /* /kernel/drivers/usb/usb_hid.h */
 /* Aurora Tejeda / CATX Systems */
 /*
- * USB HID - keyboards and mice, via the BOOT PROTOCOL.
+ * USB HID - keyboards via the BOOT PROTOCOL, mice via their report descriptor.
  *
  * HID devices normally describe their reports with a report descriptor, which
  * is a small bytecode language and a real parser. The boot protocol exists to
  * avoid that: a device asked for it emits a fixed 8-byte keyboard report or
  * 3-byte mouse report instead, with no descriptor involved. Every BIOS on earth
- * relies on this, which is precisely why every keyboard implements it.
+ * relies on this, which is precisely why every keyboard implements it. Mice
+ * are less dutiful (many ignore the request), so a mouse is read only as its
+ * descriptor says, as Haiku and SerenityOS do (usb_hid.c, mouse_layout).
  *
  * ---- Why this driver is not optional ------------------------------------
  *
