@@ -604,6 +604,32 @@ add_custom_command(
 )
 set(LOCALE_FILES ${GALLERY_EN} ${GALLERY_QPS} ${PLURALS_XPLT})
 
+# ---- the desktop's background: JPEG -> QOI, staged to /System/Backgrounds ----
+#
+# The pictures are free-images.com's (public domain or CC0; THIRD-PARTY-NOTICES.md),
+# checked in with their metadata stripped (`cxk picture strip`; the build
+# refuses one that still has it). The OS reads QOI and nothing heavier, so the
+# five are converted here, scaled down to just cover 1920x1080, and staged as
+# 1.qoi to 5.qoi. displayd (and so `gui`) paints 1 unless given --background,
+# scaling and cropping it to the screen once, at start (std/picture.xfxn).
+set(BACKGROUND_DIR ${SRC_DIR}/assets/image/background)
+set(BACKGROUND_NAMES mountain_dawn facets paper_fan_dark paper_fan light_trails)
+set(BACKGROUND_QOIS "")
+set(BACKGROUND_STAGE "")
+set(bg_n 0)
+foreach(bg ${BACKGROUND_NAMES})
+    math(EXPR bg_n "${bg_n} + 1")
+    set(bg_qoi ${BUILD_DIR}/background_${bg_n}.qoi)
+    add_custom_command(
+        OUTPUT ${bg_qoi}
+        COMMAND ${CXK} picture build ${BACKGROUND_DIR}/${bg}.jpg --cover 1920x1080 -o ${bg_qoi}
+        DEPENDS ${BACKGROUND_DIR}/${bg}.jpg ${CXK}
+        COMMENT "PICTURE ${bg}.jpg -> background_${bg_n}.qoi"
+    )
+    list(APPEND BACKGROUND_QOIS ${bg_qoi})
+    list(APPEND BACKGROUND_STAGE --stage System/Backgrounds/${bg_n}.qoi=${bg_qoi})
+endforeach()
+
 # ---- the X programs ----
 # Every program is staged onto the disk as a file and started with
 # SYS_EXEC_PATH, the shell too: the executive starts
@@ -742,6 +768,7 @@ set(CXK_STAGED_SHARED
     --stage System/Locale/gallery-en.xstr=${GALLERY_EN}
     --stage System/Locale/gallery-qps.xstr=${GALLERY_QPS}
     --stage System/Locale/plurals.xplt=${PLURALS_XPLT}
+    ${BACKGROUND_STAGE}
     --stage Shared/Source/xc.xfxn=${SRC_DIR}/os/xc/xc.xfxn
     --stage Shared/Source/front.xfxn=${SRC_DIR}/os/xc/front.xfxn
     --stage Shared/Source/ir.xfxn=${SRC_DIR}/os/xc/ir.xfxn
@@ -777,7 +804,7 @@ add_custom_command(
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_DISK_ELF} ${EXEC_XOEX} ${DISK_APP_XUEX}
             ${SUPERVISOR_XSEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
             ${SETCHECK_XUEX} ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX} ${FUTEX_XUEX} ${XTEST_XUEX} ${DISPLAYD_XUEX} ${WDEMO_XUEX} ${GALLERY_XUEX} ${BOCHS_XUEX} ${VIRTGPU_XUEX} ${PROCMAN_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
-            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${LOCALE_FILES} ${CXK}
+            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${LOCALE_FILES} ${BACKGROUND_QOIS} ${CXK}
     COMMENT "Building the CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})

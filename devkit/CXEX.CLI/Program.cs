@@ -156,6 +156,17 @@ app.Configure(config =>
             .WithDescription("Reports an .xfnt's geometry and slot usage, and can print one glyph as ASCII art.");
     });
 
+    // ---- pictures: the desktop's background ----
+    config.AddBranch("picture", picture =>
+    {
+        picture.SetDescription("Converts JPEG pictures into the QOI the OS reads, and strips their metadata.");
+
+        picture.AddCommand<PictureBuildCommand>("build")
+            .WithDescription("Decodes a baseline JPEG, scales it down to cover a screen (--cover WxH) and writes QOI. Refuses a source still carrying metadata.");
+        picture.AddCommand<PictureStripCommand>("strip")
+            .WithDescription("Removes EXIF (with any GPS position), XMP, IPTC and comments from JPEGs in place, copying the image data unchanged.");
+    });
+
     // ---- localisation (roadmap 2.8a4, system/CX_TOOLKIT.md §10) ----
     config.AddBranch("strings", strings =>
     {

@@ -1318,6 +1318,15 @@ static void xt_feed(struct xt_run *r, const char *b, uint32_t n) {
     }
 }
 
+/* Whether the screen at (x, y) is clearly red over blue (warm), or blue over
+   red: how the display server test tells background 1 from the gradient. */
+static int ds_warm(uint32_t x, uint32_t y, int warm) {
+    uint32_t p = fb_test_screen_pixel(x, y), r, b;
+    if (fb_bpp() == 32) { r = (p >> 16) & 255; b = p & 255; }
+    else                { r = ((p >> 11) & 31) << 3; b = (p & 31) << 3; }
+    return warm ? r > b + 40 : b > r + 40;
+}
+
 int ktest_display_server(void) {
     if (!fb_active()) return 1;
     static const char prog[] = "/Shared/Programs/displayd.xuex";
@@ -1355,6 +1364,20 @@ int ktest_display_server(void) {
         if (timer_now_ns() > deadline) goto done;
         if (syscall_dispatch(SYS_SLEEP, 10, 0, 0, 0, 0) != E_OK) goto done;
     }
+
+    /* 7: the desktop is background 1, the mountain at dawn: an orange sky
+       over blue ridges. The gradient it falls back to is blue over red
+       everywhere, and the console behind it is neither. */
+    {
+        uint64_t until = timer_now_ns() + 300000 * TIMER_NS_PER_TICK;
+        uint32_t w = fb_width(), h = fb_height();
+        step = 7;
+        while (!(ds_warm(w / 2, h * 5 / 100, 1) && ds_warm(w / 8, h * 95 / 100, 0))) {
+            if (timer_now_ns() > until) goto done;
+            if (syscall_dispatch(SYS_SLEEP, 10, 0, 0, 0, 0) != E_OK) goto done;
+        }
+    }
+    deadline = timer_now_ns() + 300000 * TIMER_NS_PER_TICK;   /* the picture took its time */
 
     /* 6: the combination, from the drivers' entry point, puts the system's
        screen on the real screen: its colour in a corner no row is drawn in */

@@ -27,6 +27,7 @@ import "virtiogpu.xfxn";
 import "toolkit_tests.xfxn";
 import "gallery_pages.xfxn";
 import "locale_tests.xfxn";
+import "picture_tests.xfxn";
 
 const MS: u64 = 1000000;
 
@@ -3477,6 +3478,10 @@ fn all() -> void {
     test_run("display: reference frames, both formats", d_frames,                  60000);
     test_run("display: only the damage is presented",  d_damage_only,              60000);
     test_run("display: the screen needs its grant",    d_screen_denied,            30000);
+    test_run("picture: QOI chunks, as specified",      pic_t_chunks,               30000);
+    test_run("picture: a bad QOI is refused",          pic_t_refused,              30000);
+    test_run("picture: cover crops and filters",       pic_t_cover,                30000);
+    test_run("picture: background 1, else the gradient", pic_t_background,         300000);
     test_run("windows: the stack, a press raises",     w_stack,                    30000);
     test_run("windows: keys to the focused one only",  w_keys,                     30000);
     test_run("windows: the system's keys are nobody else's", w_system_keys,           30000);

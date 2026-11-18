@@ -1,0 +1,76 @@
+# The desktop's background (2026-11-18): QOI reading, covering the screen,
+# background 1 by default and the gradient when it is missing or broken, run
+# by `cxk test sabotage`. Each must turn red exactly the self-tests named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds at
+# most one sabotage per test.
+#
+# By hand, outside this file (it judges boots only): sabotages of the
+# DevKit's JPEG reader, stripper, scaler and QOI writer must turn
+# PictureTests red (the commit message has them).
+
+[bg-gradient-always]
+# displayd never paints the picture: the desktop is the gradient
+expect = display server: real screen, real keys, given back @ display server failed at step 7
+group = g1
+edit = os/apps/displayd.xfxn
+<<<
+    pic_background(&dd.desktop, bg);
+===
+    pic_gradient(&dd.desktop);
+>>>
+
+[bg-no-fallback]
+# a missing or broken picture leaves the desktop as it was, not the gradient
+expect = x: picture: background 1, else the gradient @ failed at step 36
+group = g1
+edit = os/std/picture.xfxn
+<<<
+    if (rc != 0) { pic_gradient(s); }
+===
+>>>
+
+[qoi-end-unchecked]
+# a stream without its end marker is taken
+expect = x: picture: a bad QOI is refused @ failed at step 13
+group = g1
+edit = os/std/picture.xfxn
+<<<
+    if (p[limit + 7] != 1) { return E_CORRUPT; }
+===
+>>>
+
+[cover-unfiltered]
+# the nearest pixel, not a mix of the four around
+expect = x: picture: cover crops and filters @ failed at step 24
+group = g2
+edit = os/std/picture.xfxn
+<<<
+        pic_cf[x] = ((fx >> 8) & 255) as u32;
+===
+        pic_cf[x] = 0;
+>>>
+
+[cover-uncropped]
+# the picture's left edge shown, not its middle
+expect = x: picture: cover crops and filters @ failed at step 22
+group = g3
+edit = os/std/picture.xfxn
+<<<
+    let ox: u64 = ((sw as u64) - cw) * 65536 / 2;
+===
+    let ox: u64 = 0;
+>>>
+
+[qoi-luma-wrong]
+# a LUMA chunk's red is one too many. Each pixel is read from the last, so
+# the error drifts across the real picture too: the sky stops being orange.
+expect = x: picture: QOI chunks, as specified @ failed at step 6
+expect = x: picture: background 1, else the gradient @ failed at step 33
+expect = display server: real screen, real keys, given back @ display server failed at step 7
+group = g4
+edit = os/std/picture.xfxn
+<<<
+                r = (r + dg + ((x >> 4) & 15) + 248) & 255;  // + dg + (dr-dg) - 8
+===
+                r = (r + dg + ((x >> 4) & 15) + 249) & 255;
+>>>

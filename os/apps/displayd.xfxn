@@ -6,7 +6,8 @@
 //
 //   run +screen +spawn +endpoint +disk displayd [client ...]    (default: two wdemo windows)
 //
-// +disk is for the title bars' font; without it the frames have no text.
+// +disk is for the title bars' font and the background; without it the
+// frames have no text and the desktop is the gradient.
 //
 // Takes the screen (SYS_SCREEN_OPEN) and the keyboard and pointer
 // (SYS_INPUT_OPEN) from the kernel and starts its clients, which is how they
@@ -21,6 +22,9 @@
 // starts its clients in that locale: their strings from
 // /System/Locale/<program>-<tag>.xstr, English from -en.xstr (2.8a4; `en`
 // by default, `qps` the pseudo-locale).
+// `displayd --background <path> [...]` (after --locale) paints that QOI
+// picture instead of /System/Backgrounds/1.qoi; a missing or broken one
+// leaves the gradient (std/picture.xfxn).
 // `displayd --reduce-motion [client ...]` starts with motion reduced for every
 // client (Super+R turns it on and off).
 //
@@ -33,6 +37,7 @@
 // console and the shell has its keys back.
 
 import "dserver.xfxn";
+import "picture.xfxn";
 import "io.xfxn";
 import "fmt.xfxn";
 
@@ -41,23 +46,6 @@ const DD_CURSOR_H: u32 = 16;
 
 global dd: dsv;
 global dd_path: [128]u8;
-
-// A vertical gradient with a faint grid every 32 pixels: opaque.
-fn dd_paint_desktop(s: *ds_surface) -> void {
-    let y: u32 = 0;
-    while (y < s.height) {
-        let t: u32 = (y * 255) / s.height;
-        let r: u32 = 0x20 + (t * 0x20) / 255;
-        let g: u32 = 0x30 + (t * 0x30) / 255;
-        let b: u32 = 0x48 + (t * 0x38) / 255;
-        let c: u32 = 0xFF000000 | (r << 16) | (g << 8) | b;
-        ds_fill(s, 0, y, s.width, 1, c);
-        if (y % 32 == 0) { ds_fill(s, 0, y, s.width, 1, 0xFF2A3A54); }
-        y = y + 1;
-    }
-    let x: u32 = 0;
-    while (x < s.width) { ds_fill(s, x, 0, 1, s.height, 0xFF2A3A54); x = x + 32; }
-}
 
 // An arrow: a black outline, white inside, transparent around it.
 fn dd_paint_cursor(s: *ds_surface) -> void {
@@ -115,13 +103,19 @@ fn _start() -> void {
     }
     let rc: i32 = dsv_init(&dd, screen, 0, DD_CURSOR_W, DD_CURSOR_H);
     if (rc != 0) { dd_fail("no screen or no keyboard (run it as `run +screen +spawn +endpoint +disk displayd`)", rc); }
-    dd_paint_desktop(&dd.desktop);
     dd_paint_cursor(&dd.cursor);
 
     if (argc > first + 1 && streq((ai.base + (page[1 + first] as u64)) as *u8, "--locale") != 0) {
         if (dsv_set_locale(&dd, (ai.base + (page[2 + first] as u64)) as *u8) != 0) { dd_fail("a locale is a tag such as en or qps", E_INVALID_ARGS); }
         first = first + 2;
     }
+    // The background, painted once: the compositor copies from it after.
+    let bg: *u8 = "/System/Backgrounds/1.qoi";
+    if (argc > first + 1 && streq((ai.base + (page[1 + first] as u64)) as *u8, "--background") != 0) {
+        bg = (ai.base + (page[2 + first] as u64)) as *u8;
+        first = first + 2;
+    }
+    pic_background(&dd.desktop, bg);
     if (argc > first && strlen((ai.base + (page[1 + first] as u64)) as *u8) == 15
         && strneq((ai.base + (page[1 + first] as u64)) as *u8, "--reduce-motion", 15) != 0) {
         dd.w.reduce = 1;

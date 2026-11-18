@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/picture_tests.xfxn - the x tests of std/picture.xfxn: the QOI reader,
+// the cover scaler, and the desktop's background with its fallback.
+// Aurora Tejeda / CATX Systems
+//
+// The QOI stream below is the one devkit's PictureTests builds chunk by
+// chunk from the specification, so the host's writer and this reader are
+// held to the same bytes.
+
+import "display.xfxn";
+import "picture.xfxn";
+
+// 6x1: RGB, a run, DIFF, LUMA, INDEX, a run; then the end marker.
+global pt_qoi: [32]u8 = [
+    113, 111, 105, 102,  0, 0, 0, 6,  0, 0, 0, 1,  3, 0,
+    0xFE, 10, 20, 30,
+    0xC0,
+    0x77,
+    0xAA, 0x88,
+    9,
+    0xC0,
+    0, 0, 0, 0, 0, 0, 0, 1
+];
+global pt_px: [64]u32;
+
+fn pt_want(i: u32, rgb: u32) -> u32 { if (pt_px[i] == (0xFF000000 | rgb)) { return 1; } return 0; }
+
+// 1-9: every chunk kind decodes as the specification says
+fn pic_t_chunks(arg: u64) -> i32 {
+    let w: u32 = 0;
+    let h: u32 = 0;
+    if (pic_qoi_size(&pt_qoi[0], 32, &w, &h) != 0 || w != 6 || h != 1) { return 1; }
+    if (pic_qoi_decode(&pt_qoi[0], 32, &pt_px[0]) != 0) { return 2; }
+    if (pt_want(0, 0x0A141E) == 0) { return 3; }      // RGB
+    if (pt_want(1, 0x0A141E) == 0) { return 4; }      // run
+    if (pt_want(2, 0x0B131F) == 0) { return 5; }      // DIFF +1 -1 +1
+    if (pt_want(3, 0x151D29) == 0) { return 6; }      // LUMA +10
+    if (pt_want(4, 0x0A141E) == 0) { return 7; }      // INDEX
+    if (pt_want(5, 0x0A141E) == 0) { return 8; }      // run
+    return 0;
+}
+
+// 10-19: a stream that is cut, mislabelled or unterminated is refused
+fn pic_t_refused(arg: u64) -> i32 {
+    let w: u32 = 0;
+    let h: u32 = 0;
+    if (pic_qoi_decode(&pt_qoi[0], 26, &pt_px[0]) != E_CORRUPT) { return 10; }   // cut inside the chunks
+    if (pic_qoi_decode(&pt_qoi[0], 21, &pt_px[0]) != E_CORRUPT) { return 11; }   // and before them
+    pt_qoi[0] = 120;
+    let rc: i32 = pic_qoi_size(&pt_qoi[0], 32, &w, &h);
+    pt_qoi[0] = 113;
+    if (rc != E_CORRUPT) { return 12; }
+    pt_qoi[31] = 0;
+    rc = pic_qoi_decode(&pt_qoi[0], 32, &pt_px[0]);
+    pt_qoi[31] = 1;
+    if (rc != E_CORRUPT) { return 13; }
+    pt_qoi[7] = 0;                                                                // width 0
+    rc = pic_qoi_size(&pt_qoi[0], 32, &w, &h);
+    pt_qoi[7] = 6;
+    if (rc != E_CORRUPT) { return 14; }
+    if (pic_qoi_decode(&pt_qoi[0], 32, &pt_px[0]) != 0) { return 15; }            // restored
+    return 0;
+}
+
+// 20-29: covering crops to the middle and filters between pixels
+fn pic_t_cover(arg: u64) -> i32 {
+    let s: ds_surface;
+    if (ds_surface_new(&s, 2, 2) != 0) { return 20; }
+    // 4x2, four columns: shown on a square, the middle two, unfiltered.
+    let i: u32 = 0;
+    while (i < 8) { pt_px[i] = 0xFF000000 | ((i % 4) * 0x101010 + 0x102030); i = i + 1; }
+    let rc: i32 = 0;
+    if (pic_cover(&s, &pt_px[0], 4, 2) != 0) { rc = 21; }
+    else if (ds_pixel(&s, 0, 0) != 0xFF203040 || ds_pixel(&s, 1, 0) != 0xFF304050
+          || ds_pixel(&s, 0, 1) != 0xFF203040 || ds_pixel(&s, 1, 1) != 0xFF304050) { rc = 22; }
+    // 4x4 to 2x2: each pixel the mean of the two columns and rows it falls between.
+    i = 0;
+    while (i < 16) { pt_px[i] = 0xFF000000 | ((i % 4) * 0x40 + (i / 4) * 0x4000); i = i + 1; }
+    if (rc == 0 && pic_cover(&s, &pt_px[0], 4, 4) != 0) { rc = 23; }
+    else if (rc == 0 && (ds_pixel(&s, 0, 0) != 0xFF002020 || ds_pixel(&s, 1, 1) != 0xFF00A0A0)) { rc = 24; }
+    // wider than the column table: refused, the surface untouched
+    let big: ds_surface;
+    big.width = PIC_SCREEN_MAX + 1; big.height = 1;
+    if (rc == 0 && pic_cover(&big, &pt_px[0], 4, 4) != E_INVALID_ARGS) { rc = 25; }
+    ds_surface_free(&s);
+    return rc;
+}
+
+// How many of a's pixels differ from b's (same size).
+fn pt_differ(a: *ds_surface, b: *ds_surface) -> u32 {
+    let n: u32 = 0;
+    let y: u32 = 0;
+    while (y < a.height) {
+        let x: u32 = 0;
+        while (x < a.width) { if (ds_pixel(a, x, y) != ds_pixel(b, x, y)) { n = n + 1; } x = x + 1; }
+        y = y + 1;
+    }
+    return n;
+}
+
+// 30-39: the background is background 1, the mountain at dawn (an orange sky
+// over blue ridges: no gradient has either), and a missing or broken
+// picture leaves exactly the gradient
+fn pic_t_background(arg: u64) -> i32 {
+    let s: ds_surface;
+    let g: ds_surface;
+    if (ds_surface_new(&s, 160, 100) != 0) { return 30; }
+    if (ds_surface_new(&g, 160, 100) != 0) { ds_surface_free(&s); return 30; }
+    pic_gradient(&g);
+    let rc: i32 = 0;
+    if (pic_background(&s, "/System/Backgrounds/1.qoi") != 0) { rc = 31; }
+    else if (pt_differ(&s, &g) < 160 * 100 * 9 / 10) { rc = 32; }
+    else {
+        let sky: u32 = ds_pixel(&s, 80, 5);
+        let ridge: u32 = ds_pixel(&s, 20, 95);
+        if (((sky >> 16) & 255) <= (sky & 255) + 40) { rc = 33; }             // red well over blue
+        else if ((ridge & 255) <= ((ridge >> 16) & 255) + 40) { rc = 34; }    // blue well over red
+    }
+    if (rc == 0) {
+        ds_fill(&s, 0, 0, 160, 100, 0xFF000000);
+        if (pic_background(&s, "/System/Backgrounds/none.qoi") != E_NOT_FOUND) { rc = 35; }
+        else if (pt_differ(&s, &g) != 0) { rc = 36; }
+    }
+    if (rc == 0) {
+        ds_fill(&s, 0, 0, 160, 100, 0xFF000000);
+        if (pic_background(&s, "/System/Fonts/console_16.xfnt") != E_CORRUPT) { rc = 37; }   // not a QOI
+        else if (pt_differ(&s, &g) != 0) { rc = 38; }
+    }
+    ds_surface_free(&g);
+    ds_surface_free(&s);
+    return rc;
+}
