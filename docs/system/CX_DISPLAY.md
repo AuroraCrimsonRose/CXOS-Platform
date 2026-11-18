@@ -15,7 +15,8 @@
 - **The resolution is fixed at boot** by the firmware (VBE or GOP).
 - **The window code runs inside one program.** `os/std/gui.xfxn` has a layer
   compositor with damage rectangles, used by whichever program holds
-  `GRANT_FRAMEBUFFER`; two such programs draw over each other.
+  `GRANT_FRAMEBUFFER`; two such programs draw over each other. (Retired
+  2026-11-18 with `cxos.xfxn`: the shell's `gui` starts displayd.)
 - **One grant decides who reads the keyboard and mouse.** `SYS_INPUT_READ`,
   `SYS_INPUT_POLL` and `SYS_MOUSE_READ` need `GRANT_INPUT` (roadmap 1.7a): the
   shell holds it and hands it to the program of a foreground `run` line that
@@ -66,7 +67,7 @@ releases are not reported yet.
   Wayland relies on apps following that rule, here the kernel enforces it.
 - **Compositing** redraws only damage into a back buffer in RAM, then copies
   those regions to the screen. Reading video memory is slow, so it never
-  composes on the screen. The layer compositor in `gui.xfxn` is the core.
+  composes on the screen. (`gui.xfxn`'s layer compositor was its start.)
 - **Frame pacing:** the server tells an app when to draw the next frame through
   the wait queue. A 60 Hz timer paces frames until a driver reports vertical
   blank.

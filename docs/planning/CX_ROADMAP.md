@@ -1557,8 +1557,9 @@ language work in `language/CX_X_PLAN.md`.
      sabotaged. A broken binding set is reset from the trusted screen.
      `os/std/gui.xfxn`, the older toolkit that draws straight to the
      framebuffer (`SYS_FB_*`, `SYS_MOUSE_READ`) and so bypasses displayd:
-     **retired** (keep any drawing worth having; `cxos.xfxn` moved onto
-     windows or dropped; listed in `TRANSITIONAL_CODE.md` meanwhile).
+     **retired** (done early, 2026-11-18: `gui.xfxn` and `cxos.xfxn`
+     deleted, the shell's `gui` starts displayd and the gallery; the
+     `SYS_FB_*` and `SYS_MOUSE_READ` calls stay while `edit` uses `gfx.xfxn`).
    - **2.8a′, scalable fonts** (`system/CX_FONTS.md` §3 item 5; defaults
      IBM Plex Sans for the UI, Space Grotesk for headings, IBM Plex Mono for
      the terminal, Atkinson Hyperlegible Next for accessibility, with many

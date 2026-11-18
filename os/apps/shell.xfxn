@@ -18,7 +18,6 @@ import "fmt.xfxn";
 import "fixed.xfxn";
 import "gfx.xfxn";
 import "settings.xfxn";
-import "cxos.xfxn";
 import "net.xfxn";
 import "file.xfxn";
 import "edit.xfxn";
@@ -195,9 +194,18 @@ fn cmd_math(arg: *u8) -> void {
 }
 
 // gfx.xfxn
+// `gui [client ...]` is `run` of the display server with the grants it
+// needs, starting the widget gallery when no client is named. The shell
+// waits; Ctrl+Alt+F2, or the last window closing, gives the console back.
+global gui_line: [256]u8;
+
 fn cmd_gui(arg: *u8) -> void {
-    // hand over to the graphical shell; returns when the user closes it
-    cxos_run();
+    let n: u32 = strcopy(&gui_line[0], "+screen +spawn +endpoint +disk displayd ", 256);
+    let rest: *u8 = arg;
+    if (rest[0] == 0) { rest = "gallery"; }
+    if (n + strlen(rest) + 1 > 256) { puts("gui: the client list is too long\n"); return; }
+    strcopy(&gui_line[n], rest, 256 - n);
+    cmd_run(&gui_line[0]);
     puts("returned from gui\n");
 }
 
@@ -976,7 +984,7 @@ fn _start() -> void {
     register("mem",    cmd_mem,    "memory library demo");
     register("heap",   cmd_heap,   "allocation: quota, use, and a round trip");
     register("math",   cmd_math,   "fixed-point demo");
-    register("gui",    cmd_gui,    "enter the CXOS graphical shell");
+    register("gui",    cmd_gui,    "start the display server: gui [client ...], the widget gallery by default");
     register("ver",    cmd_ver,    "version");
     register("ls",     cmd_ls,     "list a directory");
     register("cat",    cmd_cat,    "print a file");

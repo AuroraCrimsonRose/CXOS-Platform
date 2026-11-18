@@ -335,11 +335,11 @@ set(CXK_DISK    ${IMAGES_DIR}/cxk_x86_64.img)
 # rebuilds. This variable was once referenced by the compile rule but never
 # defined anywhere, and CMake expands an undefined variable to nothing - so the
 # rule effectively had no source dependencies beyond shell.xfxn itself. Editing
-# gui.xfxn, gfx.xfxn or cxos.xfxn produced a silently stale shell.elf, with the
+# gfx.xfxn or an imported app module produced a silently stale shell.elf, with the
 # old code still embedded in app_image.h and booted.
 #
 # The glob is deliberately coarse: it covers both import roots (os/std for the
-# -I path, os/apps because shell.xfxn imports cxos.xfxn from its own directory),
+# -I path, os/apps because an app may import a module beside it),
 # so any app rebuilds when any library changes. Correct dependencies beat
 # minimal ones here - the alternative is testing a binary you did not build.
 # CONFIGURE_DEPENDS makes CMake re-glob, so a NEW .xfxn is noticed without a

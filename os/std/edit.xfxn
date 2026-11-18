@@ -9,7 +9,7 @@
 // The first program on CXK that can write a file a person typed. It draws
 // itself with gfx_text rather than the console, because SYS_CONSOLE_WRITE only
 // appends bytes and a full-screen editor needs to put a character at a chosen
-// position. Same approach as cxos_run(): take the screen, give it back on exit.
+// position. It takes the screen and gives it back on exit.
 //
 // The buffer is one flat array and an insert memmoves the tail. That is O(n)
 // per keystroke, and at 32KB it is a few microseconds - a gap buffer buys
