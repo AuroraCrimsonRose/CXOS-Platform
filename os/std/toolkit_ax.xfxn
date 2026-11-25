@@ -1,0 +1,538 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/toolkit_ax.xfxn - the toolkit's automation API, its inspector and its
+// audit, over the accessibility tree (roadmap 2.8a5, CX_TOOLKIT.md §11).
+// Aurora Tejeda / CATX Systems
+//
+// The accessibility tree is the widget tree (CX_ACCESSIBILITY.md §2 item
+// 1), so all three read the ui's own nodes. An automated action goes in by
+// the same road a person's does (a press is a pointer going down and up at
+// the widget's middle, typing is key presses), so a widget a test cannot
+// reach is one a person cannot. Reading another program's tree is not here:
+// that needs the assistive-technology grant (§2 item 3, Phase B).
+
+import "toolkit.xfxn";
+
+// ---- the automation API ----
+
+// tk_ax_state's bits.
+const TK_AX_DISABLED: u32 = 1;
+const TK_AX_FOCUSABLE: u32 = 2;
+const TK_AX_FOCUSED: u32 = 4;
+const TK_AX_CHECKED: u32 = 8;
+const TK_AX_MIXED: u32 = 16;
+const TK_AX_PRESSED: u32 = 32;
+const TK_AX_SELECTED: u32 = 64;     // its list's, tree's or table's chosen row; a tab's shown page; a menu's lit item
+const TK_AX_EXPANDED: u32 = 128;    // a tree item open, a menu open
+const TK_AX_OFFSCREEN: u32 = 256;   // not to be seen or reached now (tk_reachable)
+const TK_AX_DEFAULT: u32 = 512;     // the button Enter presses
+
+// The first node in tree order under `from` (0: the root), itself first,
+// with role (0: any) and name (0: any), by id; 0 if there is none.
+fn tk_ax_find(ui: *tk_ui, from: u32, role: u32, name: *u8) -> u32 {
+    let s: u32 = ui.root;
+    if (from != 0) { s = tk_index(ui, from); }
+    if (s == TK_NONE) { return 0; }
+    let i: u32 = s;
+    while (i != TK_NONE) {
+        let id: u32 = tk_id(ui, i);
+        if (role == 0 || tk_role(ui, id) == role) {
+            if (name == (0 as *u8)) { return id; }
+            let n: *u8 = tk_name(ui, id);
+            if (n != (0 as *u8) && streq(n, name) != 0) { return id; }
+        }
+        i = tk_after_in(ui, i, s);
+    }
+    return 0;
+}
+
+// The tree by id, 0 for none: a node's parent, first child, next sibling.
+fn tk_ax_parent(ui: *tk_ui, id: u32) -> u32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return 0; }
+    return tk_id(ui, ui.node[i].parent);
+}
+
+fn tk_ax_first(ui: *tk_ui, id: u32) -> u32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return 0; }
+    return tk_id(ui, ui.node[i].first);
+}
+
+fn tk_ax_next(ui: *tk_ui, id: u32) -> u32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return 0; }
+    return tk_id(ui, ui.node[i].next);
+}
+
+fn tk_ax_state(ui: *tk_ui, id: u32) -> u32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE) { return 0; }
+    let n: *tk_node = &ui.node[i];
+    let s: u32 = 0;
+    if ((n.flags & TK_F_DISABLED) != 0) { s = s | TK_AX_DISABLED; }
+    if (tk_focusable(ui, i) == 1) { s = s | TK_AX_FOCUSABLE; }
+    if (ui.focus == i) { s = s | TK_AX_FOCUSED; }
+    if ((n.flags & TK_F_CHECKED) != 0) { s = s | TK_AX_CHECKED; }
+    if ((n.flags & TK_F_MIXED) != 0) { s = s | TK_AX_MIXED; }
+    if ((n.flags & TK_F_PRESSED) != 0) { s = s | TK_AX_PRESSED; }
+    if ((n.flags & TK_F_DEFAULT) != 0) { s = s | TK_AX_DEFAULT; }
+    if (tk_reachable(ui, i) == 0) { s = s | TK_AX_OFFSCREEN; }
+    let p: u32 = n.parent;
+    if (n.kind == TK_ITEM && ui.node[tk_owner(ui, i)].sel == i) { s = s | TK_AX_SELECTED; }
+    if (n.kind == TK_MENUITEM && p != TK_NONE && ui.node[p].sel == i) { s = s | TK_AX_SELECTED; }
+    if (p != TK_NONE && ui.node[p].kind == TK_TABS && tk_tab_page(ui, p, ui.node[p].value as u32) == i) { s = s | TK_AX_SELECTED; }
+    if (n.kind == TK_ITEM && (n.flags & TK_F_OPEN) != 0) { s = s | TK_AX_EXPANDED; }
+    if (n.kind == TK_MENU && tk_is_open(ui, i) == 1) { s = s | TK_AX_EXPANDED; }
+    return s;
+}
+
+// Where a node shows, device pixels, cut to the canvas and mirrored as the
+// ui is: 0 and *r, or E_INVALID_ARGS (no such node), E_NOT_FOUND (nothing
+// of it on the canvas).
+fn tk_ax_bounds(ui: *tk_ui, id: u32, r: *ds_rect) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    ds_rect_set(r, 0, 0, 0, 0);
+    if (i == TK_NONE) { return E_INVALID_ARGS; }
+    if (tk_dbox(ui, i, r) == 0) { return E_NOT_FOUND; }
+    if (ui.mirror == 1) { r.x = ui.canvas.width - r.x - r.w; }
+    return 0;
+}
+
+// Press a widget as a person would: the pointer goes down and up at the
+// middle of where it shows. 0, or E_INVALID_ARGS (no such node, one that
+// cannot be reached now, or a disabled one), E_NOT_FOUND (not on the
+// canvas). What the press did is the ui's to say (its events, its state):
+// a widget something else covers is not pressed.
+fn tk_ax_press(ui: *tk_ui, id: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || tk_reachable(ui, i) == 0 || (ui.node[i].flags & TK_F_DISABLED) != 0) { return E_INVALID_ARGS; }
+    let r: ds_rect;
+    let rc: i32 = tk_ax_bounds(ui, id, &r);
+    if (rc != 0) { return rc; }
+    let x: i32 = (r.x + r.w / 2) as i32;
+    let y: i32 = (r.y + r.h / 2) as i32;
+    let held: u32 = ui.buttons & 0xFFFFFFFE;
+    tk_pointer(ui, x, y, held | 1);
+    tk_pointer(ui, x, y, held);
+    return 0;
+}
+
+// Give it the keyboard focus, as Tab would: 0, or E_INVALID_ARGS.
+fn tk_ax_focus(ui: *tk_ui, id: u32) -> i32 { return tk_focus(ui, id); }
+
+// A press of key code with mods held, no character: 1 if the ui took it.
+fn tk_ax_key(ui: *tk_ui, code: u32, mods: u32) -> u32 { return tk_key(ui, code, 0, mods); }
+
+// The US key that types ASCII c: *code (0 for none) and *mods.
+fn tk_ax_ascii(c: u32, code: *u32, mods: *u32) -> void {
+    *mods = 0;
+    *code = 0;
+    if (c >= 97 && c <= 122) { *code = KC_A + (c - 97); }
+    else if (c >= 65 && c <= 90) { *code = KC_A + (c - 65); *mods = KEYMOD_SHIFT; }
+    else if (c >= 49 && c <= 57) { *code = KC_1 + (c - 49); }
+    else if (c == 48) { *code = KC_0; }
+    else if (c == 32) { *code = KC_SPACE; }
+    else if (c == 39) { *code = KC_QUOTE; }
+    else if (c == 34) { *code = KC_QUOTE; *mods = KEYMOD_SHIFT; }
+    else if (c == 96) { *code = KC_GRAVE; }
+    else if (c == 126) { *code = KC_GRAVE; *mods = KEYMOD_SHIFT; }
+    else if (c == 94) { *code = KC_1 + 5; *mods = KEYMOD_SHIFT; }
+    else if (c == 46) { *code = KC_PERIOD; }
+    else if (c == 44) { *code = KC_COMMA; }
+    else if (c == 45) { *code = KC_MINUS; }
+    else if (c == 47) { *code = KC_SLASH; }
+}
+
+// Type UTF-8 text, a press a character: ASCII by its US key, anything else
+// with no key code and its code point as the character (as an input
+// method's would come). The number of characters the ui took.
+fn tk_ax_type(ui: *tk_ui, s: *u8) -> u32 {
+    let n: u32 = strlen(s);
+    let at: u32 = 0;
+    let took: u32 = 0;
+    while (at < n) {
+        let cp: u32 = 0;
+        let l: u32 = tk_utf8_at(s, n, at, &cp);
+        if (l == 0) { return took; }
+        let code: u32 = 0;
+        let mods: u32 = 0;
+        if (cp < 128) { tk_ax_ascii(cp, &code, &mods); }
+        took = took + tk_key(ui, code, cp, mods);
+        at = at + l;
+    }
+    return took;
+}
+
+// ---- the inspector ----
+
+fn tk_role_word(role: u32) -> *u8 {
+    if (role == TK_ROLE_GROUP) { return "group"; }
+    if (role == TK_ROLE_TEXT) { return "text"; }
+    if (role == TK_ROLE_HEADING) { return "heading"; }
+    if (role == TK_ROLE_BUTTON) { return "button"; }
+    if (role == TK_ROLE_CHECK) { return "check"; }
+    if (role == TK_ROLE_RADIO) { return "radio"; }
+    if (role == TK_ROLE_SWITCH) { return "switch"; }
+    if (role == TK_ROLE_SLIDER) { return "slider"; }
+    if (role == TK_ROLE_PROGRESS) { return "progress"; }
+    if (role == TK_ROLE_TEXTFIELD) { return "textfield"; }
+    if (role == TK_ROLE_SCROLL) { return "scroll"; }
+    if (role == TK_ROLE_TABLIST) { return "tablist"; }
+    if (role == TK_ROLE_TABPANEL) { return "tabpanel"; }
+    if (role == TK_ROLE_DIALOG) { return "dialog"; }
+    if (role == TK_ROLE_MENUBAR) { return "menubar"; }
+    if (role == TK_ROLE_MENU) { return "menu"; }
+    if (role == TK_ROLE_MENUITEM) { return "menuitem"; }
+    if (role == TK_ROLE_SEPARATOR) { return "separator"; }
+    if (role == TK_ROLE_LIST) { return "list"; }
+    if (role == TK_ROLE_LISTITEM) { return "listitem"; }
+    if (role == TK_ROLE_TREE) { return "tree"; }
+    if (role == TK_ROLE_TREEITEM) { return "treeitem"; }
+    if (role == TK_ROLE_TABLE) { return "table"; }
+    if (role == TK_ROLE_ROW) { return "row"; }
+    if (role == TK_ROLE_HEADER) { return "header"; }
+    if (role == TK_ROLE_CELL) { return "cell"; }
+    if (role == TK_ROLE_TEXTGRID) { return "textgrid"; }
+    return "?";
+}
+
+// Text out at out[*at], kept below cap (room for the terminator): 1, or 0
+// if it did not fit (nothing of it is put).
+fn tk_ins_str(out: *u8, at: *u32, cap: u32, s: *u8) -> u32 {
+    let n: u32 = strlen(s);
+    if (*at + n + 1 > cap) { return 0; }
+    memcpy(&out[*at], s, n);
+    *at = *at + n;
+    out[*at] = 0;
+    return 1;
+}
+
+fn tk_ins_num(out: *u8, at: *u32, cap: u32, v: u32) -> u32 {
+    let d: [12]u8;
+    let k: u32 = 11;
+    d[k] = 0;
+    while (1 == 1) {
+        k = k - 1;
+        d[k] = (48 + v % 10) as u8;
+        v = v / 10;
+        if (v == 0) { break; }
+    }
+    return tk_ins_str(out, at, cap, &d[k]);
+}
+
+fn tk_ins_rect(out: *u8, at: *u32, cap: u32, r: *ds_rect) -> u32 {
+    if (tk_ins_num(out, at, cap, r.x) == 0 || tk_ins_str(out, at, cap, ",") == 0) { return 0; }
+    if (tk_ins_num(out, at, cap, r.y) == 0 || tk_ins_str(out, at, cap, " ") == 0) { return 0; }
+    if (tk_ins_num(out, at, cap, r.w) == 0 || tk_ins_str(out, at, cap, "x") == 0) { return 0; }
+    return tk_ins_num(out, at, cap, r.h);
+}
+
+// One node's line: its role, "its name", where it shows (as tk_ax_bounds,
+// "-" for nowhere) and its states, at its depth.
+fn tk_ins_line(ui: *tk_ui, i: u32, depth: u32, out: *u8, at: *u32, cap: u32) -> u32 {
+    let d: u32 = 0;
+    while (d < depth) { if (tk_ins_str(out, at, cap, "  ") == 0) { return 0; } d = d + 1; }
+    let id: u32 = tk_id(ui, i);
+    if (tk_ins_str(out, at, cap, tk_role_word(tk_role(ui, id))) == 0) { return 0; }
+    let name: *u8 = tk_name(ui, id);
+    if (name != (0 as *u8) && name[0] != 0) {
+        if (tk_ins_str(out, at, cap, " \"") == 0 || tk_ins_str(out, at, cap, name) == 0 || tk_ins_str(out, at, cap, "\"") == 0) { return 0; }
+    }
+    let r: ds_rect;
+    if (tk_ins_str(out, at, cap, " ") == 0) { return 0; }
+    if (tk_ax_bounds(ui, id, &r) == 0) { if (tk_ins_rect(out, at, cap, &r) == 0) { return 0; } }
+    else if (tk_ins_str(out, at, cap, "-") == 0) { return 0; }
+    let s: u32 = tk_ax_state(ui, id);
+    let ok: u32 = 1;
+    if ((s & TK_AX_FOCUSED) != 0) { ok = ok & tk_ins_str(out, at, cap, " focused"); }
+    if ((s & TK_AX_DISABLED) != 0) { ok = ok & tk_ins_str(out, at, cap, " disabled"); }
+    if ((s & TK_AX_CHECKED) != 0) { ok = ok & tk_ins_str(out, at, cap, " checked"); }
+    if ((s & TK_AX_MIXED) != 0) { ok = ok & tk_ins_str(out, at, cap, " mixed"); }
+    if ((s & TK_AX_PRESSED) != 0) { ok = ok & tk_ins_str(out, at, cap, " pressed"); }
+    if ((s & TK_AX_SELECTED) != 0) { ok = ok & tk_ins_str(out, at, cap, " selected"); }
+    if ((s & TK_AX_EXPANDED) != 0) { ok = ok & tk_ins_str(out, at, cap, " expanded"); }
+    if ((s & TK_AX_DEFAULT) != 0) { ok = ok & tk_ins_str(out, at, cap, " default"); }
+    if ((s & TK_AX_OFFSCREEN) != 0) { ok = ok & tk_ins_str(out, at, cap, " offscreen"); }
+    if (ok == 0) { return 0; }
+    return tk_ins_str(out, at, cap, "\n");
+}
+
+// The inspector: node id (0: the root) and everything under it as text,
+// a line a node (tk_ins_line), each child two spaces in; then a line of the
+// rectangles the last paint drew, as laid out:
+//   "damage 2: 0,0 640x28 12,40 100x36\n"
+// Into out (cap bytes, terminated): its length, or E_NO_RESOURCES if it
+// did not all fit (out then holds the whole lines that did), E_INVALID_ARGS.
+fn tk_inspect(ui: *tk_ui, id: u32, out: *u8, cap: u32) -> i32 {
+    if (cap == 0) { return E_INVALID_ARGS; }
+    out[0] = 0;
+    let s: u32 = ui.root;
+    if (id != 0) { s = tk_index(ui, id); }
+    if (s == TK_NONE) { return E_INVALID_ARGS; }
+    let at: u32 = 0;
+    let i: u32 = s;
+    while (i != TK_NONE) {
+        let depth: u32 = 0;
+        let a: u32 = i;
+        while (a != s) { depth = depth + 1; a = ui.node[a].parent; }
+        let was: u32 = at;
+        if (tk_ins_line(ui, i, depth, out, &at, cap) == 0) { out[was] = 0; return E_NO_RESOURCES; }
+        i = tk_after_in(ui, i, s);
+    }
+    let was: u32 = at;
+    // one call a statement: the order of a binary operator's operands is not X's to promise
+    let ok: u32 = tk_ins_str(out, &at, cap, "damage ");
+    if (ok == 1) { ok = tk_ins_num(out, &at, cap, ui.painted.n); }
+    if (ok == 1) { ok = tk_ins_str(out, &at, cap, ":"); }
+    let k: u32 = 0;
+    while (ok == 1 && k < ui.painted.n) {
+        ok = tk_ins_str(out, &at, cap, " ");
+        if (ok == 1) { ok = tk_ins_rect(out, &at, cap, &ui.painted.r[k]); }
+        k = k + 1;
+    }
+    if (ok == 1) { ok = tk_ins_str(out, &at, cap, "\n"); }
+    if (ok == 0) { out[was] = 0; return E_NO_RESOURCES; }
+    return at as i32;
+}
+
+// ---- the audit (CX_ACCESSIBILITY.md §2 item 2) ----
+
+const TK_AU_NAME: u32 = 1;      // a widget that must have a name has none
+const TK_AU_FOCUS: u32 = 2;     // one a pointer can use that the keyboard cannot reach
+const TK_AU_CLIP: u32 = 4;      // text wider than the room its box gives it
+const TK_AU_KEYS: u32 = 8;      // two things on one key: only the first ever runs
+
+struct tk_audit {
+    found: u32,         // TK_AU_*: every kind found
+    count: u32,         // findings, all kinds
+    name: u32,          // the first of each, by id (0: none)
+    focus: u32,
+    clip: u32,
+    keys: u32,          // the widget whose key another has first, or 0 for a command
+    cmd: u32            // TK_AU_KEYS: the command shadowed, or 0
+}
+
+fn tk_au_add(a: *tk_audit, kind: u32, id: u32) -> void {
+    if ((a.found & kind) == 0) {
+        if (kind == TK_AU_NAME) { a.name = id; }
+        if (kind == TK_AU_FOCUS) { a.focus = id; }
+        if (kind == TK_AU_CLIP) { a.clip = id; }
+        if (kind == TK_AU_KEYS) { a.keys = id; }
+    }
+    a.found = a.found | kind;
+    a.count = a.count + 1;
+}
+
+// Must node i have a name? Every widget that takes input (but a scroll
+// view: what it holds is what is read; and a tab list: its pages name its tabs), a list's or tree's item and a
+// table's cell, a menu bar's menu (its title), a tab's page (its tab).
+// A table's rows are named by their cells; a menu item with no text is a
+// separator, which has none by being one.
+fn tk_au_needs_name(ui: *tk_ui, i: u32) -> u32 {
+    let k: u32 = ui.node[i].kind;
+    let p: u32 = ui.node[i].parent;
+    if (tk_takes_input(k) == 1 && k != TK_SCROLL && k != TK_TABS) { return 1; }
+    if (p != TK_NONE && ui.node[p].kind == TK_TABS) { return 1; }
+    if (k == TK_MENU && p != TK_NONE && ui.node[p].kind == TK_MENUBAR) { return 1; }
+    if (k == TK_ITEM) {
+        let r: u32 = tk_role(ui, tk_id(ui, i));
+        if (r == TK_ROLE_LISTITEM || r == TK_ROLE_TREEITEM || r == TK_ROLE_CELL) { return 1; }
+    }
+    return 0;
+}
+
+// Can a pointer use node i now, so the keyboard must reach it? Enabled, to
+// be seen and in the scope, and a kind that takes input; a scroll view only
+// when it holds nothing enabled that takes input (else that is what the
+// keyboard reaches). Asked of the tree, not of tk_focusable, which is what
+// is being checked.
+fn tk_au_interactive(ui: *tk_ui, i: u32) -> u32 {
+    let n: *tk_node = &ui.node[i];
+    if (tk_takes_input(n.kind) == 0 || (n.flags & TK_F_DISABLED) != 0) { return 0; }
+    if (tk_reachable(ui, i) == 0) { return 0; }
+    if (n.kind == TK_SCROLL) {
+        let a: u32 = tk_after_in(ui, i, i);
+        while (a != TK_NONE) {
+            if (a != i && tk_takes_input(ui.node[a].kind) == 1 && (ui.node[a].flags & (TK_F_DISABLED | TK_F_HIDDEN)) == 0) { return 0; }
+            a = tk_after_in(ui, a, i);
+        }
+    }
+    return 1;
+}
+
+// Tab from nowhere round the scope, marking every stop in ui.ax_mark, and
+// put the focus back as it was (its damage, the reveal and a waiting
+// accent too: the audit changes nothing the ui shows).
+fn tk_au_tab_walk(ui: *tk_ui) -> void {
+    let f0: u32 = ui.focus;
+    let r0: u32 = ui.reveal;
+    let d0: ds_damage = ui.damage;
+    let dead: u32 = 0;
+    if (f0 != TK_NONE && ui.node[f0].kind == TK_TEXTFIELD) { dead = ui.field[ui.node[f0].field].dead; }
+    tk_focus_set(ui, TK_NONE);
+    let steps: u32 = 0;
+    while (steps <= ui.used) {
+        tk_focus_next(ui);
+        let f: u32 = ui.focus;
+        if (f == TK_NONE || ui.ax_mark[f] == 1) { break; }    // round to the first again
+        ui.ax_mark[f] = 1;
+        steps = steps + 1;
+    }
+    if (ui.focus != TK_NONE) { ui.node[ui.focus].flags = ui.node[ui.focus].flags & ~TK_F_FOCUS; }
+    ui.focus = f0;
+    if (f0 != TK_NONE) {
+        ui.node[f0].flags = ui.node[f0].flags | TK_F_FOCUS;
+        if (ui.node[f0].kind == TK_TEXTFIELD) { ui.field[ui.node[f0].field].dead = dead; }
+    }
+    ui.reveal = r0;
+    ui.damage = d0;
+}
+
+// The rows of w the arrows reach, Down from none chosen to the end,
+// marked; w's choice is put back.
+fn tk_au_rows_walk(ui: *tk_ui, w: u32) -> void {
+    let s0: u32 = ui.node[w].sel;
+    ui.node[w].sel = TK_NONE;
+    let steps: u32 = 0;
+    while (steps <= ui.used) {
+        let r: u32 = tk_rows_move(ui, w, 1);
+        if (r == TK_NONE || r == ui.node[w].sel) { break; }
+        ui.ax_mark[r] = 1;
+        ui.node[w].sel = r;
+        steps = steps + 1;
+    }
+    ui.node[w].sel = s0;
+}
+
+// Text in node i's own box wider than the room it gives text, logical.
+// The kinds whose text is set in their own box: labels and headings (all
+// of it), buttons (less their padding), check boxes, radios and switches
+// (less the control and its gap), a menu's items (less their padding and
+// their key's name). 1 if so.
+fn tk_au_clipped(ui: *tk_ui, i: u32) -> u32 {
+    let n: *tk_node = &ui.node[i];
+    let k: u32 = n.kind;
+    if (n.text == TK_NONE || ui.arena[n.text] == 0) { return 0; }
+    let tw: i32 = tk_text_lw(ui, i);
+    let room: i32 = 0;
+    if (k == TK_LABEL || k == TK_HEADING) { room = n.w; }
+    else if (k == TK_BUTTON) { room = n.w - 2 * TK_BTN_PADX - 2 * TK_RING; }
+    else if (k == TK_CHECK || k == TK_RADIO) { room = n.w - 2 * TK_RING - TK_BOX - TK_TEXT_GAP; }
+    else if (k == TK_SWITCH) { room = n.w - 2 * TK_RING - TK_SW_W - TK_TEXT_GAP; }
+    else if (k == TK_MENUITEM) {
+        let key: [32]u8;
+        room = n.w - 2 * TK_ROW_PADX;
+        if (tk_item_key(ui, i, &key[0]) > 0) { room = room - TK_KEY_GAP - tk_str_lw(ui, &key[0]); }
+    }
+    else { return 0; }
+    if (tw > room) { return 1; }
+    return 0;
+}
+
+// Audit the ui as it is now (a page turned, a menu or a dialog open: the
+// caller visits each): *a, and its count of findings.
+//   TK_AU_NAME  over the whole tree, seen or not;
+//   TK_AU_FOCUS every widget tk_au_interactive says a pointer can use must
+//               be a stop of Tab round the scope; every row a list, tree or
+//               table can choose, a stop of Down; with a menu open, every
+//               item it can light, a stop of Down there; every menu a bar
+//               can open, a stop of Right along it;
+//   TK_AU_CLIP  every text to be seen, in the room its box gives it;
+//   TK_AU_KEYS  no two commands on one key (tk_bind refuses it; this sees
+//               it if that ever fails), no Alt command whose letter a
+//               mnemonic takes first (mnemonics come before commands), no
+//               two mnemonics that would act on one letter (the first in the
+//               tree always wins), in an open menu among its items.
+// Nothing the ui shows is changed (tk_au_tab_walk).
+fn tk_audit_run(ui: *tk_ui, a: *tk_audit) -> u32 {
+    memzero(a as *u8, sizeof *a);
+    memzero(&ui.ax_mark[0], TK_NODES_MAX);
+    let i: u32 = 0;
+    while (i < ui.used) {
+        if ((ui.node[i].flags & TK_F_USED) != 0 && tk_au_needs_name(ui, i) == 1) {
+            let s: *u8 = tk_text_of(ui, i);
+            if (s == (0 as *u8) || s[0] == 0) { tk_au_add(a, TK_AU_NAME, tk_id(ui, i)); }
+        }
+        i = i + 1;
+    }
+    let menu: u32 = TK_NONE;
+    if (ui.pop_n > 0 && ui.node[ui.pop[ui.pop_n - 1]].kind == TK_MENU) { menu = ui.pop[ui.pop_n - 1]; }
+    // the walks: Tab (no menu open: Tab is the menu's own then), Down, Right
+    if (menu == TK_NONE) { tk_au_tab_walk(ui); }
+    i = 0;
+    while (i < ui.used) {
+        let n: *tk_node = &ui.node[i];
+        if ((n.flags & TK_F_USED) != 0 && (n.kind == TK_LIST || n.kind == TK_TREE || n.kind == TK_TABLE) && tk_au_interactive(ui, i) == 1) { tk_au_rows_walk(ui, i); }
+        if ((n.flags & TK_F_USED) != 0 && n.kind == TK_MENUBAR && tk_reachable(ui, i) == 1) {
+            let m: u32 = tk_bar_step(ui, i, TK_NONE, 0);
+            let steps: u32 = 0;
+            while (m != TK_NONE && ui.ax_mark[m] == 0 && steps <= ui.used) { ui.ax_mark[m] = 1; m = tk_bar_step(ui, i, m, 0); steps = steps + 1; }
+        }
+        i = i + 1;
+    }
+    if (menu != TK_NONE) {
+        let it: u32 = tk_menu_step(ui, menu, TK_NONE, 0);
+        let steps: u32 = 0;
+        while (it != TK_NONE && ui.ax_mark[it] == 0 && steps <= ui.used) { ui.ax_mark[it] = 1; it = tk_menu_step(ui, menu, it, 0); steps = steps + 1; }
+    }
+    i = 0;
+    while (i < ui.used) {
+        let n: *tk_node = &ui.node[i];
+        if ((n.flags & TK_F_USED) != 0 && ui.ax_mark[i] == 0) {
+            let miss: u32 = 0;
+            if (menu == TK_NONE && tk_au_interactive(ui, i) == 1) { miss = 1; }
+            if (n.kind == TK_ITEM && tk_reachable(ui, i) == 1) {
+                let w: u32 = tk_owner(ui, i);
+                let row: u32 = 0;
+                let r: u32 = tk_rows_first(ui, w);
+                while (r != TK_NONE) { if (r == i) { row = 1; } r = tk_rows_next(ui, w, r); }
+                if (row == 1 && tk_au_interactive(ui, w) == 1 && (n.flags & TK_F_DISABLED) == 0 && (ui.node[w].kind != TK_TABLE || tk_rows_first(ui, w) != i)) { miss = 1; }
+            }
+            if (n.kind == TK_MENU && n.parent != TK_NONE && ui.node[n.parent].kind == TK_MENUBAR && tk_reachable(ui, n.parent) == 1 && (n.flags & (TK_F_DISABLED | TK_F_HIDDEN)) == 0) { miss = 1; }
+            if (menu != TK_NONE && n.parent == menu && n.kind == TK_MENUITEM && n.text != TK_NONE && (n.flags & (TK_F_DISABLED | TK_F_HIDDEN)) == 0) { miss = 1; }
+            if (miss == 1) { tk_au_add(a, TK_AU_FOCUS, tk_id(ui, i)); }
+        }
+        if ((n.flags & TK_F_USED) != 0 && tk_is_row(n.kind) == 0 && tk_reachable(ui, i) == 1 && tk_au_clipped(ui, i) == 1) { tk_au_add(a, TK_AU_CLIP, tk_id(ui, i)); }
+        if ((n.flags & TK_F_USED) != 0 && n.kind == TK_MENUITEM && n.parent == menu && menu != TK_NONE && tk_au_clipped(ui, i) == 1) { tk_au_add(a, TK_AU_CLIP, tk_id(ui, i)); }
+        i = i + 1;
+    }
+    // keys: the command table, then each letter
+    let c: u32 = 0;
+    while (c < ui.cmd_n) {
+        let d: u32 = c + 1;
+        while (d < ui.cmd_n) {
+            if (ui.cmd[c].key != 0 && ui.cmd[d].key == ui.cmd[c].key && ui.cmd[d].mods == ui.cmd[c].mods) {
+                if ((a.found & TK_AU_KEYS) == 0) { a.cmd = d + 1; }
+                tk_au_add(a, TK_AU_KEYS, 0);
+            }
+            d = d + 1;
+        }
+        c = c + 1;
+    }
+    let letter: u32 = 97;
+    while (letter <= 122) {
+        let first: u32 = TK_NONE;
+        i = 0;
+        while (i < ui.used) {
+            let acts: u32 = 0;
+            if ((ui.node[i].flags & TK_F_USED) != 0 && tk_mn_letter(ui, i) == letter) {
+                if (menu == TK_NONE) { acts = tk_mn_acts(ui, i); }
+                else if (ui.node[i].parent == menu && tk_menu_can(ui, i) == 1) { acts = 1; }
+            }
+            if (acts == 1) {
+                if (first == TK_NONE) { first = i; } else { tk_au_add(a, TK_AU_KEYS, tk_id(ui, i)); }
+            }
+            i = i + 1;
+        }
+        if (first != TK_NONE && menu == TK_NONE) {
+            let cmd: u32 = tk_command_for(ui, KC_A + (letter - 97), KEYMOD_ALT);
+            if (cmd != 0) {
+                if ((a.found & TK_AU_KEYS) == 0) { a.cmd = cmd; }
+                tk_au_add(a, TK_AU_KEYS, 0);
+            }
+        }
+        letter = letter + 1;
+    }
+    return a.count;
+}

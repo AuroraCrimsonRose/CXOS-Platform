@@ -28,6 +28,7 @@ import "toolkit_tests.xfxn";
 import "gallery_pages.xfxn";
 import "locale_tests.xfxn";
 import "picture_tests.xfxn";
+import "ai_tests.xfxn";
 
 const MS: u64 = 1000000;
 
@@ -3537,6 +3538,11 @@ fn all() -> void {
     test_run("toolkit: bidi text, mirrored, mnemonics drawn", lt_bidi_text,        30000);
     test_run("toolkit: mnemonics",                     lt_mnemonic,                30000);
     test_run("toolkit: the pseudo-locale, mirrored",   lt_pseudo,                  120000);
+    test_run("toolkit: the automation API",            ai_api,                     30000);
+    test_run("toolkit: the audit sees what is planted", ai_audits,                 30000);
+    test_run("toolkit: the inspector",                 ai_inspector,               30000);
+    test_run("toolkit: contrast and its tokens",       ai_contrast,                30000);
+    test_run("gallery: audited at every scale and locale", ai_gallery,             300000);
     test_run("gallery: the window holds what was drawn", gx_gallery,                300000);
     test_run("gallery: in the pseudo-locale",          gx_gallery_qps,             300000);
 }

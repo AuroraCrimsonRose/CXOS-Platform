@@ -1,0 +1,410 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/ai_tests.xfxn - the automation API, the inspector, the audit and
+// high contrast, with no window (roadmap 2.8a5, CX_TOOLKIT.md §11).
+// Aurora Tejeda / CATX Systems
+//
+// Imported by xtest.xfxn. Codes 7000-7399 (the API, the audit, the
+// inspector, contrast) and 7500-7899 (the gallery's boot check).
+
+import "toolkit_ax.xfxn";
+import "locale_tests.xfxn";
+
+global ai_out: [4096]u8;
+global ai_want: [128]u8;
+global ai_au: tk_audit;
+
+// Does s hold needle? 1 if so.
+fn ai_has(s: *u8, needle: *u8) -> u32 {
+    let n: u32 = strlen(needle);
+    let m: u32 = strlen(s);
+    let k: u32 = 0;
+    while (k + n <= m) {
+        if (strneq(&s[k], needle, n) != 0) { return 1; }
+        k += 1;
+    }
+    return 0;
+}
+
+// Lines in s.
+fn ai_lines(s: *u8) -> u32 {
+    let k: u32 = 0;
+    let n: u32 = 0;
+    while (s[k] != 0) { if (s[k] == 10) { n += 1; } k += 1; }
+    return n;
+}
+
+// ai_want = " x,y wxh" of r, written here, not by the inspector's code.
+fn ai_put(at: *u32, v: u32) -> void {
+    let d: [12]u8;
+    let k: u32 = 0;
+    while (1 == 1) { d[k] = (48 + v % 10) as u8; v = v / 10; k += 1; if (v == 0) { break; } }
+    while (k > 0) { k -= 1; ai_want[*at] = d[k]; *at = *at + 1; }
+}
+
+fn ai_rect_text(r: *ds_rect) -> void {
+    let at: u32 = 0;
+    ai_want[at] = 32; at += 1;
+    ai_put(&at, r.x); ai_want[at] = 44; at += 1;
+    ai_put(&at, r.y); ai_want[at] = 32; at += 1;
+    ai_put(&at, r.w); ai_want[at] = 120; at += 1;
+    ai_put(&at, r.h);
+    ai_want[at] = 0;
+}
+
+fn ai_drain() -> u32 {
+    let ev: tk_event;
+    let n: u32 = 0;
+    while (tk_next(&tt_ui, &ev) == 1) { n += 1; }
+    return n;
+}
+
+// 7000: the automation API. Found by role and name, walked, its states
+// read; a press goes in as a pointer (mirrored too) and only to what can be
+// reached; typing is key presses; bounds are where it shows.
+fn ai_api(arg: u64) -> i32 {
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    let root: u32 = tk_root(&tt_ui);
+    tk_add(&tt_ui, root, TK_LABEL, "Name");
+    let field: u32 = tk_add(&tt_ui, root, TK_TEXTFIELD, "Name");
+    let chk: u32 = tk_add(&tt_ui, root, TK_CHECK, "Agree");
+    let ok: u32 = tk_add(&tt_ui, root, TK_BUTTON, "OK");
+    tk_set_flags(&tt_ui, ok, TK_F_DEFAULT, 0);
+    let list: u32 = tk_add(&tt_ui, root, TK_LIST, "Fruit");
+    let apple: u32 = tk_add(&tt_ui, list, TK_ITEM, "Apple");
+    let pear: u32 = tk_add(&tt_ui, list, TK_ITEM, "Pear");
+    tk_set_flags(&tt_ui, pear, TK_F_DISABLED, 0);
+    let plum: u32 = tk_add(&tt_ui, list, TK_ITEM, "Plum");
+    if (plum == 0 || tt_show(4) != 0) { return 7000; }
+    // found: role and name, either alone, and only under where it looks
+    if (tk_ax_find(&tt_ui, 0, TK_ROLE_BUTTON, "OK") != ok) { return 7001; }
+    if (tk_ax_find(&tt_ui, 0, 0, "Agree") != chk) { return 7002; }
+    if (tk_ax_find(&tt_ui, 0, TK_ROLE_CHECK, "OK") != 0) { return 7003; }
+    if (tk_ax_find(&tt_ui, 0, TK_ROLE_TEXTFIELD, "Name") != field) { return 7004; }
+    if (tk_ax_find(&tt_ui, list, TK_ROLE_LISTITEM, "Plum") != plum) { return 7005; }
+    if (tk_ax_find(&tt_ui, list, 0, "OK") != 0) { return 7006; }
+    if (tk_ax_find(&tt_ui, 0, TK_ROLE_LIST, 0 as *u8) != list) { return 7007; }
+    // walked
+    if (tk_ax_parent(&tt_ui, chk) != root || tk_ax_first(&tt_ui, list) != apple) { return 7008; }
+    if (tk_ax_next(&tt_ui, apple) != pear || tk_ax_next(&tt_ui, plum) != 0 || tk_ax_parent(&tt_ui, root) != 0) { return 7009; }
+    // states
+    let s: u32 = tk_ax_state(&tt_ui, ok);
+    if ((s & (TK_AX_DEFAULT | TK_AX_FOCUSABLE)) != (TK_AX_DEFAULT | TK_AX_FOCUSABLE) || (s & (TK_AX_CHECKED | TK_AX_OFFSCREEN | TK_AX_FOCUSED)) != 0) { return 7010; }
+    if ((tk_ax_state(&tt_ui, pear) & TK_AX_DISABLED) == 0) { return 7011; }
+    // a press is the pointer's, and changes what a person's would
+    if (tk_ax_press(&tt_ui, chk) != 0 || (tk_ax_state(&tt_ui, chk) & TK_AX_CHECKED) == 0) { return 7012; }
+    let ev: tk_event;
+    if (tk_next(&tt_ui, &ev) != 1 || ev.kind != TK_EV_CHANGE || ev.id != chk) { return 7013; }
+    ai_drain();
+    if (tk_ax_press(&tt_ui, pear) != E_INVALID_ARGS) { return 7014; }       // disabled
+    if (tk_ax_press(&tt_ui, plum) != 0 || (tk_ax_state(&tt_ui, plum) & TK_AX_SELECTED) == 0) { return 7015; }
+    if (tk_selected(&tt_ui, list) != plum) { return 7016; }
+    ai_drain();
+    // bounds: where it shows; mirrored, mirrored
+    let b: ds_rect;
+    let r: ds_rect;
+    tk_box_of(&tt_ui, ok, &b);
+    if (tk_ax_bounds(&tt_ui, ok, &r) != 0 || r.x != b.x || r.y != b.y || r.w != b.w || r.h != b.h) { return 7017; }
+    tk_set_mirror(&tt_ui, 1);
+    tt_show(4);
+    tk_box_of(&tt_ui, ok, &b);
+    if (tk_ax_bounds(&tt_ui, ok, &r) != 0 || r.x != tt_ui.canvas.width - b.x - b.w || r.y != b.y) { return 7018; }
+    if (tk_ax_press(&tt_ui, chk) != 0 || (tk_ax_state(&tt_ui, chk) & TK_AX_CHECKED) != 0) { return 7019; }
+    tk_set_mirror(&tt_ui, 0);
+    tt_show(4);
+    ai_drain();
+    // under an open dialog, nothing is reached
+    let dlg: u32 = tk_dialog(&tt_ui, "Sure?", "Go on?", TK_DLG_OK);
+    if (dlg == 0 || tk_dialog_open(&tt_ui, dlg) != 0) { return 7020; }
+    tt_show(4);
+    if ((tk_ax_state(&tt_ui, chk) & TK_AX_OFFSCREEN) == 0 || tk_ax_press(&tt_ui, chk) != E_INVALID_ARGS) { return 7021; }
+    let dok: u32 = tk_ax_find(&tt_ui, dlg, TK_ROLE_BUTTON, 0 as *u8);
+    if (dok == 0 || tk_ax_press(&tt_ui, dok) != 0 || tk_open_top(&tt_ui) != 0) { return 7022; }
+    tt_show(4);
+    ai_drain();
+    // typing is presses: ASCII by its keys, the rest by its character
+    if (tk_ax_focus(&tt_ui, field) != 0 || (tk_ax_state(&tt_ui, field) & TK_AX_FOCUSED) == 0) { return 7023; }
+    if (tk_ax_type(&tt_ui, "Hi, x-1/2.") != 10) { return 7024; }
+    if (streq(tk_field_text(&tt_ui, field), "Hi, x-1/2.") == 0) { return 7025; }
+    let e: [3]u8;
+    e[0] = 0xC3; e[1] = 0xA9; e[2] = 0;                         // U+00E9
+    tk_ax_type(&tt_ui, &e[0]);
+    let t: *u8 = tk_field_text(&tt_ui, field);
+    if (strlen(t) != 12 || t[10] != 0xC3 || t[11] != 0xA9) { return 7026; }
+    // a key: Tab goes on to the check box
+    if (tk_ax_key(&tt_ui, KC_TAB, 0) != 1 || tk_focused(&tt_ui) != chk) { return 7027; }
+    if (tk_ax_bounds(&tt_ui, 0, &r) != E_INVALID_ARGS || tk_ax_state(&tt_ui, 0) != 0) { return 7028; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// The audit of tt_ui as it is: its count, into ai_au.
+fn ai_audit() -> u32 { return tk_audit_run(&tt_ui, &ai_au); }
+
+// 7100: the audit sees each kind it is planted with, names the widget,
+// and sees nothing in a ui with none; it changes nothing the ui shows.
+fn ai_audits(arg: u64) -> i32 {
+    if (lt_tables() != 0) { return 7100; }
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    let root: u32 = tk_root(&tt_ui);
+    let ok: u32 = tk_add(&tt_ui, root, TK_BUTTON, "OK");
+    let list: u32 = tk_add(&tt_ui, root, TK_LIST, "Fruit");
+    tk_add(&tt_ui, list, TK_ITEM, "Apple");
+    let pear: u32 = tk_add(&tt_ui, list, TK_ITEM, "Pear");
+    let table: u32 = tk_add(&tt_ui, root, TK_TABLE, "Files");
+    let h: u32 = tk_add(&tt_ui, table, TK_ITEM, 0 as *u8);      // a header row: named by its cells
+    tk_add(&tt_ui, h, TK_ITEM, "Name");
+    let row: u32 = tk_add(&tt_ui, table, TK_ITEM, 0 as *u8);
+    if (tk_add(&tt_ui, row, TK_ITEM, "a.txt") == 0 || tt_show(4) != 0) { return 7101; }
+    tk_focus(&tt_ui, ok);
+    tt_show(4);
+    // none, and nothing changed: the focus, its flag, no damage
+    if (ai_audit() != 0 || ai_au.found != 0) { return 7102; }
+    if (tk_focused(&tt_ui) != ok || (tk_flags(&tt_ui, ok) & TK_F_FOCUS) == 0 || tt_ui.damage.n != 0) { return 7103; }
+    if (tk_selected(&tt_ui, list) != 0) { return 7104; }
+    // no name: a button, a list's item; each found, the first named
+    let nameless: u32 = tk_add(&tt_ui, root, TK_BUTTON, 0 as *u8);
+    tk_add(&tt_ui, list, TK_ITEM, 0 as *u8);
+    tt_show(4);
+    if (ai_audit() != 2 || ai_au.found != TK_AU_NAME || ai_au.name != nameless) { return 7105; }
+    tk_free(&tt_ui);
+
+    // clipped: a label and a button stretched across a canvas narrower than they ask
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    root = tk_root(&tt_ui);
+    let lab: u32 = tk_add(&tt_ui, root, TK_LABEL, "A label much wider than its box");
+    let btn: u32 = tk_add(&tt_ui, root, TK_BUTTON, "A button much wider than its box");
+    if (btn == 0) { return 7106; }
+    tk_set_flags(&tt_ui, lab, TK_F_FILL, 0);                   // stretched to the column, so cut with it
+    tk_set_flags(&tt_ui, btn, TK_F_FILL, 0);
+    tt_show(4);
+    if (ai_audit() != 0) { return 7107; }                       // room for both
+    if (tk_size(&tt_ui, 120, tt_ui.canvas.height) != 0) { return 7108; }
+    let d: ds_damage;
+    tk_paint(&tt_ui, &d);
+    if (ai_audit() != 2 || ai_au.found != TK_AU_CLIP || ai_au.clip != lab) { return 7109; }
+    tk_free(&tt_ui);
+
+    // keys: two mnemonics on one letter (both would act); one turned off is
+    // no clash; an Alt command a mnemonic takes first; two commands on one
+    // key, planted past tk_bind's refusal
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    if (tk_set_locale(&tt_ui, &lt_en, &lt_en) != 0) { return 7110; }
+    root = tk_root(&tt_ui);
+    let d1: u32 = tk_add_key(&tt_ui, root, TK_BUTTON, "gallery-open-a-dialog");     // Open a &dialog
+    let d2: u32 = tk_add_key(&tt_ui, root, TK_BUTTON, "gallery-open-a-dialog");
+    if (d2 == 0) { return 7111; }
+    tt_show(4);
+    if (ai_audit() != 1 || ai_au.found != TK_AU_KEYS || ai_au.keys != d2 || ai_au.cmd != 0) { return 7112; }
+    tk_set_flags(&tt_ui, d2, TK_F_DISABLED, 0);
+    if (ai_audit() != 0) { return 7113; }
+    let go: i32 = tk_command(&tt_ui, "go", KC_D, KEYMOD_ALT);
+    if (go <= 0) { return 7114; }
+    if (ai_audit() != 1 || ai_au.found != TK_AU_KEYS || ai_au.cmd != (go as u32) || ai_au.keys != 0) { return 7115; }
+    tk_bind(&tt_ui, go as u32, KC_G, KEYMOD_CTRL);
+    if (ai_audit() != 0) { return 7116; }
+    let two: i32 = tk_command(&tt_ui, "two", KC_J, KEYMOD_CTRL);
+    if (two <= 0 || tk_bind(&tt_ui, two as u32, KC_G, KEYMOD_CTRL) != E_ALREADY_EXISTS) { return 7117; }
+    tt_ui.cmd[(two as u32) - 1].key = KC_G;
+    if (ai_audit() != 1 || ai_au.found != TK_AU_KEYS || ai_au.cmd != (two as u32)) { return 7118; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 7200: the inspector. A line a node at its depth: its role, its name,
+// where it shows (as tk_ax_bounds), its states; then the damage last
+// painted. Cut short, it keeps whole lines and says so. Its overlay
+// outlines every widget, the focus in the ring's colour.
+fn ai_inspector(arg: u64) -> i32 {
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    let root: u32 = tk_root(&tt_ui);
+    tk_add(&tt_ui, root, TK_HEADING, "Title");
+    let col: u32 = tk_add(&tt_ui, root, TK_COLUMN, 0 as *u8);
+    let ok: u32 = tk_add(&tt_ui, col, TK_BUTTON, "OK");
+    let on: u32 = tk_add(&tt_ui, col, TK_CHECK, "On");
+    tk_set_flags(&tt_ui, on, TK_F_CHECKED, 0);
+    let off: u32 = tk_add(&tt_ui, col, TK_BUTTON, "Off");
+    tk_set_flags(&tt_ui, off, TK_F_DISABLED, 0);
+    if (off == 0 || tt_show(4) != 0) { return 7200; }
+    tk_focus(&tt_ui, ok);
+    let dd: ds_damage;
+    tk_paint(&tt_ui, &dd);
+    let n: i32 = tk_inspect(&tt_ui, 0, &ai_out[0], 4096);
+    if (n <= 0 || (n as u32) != strlen(&ai_out[0])) { return 7201; }
+    if (ai_lines(&ai_out[0]) != 7) { return 7202; }                // six nodes and the damage
+    if (strneq(&ai_out[0], "group ", 6) == 0) { return 7203; }
+    if (ai_has(&ai_out[0], "\n  heading \"Title\" ") == 0) { return 7204; }
+    if (ai_has(&ai_out[0], "\n  group ") == 0) { return 7205; }
+    let r: ds_rect;
+    tk_ax_bounds(&tt_ui, ok, &r);
+    ai_rect_text(&r);
+    if (ai_has(&ai_out[0], "\n    button \"OK\"") == 0 || ai_has(&ai_out[0], &ai_want[0]) == 0) { return 7206; }
+    if (ai_has(&ai_out[0], " focused\n    check \"On\"") == 0) { return 7207; }
+    if (ai_has(&ai_out[0], "check \"On\"") == 0 || ai_has(&ai_out[0], " checked\n    button \"Off\"") == 0) { return 7208; }
+    if (ai_has(&ai_out[0], "button \"Off\"") == 0 || ai_has(&ai_out[0], " disabled\ndamage ") == 0) { return 7209; }
+    // the damage: what that paint drew, the old focus-less button and the new
+    if (tt_ui.painted.n == 0) { return 7210; }
+    ai_rect_text(&tt_ui.painted.r[0]);
+    if (ai_has(&ai_out[0], &ai_want[0]) == 0) { return 7211; }
+    // one node: its line alone, at depth 0, and the damage
+    n = tk_inspect(&tt_ui, on, &ai_out[0], 4096);
+    if (n <= 0 || ai_lines(&ai_out[0]) != 2 || strneq(&ai_out[0], "check \"On\" ", 11) == 0) { return 7212; }
+    // too small: whole lines, and refused
+    let all: i32 = tk_inspect(&tt_ui, 0, &ai_out[0], 4096);
+    if (tk_inspect(&tt_ui, 0, &ai_out[0], (all as u32) - 3) != E_NO_RESOURCES) { return 7213; }
+    let k: u32 = strlen(&ai_out[0]);
+    if (k == 0 || ai_out[k - 1] != 10 || ai_lines(&ai_out[0]) != 6) { return 7214; }
+    if (tk_inspect(&tt_ui, 0, &ai_out[0], 0) != E_INVALID_ARGS) { return 7215; }
+    // the overlay: a box's corner is its outline's colour, the focus's the ring's
+    let ob: ds_rect;
+    tk_box_of(&tt_ui, off, &ob);
+    let fb: ds_rect;
+    tk_box_of(&tt_ui, ok, &fb);
+    if (ds_pixel(&tt_ui.canvas, ob.x, ob.y) != tt_ui.theme.surface) { return 7216; }
+    tk_set_inspect(&tt_ui, 1);
+    tk_paint(&tt_ui, &dd);
+    if (ds_pixel(&tt_ui.canvas, ob.x, ob.y) != tt_ui.theme.muted) { return 7217; }
+    if (ds_pixel(&tt_ui.canvas, ob.x + ob.w - 1, ob.y + ob.h - 1) != tt_ui.theme.muted) { return 7218; }
+    if (ds_pixel(&tt_ui.canvas, fb.x, fb.y) != tt_ui.theme.ring) { return 7219; }
+    tk_set_inspect(&tt_ui, 0);
+    tk_paint(&tt_ui, &dd);
+    if (ds_pixel(&tt_ui.canvas, ob.x, ob.y) != tt_ui.theme.surface) { return 7220; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// a against b at least min (x 100): 1 if so.
+fn ai_ratio(a: u32, b: u32, min: u32) -> u32 {
+    if (tk_contrast(a, b) >= min) { return 1; }
+    return 0;
+}
+
+// 7300: contrast. WCAG's ratio, against known values; every token set held
+// to its bounds (high contrast to AAA, light and dark to AA for text); the
+// set on the canvas, winning over dark while on.
+fn ai_contrast(arg: u64) -> i32 {
+    if (tk_contrast(0xFF000000, 0xFFFFFFFF) != 2100 || tk_contrast(0xFFFFFFFF, 0xFF000000) != 2100) { return 7300; }
+    if (tk_contrast(0xFF767676, 0xFFFFFFFF) != 454 || tk_contrast(0xFF777777, 0xFFFFFFFF) != 447) { return 7301; }
+    if (tk_contrast(0xFF2F6FDB, 0xFF2F6FDB) != 100) { return 7302; }
+    let t: tk_theme;
+    let d: u32 = 0;
+    while (d < 2) {
+        tk_theme_set(&t, d, 0);
+        let base: i32 = 7303 + 4 * (d as i32);
+        if (ai_ratio(t.text, t.surface, 450) == 0 || ai_ratio(t.text, t.raised, 450) == 0) { return base; }
+        if (ai_ratio(t.muted, t.surface, 450) == 0 || ai_ratio(t.muted, t.raised, 450) == 0) { return base + 1; }
+        if (ai_ratio(t.on_accent, t.accent, 450) == 0) { return base + 2; }
+        if (ai_ratio(t.ring, t.surface, 300) == 0) { return base + 3; }
+        d += 1;
+    }
+    tk_theme_set(&t, 1, 1);
+    if (ai_ratio(t.text, t.surface, 700) == 0 || ai_ratio(t.text, t.raised, 700) == 0) { return 7311; }
+    if (ai_ratio(t.text, t.hover, 700) == 0 || ai_ratio(t.text, t.pressed, 700) == 0) { return 7312; }
+    if (ai_ratio(t.muted, t.surface, 700) == 0 || ai_ratio(t.muted, t.raised, 700) == 0) { return 7313; }
+    if (ai_ratio(t.on_accent, t.accent, 700) == 0) { return 7314; }
+    if (ai_ratio(t.off_text, t.surface, 450) == 0 || ai_ratio(t.off_text, t.off_bg, 450) == 0) { return 7315; }
+    if (ai_ratio(t.accent, t.surface, 300) == 0 || ai_ratio(t.ring, t.surface, 300) == 0) { return 7316; }
+    if (ai_ratio(t.border, t.surface, 300) == 0 || ai_ratio(t.track, t.surface, 300) == 0) { return 7317; }
+    if (ai_ratio(t.accent, t.track, 300) == 0) { return 7318; }
+    // on the canvas: on, kept through dark, off again to dark
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    tk_add(&tt_ui, tk_root(&tt_ui), TK_BUTTON, "OK");
+    if (tt_show(4) != 0) { return 7319; }
+    let dd: ds_damage;
+    tk_set_contrast(&tt_ui, 1);
+    if (tk_paint(&tt_ui, &dd) == 0 || ds_pixel(&tt_ui.canvas, 0, 0) != 0xFF000000 || tt_ui.theme.text != 0xFFFFFFFF) { return 7320; }
+    tk_set_dark(&tt_ui, 1);
+    tk_paint(&tt_ui, &dd);
+    if (ds_pixel(&tt_ui.canvas, 0, 0) != 0xFF000000 || tt_ui.theme.accent != 0xFFFFD60A) { return 7321; }
+    tk_set_contrast(&tt_ui, 0);
+    tk_paint(&tt_ui, &dd);
+    let dark: tk_theme;
+    tk_theme_set(&dark, 1, 0);
+    if (ds_pixel(&tt_ui.canvas, 0, 0) != dark.surface) { return 7322; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// The audit of the gallery as it is now: 0, or a code 1-4 for the first
+// kind found (no name, focus, clipped, keys).
+fn ai_gallery_view() -> u32 {
+    tt_place(tt_ui.scale);
+    if (ai_audit() == 0) { return 0; }
+    if ((ai_au.found & TK_AU_NAME) != 0) { return 1; }
+    if ((ai_au.found & TK_AU_FOCUS) != 0) { return 2; }
+    if ((ai_au.found & TK_AU_CLIP) != 0) { return 3; }
+    return 4;
+}
+
+// The gallery in one locale at one scale: every view audited, each page,
+// the dialog open, each menu of the bar open, the context menu open.
+// 0, or 10 x the view + the kind (ai_gallery_view).
+fn ai_gallery_at(loc: *lc_table, q: u32) -> u32 {
+    // no font: text is measured as 8x16, the v1 font's cell, and not drawn,
+    // and each view is laid out, not painted (painting it all, under
+    // -icount, took the run past its deadline)
+    tk_init(&tt_ui, q, 0 as *ds_font);
+    if (tk_set_locale(&tt_ui, loc, &lt_en) != 0 || gp_build(&tt_ui) != 0 || tt_place(q) != 0) { return 9; }
+    // pages are turned by the tab list itself: Ctrl+Tab turns the one the
+    // focus is in, and nothing has the focus yet, so it would turn none and
+    // page 0 would be audited three times. 5: the page asked for not shown.
+    let tabs: u32 = tt_ui.node[lt_keyed("gallery-controls")].parent;
+    let v: u32 = 0;
+    while (v < 3) {
+        tk_tabs_pick(&tt_ui, tabs, v, 1);
+        if ((tt_ui.node[tabs].value as u32) != v || tk_reachable(&tt_ui, tk_tab_page(&tt_ui, tabs, v)) == 0) { return 10 * v + 5; }
+        let k: u32 = ai_gallery_view();
+        if (k != 0) { return 10 * v + k; }
+        if (v == 2) {
+            // the dialog, on the page with its button
+            tk_dialog_open(&tt_ui, gp_dlg);
+            k = ai_gallery_view();
+            if (k != 0) { return 30 + k; }
+            tt_press(KC_ESC, 0);
+        }
+        v += 1;
+    }
+    let m: u32 = lt_keyed("gallery-file");
+    v = 4;
+    while (m != TK_NONE) {
+        if (tt_ui.node[m].kind == TK_MENU) {
+            tk_bar_open(&tt_ui, tt_ui.node[m].parent, m, 1);
+            let k: u32 = ai_gallery_view();
+            if (k != 0) { return 10 * v + k; }
+            tt_press(KC_ESC, 0);
+            v += 1;
+        }
+        m = tt_ui.node[m].next;
+    }
+    if (v != 7) { return 8; }
+    // the context menu, on the second page
+    tk_tabs_pick(&tt_ui, tabs, 1, 1);
+    if ((tt_ui.node[tabs].value as u32) != 1) { return 75; }
+    tt_place(q);
+    let ctx: u32 = tt_ui.node[lt_keyed("gallery-rename")].parent;
+    if (tk_popup(&tt_ui, tk_id(&tt_ui, ctx), 10, 10) != 0) { return 7; }
+    let k: u32 = ai_gallery_view();
+    if (k != 0) { return 70 + k; }
+    tt_press(KC_ESC, 0);
+    ai_drain();
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 7500: the gallery's boot check (CX_ACCESSIBILITY.md §2 item 2): in
+// English at 100, 150 and 200 % and in the pseudo-locale (longer, and
+// mirrored), every view of it audits clean: nothing interactive without a
+// name, nothing a pointer can use that the keyboard cannot reach, no text
+// clipped, no two things on one key. 7500 + 100 x the run + the view's code.
+fn ai_gallery(arg: u64) -> i32 {
+    if (lt_tables() != 0) { return 7500; }
+    let rc: u32 = ai_gallery_at(&lt_en, 4);
+    if (rc != 0) { return 7500 + (rc as i32); }
+    rc = ai_gallery_at(&lt_en, 6);
+    if (rc != 0) { return 7600 + (rc as i32); }
+    rc = ai_gallery_at(&lt_en, 8);
+    if (rc != 0) { return 7700 + (rc as i32); }
+    rc = ai_gallery_at(&lt_qps, 4);
+    if (rc != 0) { return 7800 + (rc as i32); }
+    return 0;
+}

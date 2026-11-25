@@ -1492,6 +1492,18 @@ language work in `language/CX_X_PLAN.md`.
      pointer, text set in visual order, a text grid never mirrored. The
      gallery's every text is keyed, and it runs in the pseudo-locale `qps`
      through the server. Not yet seen on the FX rig.
+     **2.8a5 done 2026-11-25** (`system/CX_TOOLKIT.md` §11): the
+     automation API over the tree (`std/toolkit_ax.xfxn`: found by role and
+     name, states, bounds; a press is the pointer's, typing is key presses,
+     so what a test cannot reach a person cannot); the inspector (the tree
+     as text with bounds, states and the last damage; an overlay of every
+     box, the gallery's Ctrl+Shift+I); the audit (no name, out of the
+     keyboard's reach by walking Tab, Down and Right, clipped text, two
+     things on one key), run on every view of the gallery at three scales
+     and in the pseudo-locale as a boot test; high contrast as a third token
+     set held to WCAG 2.2's ratios computed in X (the gallery's
+     Ctrl+Shift+H). Found: light and dark's border and track are under
+     1.4.11's 3:1 (a design call for Aurora). Not yet seen on the FX rig.
      **Design goals** (Aurora, 2026-11-11), where other systems are weak:
      (1) one toolkit, no legacy layers beside it; (2) logical units and a
      scale per window from the first day, snapped to device pixels, so

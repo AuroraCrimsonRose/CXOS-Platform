@@ -10,7 +10,8 @@
 // server, which gives it the connection, the font and its strings
 // (2.8a4: /System/Locale/gallery-<tag>.xstr, displayd --locale). Keys: Tab, Space,
 // Enter and the arrows go to the widgets; Ctrl+Tab turns the page; F10
-// opens the menus; Ctrl+D turns dark on and off; Ctrl+1, 2, 3 show it at
+// opens the menus; Ctrl+D turns dark on and off, Ctrl+Shift+H high
+// contrast, Ctrl+Shift+I the inspector's outlines; Ctrl+1, 2, 3 show it at
 // 100, 150 and 200 %.
 
 import "toolkit_window.xfxn";

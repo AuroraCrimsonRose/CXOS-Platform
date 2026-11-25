@@ -146,6 +146,8 @@ edit = os/std/toolkit_window.xfxn
 [clash-accepted]
 # a second command takes a key another has
 expect = x: toolkit: commands and their keys @ failed at step 4803
+# 2.8a5: the audit test cannot plant past tk_bind then, so its refusal step goes red
+expect = x: toolkit: the audit sees what is planted @ failed at step 7117
 group = g1
 edit = os/std/toolkit.xfxn
 <<<

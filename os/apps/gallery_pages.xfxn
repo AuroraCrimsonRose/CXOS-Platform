@@ -191,7 +191,7 @@ fn gp_menus(ui: *tk_ui, page: u32) -> u32 {
 }
 
 // The menu bar: File, Edit (the standard commands, their keys shown), View.
-fn gp_menubar(ui: *tk_ui, root: u32, dark: u32, s1: u32, s2: u32, s3: u32) -> u32 {
+fn gp_menubar(ui: *tk_ui, root: u32, dark: u32, hc: u32, insp: u32, s1: u32, s2: u32, s3: u32) -> u32 {
     let bar: u32 = tk_add(ui, root, TK_MENUBAR, 0 as *u8);
     tk_set_flags(ui, bar, TK_F_FILL, 0);
     let m: u32 = tk_add_key(ui, bar, TK_MENU, "gallery-file");
@@ -205,6 +205,8 @@ fn gp_menubar(ui: *tk_ui, root: u32, dark: u32, s1: u32, s2: u32, s3: u32) -> u3
     gp_item(ui, m, "gallery-select-all", TK_CMD_SELECT_ALL);
     m = tk_add_key(ui, bar, TK_MENU, "gallery-view");
     gp_item(ui, m, "gallery-dark", dark);
+    gp_item(ui, m, "gallery-contrast", hc);
+    gp_item(ui, m, "gallery-inspector", insp);
     gp_item(ui, m, 0 as *u8, 0);
     gp_item(ui, m, "gallery-100", s1); gp_item(ui, m, "gallery-150", s2);
     if (gp_item(ui, m, "gallery-200", s3) == 0) { return 1; }
@@ -220,8 +222,11 @@ fn gp_build(ui: *tk_ui) -> u32 {
     let s1: u32 = tk_command(ui, "scale-100", KC_1, KEYMOD_CTRL) as u32;
     let s2: u32 = tk_command(ui, "scale-150", KC_1 + 1, KEYMOD_CTRL) as u32;
     let s3: u32 = tk_command(ui, "scale-200", KC_1 + 2, KEYMOD_CTRL) as u32;
+    // 2.8a5: high contrast, and the inspector's overlay
+    let hc: u32 = tk_command(ui, "contrast", KC_H, KEYMOD_CTRL | KEYMOD_SHIFT) as u32;
+    let insp: u32 = tk_command(ui, "inspect", KC_I, KEYMOD_CTRL | KEYMOD_SHIFT) as u32;
     tk_set_im(ui, TK_IM_DEAD);
-    if (gp_menubar(ui, root, dark, s1, s2, s3) != 0) { return 1; }
+    if (gp_menubar(ui, root, dark, hc, insp, s1, s2, s3) != 0) { return 1; }
     if (gp_add(ui, root, TK_HEADING, "gallery-widget-gallery", 0) == 0) { return 1; }
     gp_add(ui, root, TK_LABEL, "gallery-help", TK_F_MUTED);
     let tabs: u32 = tk_add(ui, root, TK_TABS, 0 as *u8);
@@ -249,6 +254,8 @@ fn gp_command(ui: *tk_ui, cmd: u32) -> u32 {
     let name: *u8 = tk_command_name(ui, cmd);
     if (name == (0 as *u8)) { return 0; }
     if (streq(name, "dark") != 0) { tk_set_dark(ui, 1 - ui.dark); return 0; }
+    if (streq(name, "contrast") != 0) { tk_set_contrast(ui, 1 - ui.contrast); return 0; }
+    if (streq(name, "inspect") != 0) { tk_set_inspect(ui, 1 - ui.inspect); return 0; }
     if (streq(name, "scale-100") != 0) { tk_set_scale(ui, 4); return 1; }
     if (streq(name, "scale-150") != 0) { tk_set_scale(ui, 6); return 1; }
     if (streq(name, "scale-200") != 0) { tk_set_scale(ui, 8); return 1; }

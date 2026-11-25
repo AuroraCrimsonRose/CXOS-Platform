@@ -1,0 +1,236 @@
+# Step 2.8a5, the toolkit's automation API, inspector, audit and high
+# contrast, run by `cxk test sabotage`. Each must turn red exactly the
+# self-tests named. Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# A group holds at most one sabotage per test.
+#
+# Every check of the audit is sabotaged twice: blinded (the audit test's
+# planted case goes unseen) and as the defect it is there for (the gallery,
+# or the toolkit under it, gets the fault; the gallery's audit sees it).
+
+# ---- no name ----
+
+[audit-name-blind]
+# the audit asks nothing for a name
+expect = x: toolkit: the audit sees what is planted @ failed at step 7105
+group = g7
+edit = os/std/toolkit_ax.xfxn
+<<<
+    if (tk_takes_input(k) == 1 && k != TK_SCROLL && k != TK_TABS) { return 1; }
+===
+    return 0;
+>>>
+
+[gallery-nameless]
+# a gallery button made with no name
+expect = x: gallery: audited at every scale and locale @ failed at step 7501
+group = g1
+edit = os/apps/gallery_pages.xfxn
+<<<
+    gp_add(ui, r, TK_BUTTON, "gallery-hover", TK_F_HOVER);
+===
+    tk_add(ui, r, TK_BUTTON, 0 as *u8);
+>>>
+
+# ---- focus ----
+
+[audit-tab-blind]
+# the audit never walks Tab: everything interactive is a finding
+expect = x: toolkit: the audit sees what is planted @ failed at step 7102
+expect = x: gallery: audited at every scale and locale @ failed at step 7502
+group = g2
+edit = os/std/toolkit_ax.xfxn
+<<<
+    if (menu == TK_NONE) { tk_au_tab_walk(ui); }
+===
+>>>
+
+[grid-not-focusable]
+# a text grid a pointer can use but Tab passes by
+expect = x: gallery: audited at every scale and locale @ failed at step 7522
+group = g3
+edit = os/std/toolkit.xfxn
+<<<
+    if (tk_takes_input(n.kind) == 0 || (n.flags & TK_F_DISABLED) != 0) { return 0; }
+===
+    if (tk_takes_input(n.kind) == 0 || (n.flags & TK_F_DISABLED) != 0 || n.kind == TK_TEXTGRID) { return 0; }
+>>>
+
+[audit-moves-focus]
+# the audit leaves the focus where its walk ended
+expect = x: toolkit: the audit sees what is planted @ failed at step 7103
+group = g6
+edit = os/std/toolkit_ax.xfxn
+<<<
+    ui.focus = f0;
+    if (f0 != TK_NONE) {
+        ui.node[f0].flags = ui.node[f0].flags | TK_F_FOCUS;
+===
+    if (f0 != TK_NONE) {
+>>>
+
+# ---- clipped ----
+
+[audit-clip-blind]
+# the audit gives every text all the room it asks
+expect = x: toolkit: the audit sees what is planted @ failed at step 7109
+group = g3
+edit = os/std/toolkit_ax.xfxn
+<<<
+    if (tw > room) { return 1; }
+    return 0;
+===
+    return 0;
+>>>
+
+[check-gap-unmeasured]
+# a check box, radio or switch asks no room for the gap before its text,
+# so its text runs out of its box
+expect = x: gallery: audited at every scale and locale @ failed at step 7503
+group = g4
+edit = os/std/toolkit.xfxn
+<<<
+        if (tw > 0) { w = w + TK_TEXT_GAP + tw; }
+===
+        if (tw > 0) { w = w + tw; }
+>>>
+
+# ---- two things on one key ----
+
+[audit-mnemonics-blind]
+# two mnemonics on one letter go unseen
+expect = x: toolkit: the audit sees what is planted @ failed at step 7112
+group = g4
+edit = os/std/toolkit_ax.xfxn
+<<<
+                if (first == TK_NONE) { first = i; } else { tk_au_add(a, TK_AU_KEYS, tk_id(ui, i)); }
+===
+                if (first == TK_NONE) { first = i; }
+>>>
+
+[audit-commands-blind]
+# two commands on one key go unseen
+expect = x: toolkit: the audit sees what is planted @ failed at step 7118
+group = g5
+edit = os/std/toolkit_ax.xfxn
+<<<
+            if (ui.cmd[c].key != 0 && ui.cmd[d].key == ui.cmd[c].key && ui.cmd[d].mods == ui.cmd[c].mods) {
+===
+            if (ui.cmd[c].key != 0 && ui.cmd[d].key == ui.cmd[c].key && ui.cmd[d].mods == ui.cmd[c].mods && c == d) {
+>>>
+
+[gallery-alt-under-mnemonic]
+# the gallery binds Alt+F, which the File menu's mnemonic always takes first
+expect = x: gallery: audited at every scale and locale @ failed at step 7504
+expect = x: toolkit: mnemonics @ failed at step 6714
+group = g5
+edit = os/apps/gallery_pages.xfxn
+<<<
+    tk_set_im(ui, TK_IM_DEAD);
+===
+    tk_command(ui, "spare", KC_F, KEYMOD_ALT);
+    tk_set_im(ui, TK_IM_DEAD);
+>>>
+
+[gallery-two-mnemonics]
+# a translation puts the text field's mnemonic on the Edit menu's letter
+expect = x: gallery: audited at every scale and locale @ failed at step 7504
+expect = x: toolkit: mnemonics @ failed at step 6708
+group = g6
+edit = os/locale/gallery/en.ftl
+<<<
+gallery-text-field = Te&xt field
+===
+gallery-text-field = T&ext field
+>>>
+
+# ---- contrast ----
+
+[contrast-no-flare]
+# the ratio without WCAG's 0.05 flare term
+expect = x: toolkit: contrast and its tokens @ failed at step 7300
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    let la: u64 = tk_luminance(a) + 500000;
+    let lb: u64 = tk_luminance(b) + 500000;
+===
+    let la: u64 = tk_luminance(a) + 50000;
+    let lb: u64 = tk_luminance(b) + 50000;
+>>>
+
+[contrast-muted-grey]
+# high contrast's secondary text is a mid grey
+expect = x: toolkit: contrast and its tokens @ failed at step 7313
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+        t.muted = 0xFFD0D0D0; t.accent = 0xFFFFD60A; t.on_accent = 0xFF000000;
+===
+        t.muted = 0xFF707070; t.accent = 0xFFFFD60A; t.on_accent = 0xFF000000;
+>>>
+
+[contrast-dark-wins]
+# turning dark on drops high contrast
+expect = x: toolkit: contrast and its tokens @ failed at step 7321
+group = g3
+edit = os/std/toolkit.xfxn
+<<<
+    tk_theme_set(&ui.theme, dark, ui.contrast);
+===
+    tk_theme_set(&ui.theme, dark, 0);
+>>>
+
+# ---- the inspector ----
+
+[inspect-no-damage]
+# the last paint's damage is never kept
+expect = x: toolkit: the inspector @ failed at step 7210
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    ui.painted = ui.damage;
+===
+>>>
+
+[inspect-no-overlay]
+# the overlay is never drawn
+expect = x: toolkit: the inspector @ failed at step 7217
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+        if (ui.inspect == 1) { tk_draw_inspect(ui, r); }
+===
+>>>
+
+[inspect-flat]
+# every line at depth 0
+expect = x: toolkit: the inspector @ failed at step 7204
+group = g3
+edit = os/std/toolkit_ax.xfxn
+<<<
+        while (a != s) { depth = depth + 1; a = ui.node[a].parent; }
+===
+>>>
+
+# ---- the automation API ----
+
+[ax-bounds-unmirrored]
+# bounds as laid out, not where a mirrored ui shows them
+expect = x: toolkit: the automation API @ failed at step 7018
+group = g1
+edit = os/std/toolkit_ax.xfxn
+<<<
+    if (ui.mirror == 1) { r.x = ui.canvas.width - r.x - r.w; }
+===
+>>>
+
+[ax-press-unreachable]
+# a press goes in to a widget that cannot be reached (under a dialog)
+expect = x: toolkit: the automation API @ failed at step 7021
+group = g2
+edit = os/std/toolkit_ax.xfxn
+<<<
+    if (i == TK_NONE || tk_reachable(ui, i) == 0 || (ui.node[i].flags & TK_F_DISABLED) != 0) { return E_INVALID_ARGS; }
+===
+    if (i == TK_NONE || (ui.node[i].flags & TK_F_DISABLED) != 0) { return E_INVALID_ARGS; }
+>>>

@@ -127,9 +127,9 @@ expect = x: toolkit: mnemonics @ failed at step 6708
 group = g3
 edit = os/std/toolkit.xfxn
 <<<
-                    if (tk_focusable(ui, j) == 1) { tk_focus_set(ui, j); return 1; }
+            if (k == TK_LABEL) { tk_focus_set(ui, tk_mn_target(ui, i)); return 1; }
 ===
-                    if (tk_focusable(ui, j) == 1) { return 1; }
+            if (k == TK_LABEL) { return 1; }
 >>>
 
 # ---- mirroring ----

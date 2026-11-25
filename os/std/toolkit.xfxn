@@ -226,8 +226,19 @@ struct tk_theme {
     track: u32
 }
 
-fn tk_theme_set(t: *tk_theme, dark: u32) -> void {
-    if (dark == 0) {
+// The tokens: light, dark, or with contrast the high-contrast set (2.8a5),
+// white and a yellow accent on black: every text at least 7:1 against what
+// it is drawn on, every boundary at least 3:1 (WCAG 2.2's 1.4.6 and
+// 1.4.11), disabled text 4.5:1, which WCAG does not ask. tt_contrast holds
+// all three sets to their bounds.
+fn tk_theme_set(t: *tk_theme, dark: u32, contrast: u32) -> void {
+    if (contrast != 0) {
+        t.surface = 0xFF000000; t.raised = 0xFF000000; t.text = 0xFFFFFFFF;
+        t.muted = 0xFFD0D0D0; t.accent = 0xFFFFD60A; t.on_accent = 0xFF000000;
+        t.border = 0xFFFFFFFF; t.ring = 0xFF00E5FF; t.hover = 0xFF1F1F1F;
+        t.pressed = 0xFF3A3A3A; t.off_bg = 0xFF000000; t.off_text = 0xFFA0A0A0;
+        t.track = 0xFF7A7A7A;
+    } else if (dark == 0) {
         t.surface = 0xFFF5F6F8; t.raised = 0xFFFFFFFF; t.text = 0xFF1B1F24;
         t.muted = 0xFF5B6470; t.accent = 0xFF2F6FDB; t.on_accent = 0xFFFFFFFF;
         t.border = 0xFFC3CAD4; t.ring = 0xFF2F6FDB; t.hover = 0xFFEDF0F4;
@@ -379,7 +390,12 @@ struct tk_ui {
     loc: *lc_table,         // the locale's table, or 0
     locfb: *lc_table,       // the English one it falls back to, or 0
     mirror: u32,            // 1: right to left, the ui mirrored where it meets pixels and the pointer
-    tx: i32                 // device pixels every shape moves by (a text grid in a mirrored ui)
+    tx: i32,                // device pixels every shape moves by (a text grid in a mirrored ui)
+    // 2.8a5
+    contrast: u32,          // 1: the high-contrast tokens, whatever dark says
+    inspect: u32,           // 1: every widget's box drawn over it (the inspector's)
+    painted: ds_damage,     // what the last tk_paint drew, as laid out (tk_inspect)
+    ax_mark: [512]u8        // TK_NODES_MAX: what an audit's walk reached
 }
 
 // ---- units ----
@@ -500,7 +516,7 @@ fn tk_init(ui: *tk_ui, scale: u32, font: *ds_font) -> void {
     ui.font = font;
     ui.canvas.px = 0;
     ui.canvas.mem = 0 - 1;
-    tk_theme_set(&ui.theme, 0);
+    tk_theme_set(&ui.theme, 0, 0);
     tk_reset(ui);
 }
 
@@ -976,8 +992,77 @@ fn tk_set_scale(ui: *tk_ui, scale: u32) -> void {
 
 fn tk_set_dark(ui: *tk_ui, dark: u32) -> void {
     ui.dark = dark;
-    tk_theme_set(&ui.theme, dark);
+    tk_theme_set(&ui.theme, dark, ui.contrast);
     tk_damage_all(ui);
+}
+
+// High contrast on (1) or off (0); while on it wins over dark (2.8a5).
+fn tk_set_contrast(ui: *tk_ui, on: u32) -> void {
+    ui.contrast = on & 1;
+    tk_theme_set(&ui.theme, ui.dark, ui.contrast);
+    tk_damage_all(ui);
+}
+
+// The inspector's overlay on (1) or off (0): every widget's box outlined.
+fn tk_set_inspect(ui: *tk_ui, on: u32) -> void {
+    ui.inspect = on & 1;
+    tk_damage_all(ui);
+}
+
+// ---- contrast (WCAG 2.2's relative luminance and contrast ratio) ----
+
+// An sRGB channel's linear light, x 10^7, rounded: c / 255 / 12.92 up to
+// 0.04045, ((c / 255 + 0.055) / 1.055) ^ 2.4 above.
+global tk_srgb_lin: [256]u32 = [
+    0, 3035, 6071, 9106, 12141, 15176, 18212, 21247,
+    24282, 27317, 30353, 33465, 36765, 40247, 43914, 47770,
+    51815, 56054, 60488, 65121, 69954, 74990, 80232, 85681,
+    91341, 97212, 103298, 109601, 116122, 122865, 129830, 137021,
+    144438, 152085, 159963, 168074, 176420, 185002, 193824, 202886,
+    212190, 221739, 231534, 241576, 251869, 262412, 273209, 284260,
+    295568, 307134, 318960, 331048, 343398, 356013, 368895, 382044,
+    395462, 409152, 423114, 437350, 451862, 466651, 481718, 497066,
+    512695, 528606, 544803, 561285, 578054, 595112, 612461, 630100,
+    648033, 666259, 684782, 703601, 722719, 742136, 761854, 781874,
+    802198, 822827, 843762, 865005, 886556, 908417, 930590, 953075,
+    975873, 998987, 1022417, 1046165, 1070231, 1094617, 1119324, 1144354,
+    1169707, 1195384, 1221388, 1247718, 1274377, 1301365, 1328683, 1356333,
+    1384316, 1412633, 1441285, 1470273, 1499598, 1529262, 1559265, 1589608,
+    1620294, 1651322, 1682694, 1714411, 1746474, 1778884, 1811642, 1844750,
+    1878208, 1912017, 1946178, 1980693, 2015563, 2050787, 2086369, 2122308,
+    2158605, 2195262, 2232280, 2269659, 2307400, 2345506, 2383976, 2422811,
+    2462013, 2501583, 2541521, 2581829, 2622507, 2663556, 2704978, 2746773,
+    2788943, 2831487, 2874408, 2917706, 2961383, 3005438, 3049873, 3094689,
+    3139887, 3185468, 3231432, 3277781, 3324515, 3371636, 3419144, 3467041,
+    3515326, 3564001, 3613068, 3662526, 3712377, 3762621, 3813260, 3864294,
+    3915725, 3967552, 4019778, 4072402, 4125426, 4178851, 4232677, 4286905,
+    4341536, 4396572, 4452012, 4507858, 4564110, 4620770, 4677838, 4735315,
+    4793202, 4851499, 4910208, 4969330, 5028865, 5088813, 5149177, 5209956,
+    5271151, 5332764, 5394795, 5457245, 5520114, 5583404, 5647115, 5711248,
+    5775804, 5840784, 5906188, 5972018, 6038273, 6104956, 6172066, 6239604,
+    6307571, 6375969, 6444797, 6514056, 6583748, 6653873, 6724432, 6795425,
+    6866853, 6938718, 7011019, 7083758, 7156935, 7230551, 7304607, 7379104,
+    7454042, 7529422, 7605245, 7681511, 7758222, 7835378, 7912979, 7991027,
+    8069523, 8148466, 8227858, 8307699, 8387990, 8468732, 8549926, 8631572,
+    8713671, 8796224, 8879231, 8962694, 9046612, 9130987, 9215819, 9301109,
+    9386857, 9473065, 9559734, 9646862, 9734453, 9822506, 9911021, 10000000
+];
+
+// A colour's relative luminance, x 10^7.
+fn tk_luminance(argb: u32) -> u64 {
+    let r: u64 = tk_srgb_lin[(argb >> 16) & 255] as u64;
+    let g: u64 = tk_srgb_lin[(argb >> 8) & 255] as u64;
+    let b: u64 = tk_srgb_lin[argb & 255] as u64;
+    return (2126 * r + 7152 * g + 722 * b + 5000) / 10000;
+}
+
+// The contrast ratio of two colours, x 100, rounded down: 100 (one colour)
+// to 2100 (black and white).
+fn tk_contrast(a: u32, b: u32) -> u32 {
+    let la: u64 = tk_luminance(a) + 500000;
+    let lb: u64 = tk_luminance(b) + 500000;
+    if (la < lb) { let t: u64 = la; la = lb; lb = t; }
+    return ((la * 100) / lb) as u32;
 }
 
 // ---- accessibility ----
@@ -2523,6 +2608,35 @@ fn tk_paint_node(ui: *tk_ui, i: u32, clip: *ds_rect) -> void {
     if (n.kind == TK_SCROLL) { tk_draw_scroll(ui, i, &c); }
 }
 
+// A one-pixel outline round box b, inside clip c.
+fn tk_outline(ui: *tk_ui, c: *ds_rect, b: *ds_rect, argb: u32) -> void {
+    let x: i32 = b.x as i32;
+    let y: i32 = b.y as i32;
+    let w: i32 = b.w as i32;
+    let h: i32 = b.h as i32;
+    tk_box(ui, c, x, y, w, 1, argb);
+    tk_box(ui, c, x, y + h - 1, w, 1, argb);
+    tk_box(ui, c, x, y, 1, h, argb);
+    tk_box(ui, c, x + w - 1, y, 1, h, argb);
+}
+
+// The inspector's overlay inside c: every widget that can be seen outlined
+// in the muted token, the focus in the ring's. Rows are their owner's.
+fn tk_draw_inspect(ui: *tk_ui, c: *ds_rect) -> void {
+    let i: u32 = 0;
+    while (i < ui.used) {
+        if ((ui.node[i].flags & TK_F_USED) != 0 && tk_is_row(ui.node[i].kind) == 0 && tk_reachable(ui, i) == 1) {
+            let b: ds_rect;
+            if (tk_dbox(ui, i, &b) == 1) {
+                let col: u32 = ui.theme.muted;
+                if (i == ui.focus) { col = ui.theme.ring; }
+                tk_outline(ui, c, &b, col);
+            }
+        }
+        i = i + 1;
+    }
+}
+
 // Draw what the damage covers, lay out first if anything asked for it. The
 // rectangles drawn go to *out (the ui's damage is then empty): their count.
 fn tk_paint(ui: *tk_ui, out: *ds_damage) -> u32 {
@@ -2548,8 +2662,10 @@ fn tk_paint(ui: *tk_ui, out: *ds_damage) -> u32 {
             p = p + 1;
         }
         if (ui.tip_up == 1) { tk_draw_tip(ui, r); }
+        if (ui.inspect == 1) { tk_draw_inspect(ui, r); }
         k = k + 1;
     }
+    ui.painted = ui.damage;
     *out = ui.damage;
     if (ui.mirror == 1) {
         // painted where laid out; it shows mirrored
@@ -2897,29 +3013,44 @@ fn tk_mnemonic_key(ui: *tk_ui, code: u32) -> u32 {
     }
     let i: u32 = 0;
     while (i < ui.used) {
-        if (tk_mn_letter(ui, i) == want) {
-            let n: *tk_node = &ui.node[i];
-            let k: u32 = n.kind;
-            let p: u32 = n.parent;
-            if (k == TK_MENU && p != TK_NONE && ui.node[p].kind == TK_MENUBAR && tk_reachable(ui, p) == 1 && (n.flags & TK_F_DISABLED) == 0) {
-                tk_bar_open(ui, p, i, 1);
-                return 1;
-            }
-            if ((k == TK_BUTTON || k == TK_CHECK || k == TK_RADIO || k == TK_SWITCH) && tk_focusable(ui, i) == 1) {
-                tk_focus_set(ui, i);
-                tk_activate(ui, i);
-                return 1;
-            }
-            if (k == TK_LABEL && tk_reachable(ui, i) == 1) {
-                let j: u32 = tk_after(ui, i);
-                while (j != TK_NONE) {
-                    if (tk_focusable(ui, j) == 1) { tk_focus_set(ui, j); return 1; }
-                    j = tk_after(ui, j);
-                }
-            }
+        if (tk_mn_letter(ui, i) == want && tk_mn_acts(ui, i) == 1) {
+            let k: u32 = ui.node[i].kind;
+            if (k == TK_MENU) { tk_bar_open(ui, ui.node[i].parent, i, 1); return 1; }
+            if (k == TK_LABEL) { tk_focus_set(ui, tk_mn_target(ui, i)); return 1; }
+            tk_focus_set(ui, i);
+            tk_activate(ui, i);
+            return 1;
         }
         i = i + 1;
     }
+    return 0;
+}
+
+// What a label's mnemonic gives the focus to: the first widget after it
+// that can take it, or TK_NONE.
+fn tk_mn_target(ui: *tk_ui, i: u32) -> u32 {
+    let j: u32 = tk_after(ui, i);
+    while (j != TK_NONE) {
+        if (tk_focusable(ui, j) == 1) { return j; }
+        j = tk_after(ui, j);
+    }
+    return TK_NONE;
+}
+
+// Would node i act on its mnemonic now, outside a menu: a menu bar's
+// title that may open, a button, check box, radio or switch that can take
+// the focus, a label with something after it that can? 1 if so (the
+// audit's question too: two that would on one letter is a clash).
+fn tk_mn_acts(ui: *tk_ui, i: u32) -> u32 {
+    let n: *tk_node = &ui.node[i];
+    let k: u32 = n.kind;
+    let p: u32 = n.parent;
+    if (k == TK_MENU) {
+        if (p != TK_NONE && ui.node[p].kind == TK_MENUBAR && tk_reachable(ui, p) == 1 && (n.flags & TK_F_DISABLED) == 0) { return 1; }
+        return 0;
+    }
+    if (k == TK_BUTTON || k == TK_CHECK || k == TK_RADIO || k == TK_SWITCH) { return tk_focusable(ui, i); }
+    if (k == TK_LABEL && tk_reachable(ui, i) == 1 && tk_mn_target(ui, i) != TK_NONE) { return 1; }
     return 0;
 }
 

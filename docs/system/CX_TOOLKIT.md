@@ -221,7 +221,7 @@ One theme record of **tokens**, light and dark: surface, surface raised,
 text, text muted, accent, accent text, border, focus ring, danger,
 disabled; one radius, one shadow, the spacing scale, the type sizes. A
 widget draws only with tokens; an app chooses colours only by token. High
-contrast is a third token set (2.8a5). The theme follows the system
+contrast is a third token set (2.8a5, §11). The theme follows the system
 setting and can be forced per ui (the gallery does).
 
 ## 9. The widget set and the sub-steps
@@ -232,7 +232,7 @@ setting and can be forced per ui (the gallery does).
 | **2.8a2** | key events with codes and modifiers (ABI); commands and keybinds (registered, clashes refused, the three fixed keys); text field with selection, the clipboard (read only on a paste), the input-method interface with a dead-key method | key and clash tests; composition test |
 | **2.8a3** | scroll view, list, tree, table, tabs, menu and context menu, tooltip, the dialog with standard buttons, the text grid; the server's timed wait | headless tests of each, the gallery's pages replayed; `2.8a3.sab` |
 | **2.8a4** | localisation: message keys, `cxk` string tables (a Fluent subset), CLDR plural rules, the pseudo-locale, our UAX #9 run against Unicode's conformance files, mirrored layouts | pseudo-locale gallery boot |
-| **2.8a5** | the inspector and the automation API over the tree; boot checks (an interactive widget with no name, one focus cannot reach, clipped text, two commands on one key); high contrast; `gui.xfxn` retired | each check sabotaged |
+| **2.8a5** | the inspector and the automation API over the tree; boot checks (an interactive widget with no name, one focus cannot reach, clipped text, two commands on one key); high contrast; `gui.xfxn` retired (`590485a`) | the gallery audited at three scales and in the pseudo-locale; each check sabotaged (§11) |
 
 **2.8a2, as built (2026-11-12).**
 
@@ -513,3 +513,105 @@ dark, at 100, 150 and 200 %; each step adds its widgets to it (Serenity's
 WidgetGallery and GTK's widget-factory are the precedent). Fonts are the
 v1 bitmap XFNT until 2.8a′, drawn at an integer multiple for the larger
 scales.
+
+## 11. Automation, the inspector, the audit, high contrast (2.8a5)
+
+**Surveyed 2026-11-25.** Serenity's LibGUI has no automation layer: its
+tests drive widgets by calling them. Haiku's scripting suite
+(`BHandler::ResolveSpecifier` and `GetSupportedSuites`,
+`src/kits/app/Handler.cpp`) addresses a window's views by name and index
+through messages, and `hey` drives any app with it, asking no permission;
+views answer `B_GET_PROPERTY` for "Frame", "Label", "Value". Windows' UI
+Automation and Linux's AT-SPI are bridges an app feeds (from memory), and
+fall out of step with what is drawn (`CX_ACCESSIBILITY.md` §2 item 1).
+**Taken:** Haiku's address by role and name, over our own tree with no
+bridge; nothing of its open door: an action here goes in by the input path
+a person's does, and reading another program's tree waits for the
+assistive-technology grant (Phase B, `CX_ACCESSIBILITY.md` §2 item 3). The
+audit's checks are the ones axe-core and Accessibility Insights make of web
+pages and Windows apps (from memory: a control's name, keyboard reach,
+clipped text), run as a boot test instead of a tool someone remembers to
+run.
+
+**The automation API** (`os/std/toolkit_ax.xfxn`, `tk_ax_`), by id:
+`tk_ax_find(ui, from, role, name)` (the first in tree order under `from`;
+role 0 or name 0 for any), `tk_ax_parent`, `tk_ax_first`, `tk_ax_next`;
+`tk_ax_state` (`TK_AX_DISABLED FOCUSABLE FOCUSED CHECKED MIXED PRESSED
+SELECTED EXPANDED OFFSCREEN DEFAULT`); `tk_ax_bounds` (where it shows:
+device pixels, cut to the canvas, mirrored as the ui is). Actions:
+`tk_ax_press` is the pointer going down and up at the middle of where the
+widget shows, refused for one disabled or out of reach (under a dialog, on
+a page turned away), and whatever covers that point gets the press, as it
+would a person's; `tk_ax_focus` is `tk_focus`; `tk_ax_key` and
+`tk_ax_type` (ASCII by its US key, anything else as an input method's
+character) are key presses. So a widget a test cannot reach is one a
+person cannot.
+
+**The inspector.** `tk_inspect(ui, id, out, cap)`: the tree from `id`, a
+line a node, two spaces a level: its role, its name in quotes, where it
+shows (`x,y wxh`, or `-`), its states as words; then
+`damage n: x,y wxh ...`, what the last paint drew (`ui.painted`), as laid
+out. Cut short, it keeps whole lines and returns `E_NO_RESOURCES`.
+`tk_set_inspect(ui, 1)` outlines every widget that can be seen, one pixel
+in the muted token, the focus in the ring's (the gallery's Ctrl+Shift+I,
+in its View menu). A program that shows another's tree is the Process
+Manager's, with the grant.
+
+**The audit.** `tk_audit_run(ui, &a)` audits the ui as it stands (the
+caller visits each page, dialog and menu) and changes nothing it shows
+(the focus, its damage, the reveal and a waiting accent are put back):
+
+- **No name:** every widget that takes input but a scroll view (what it
+  holds is read) and a tab list (its pages name its tabs; ARIA asks no
+  name of one either), a list's or tree's item, a table's cell, a menu bar's
+  menu and a tab's page has a non-empty name. A table's rows are named by
+  their cells; a menu item with no text is a separator.
+- **Focus cannot reach it:** every widget a pointer can use now (enabled,
+  to be seen, in the scope, a kind that takes input; a scroll view only
+  when it holds nothing that does) must be a stop of Tab, walked round the
+  scope by `tk_focus_next` itself, not judged by `tk_focusable`; every row
+  a list, tree or table may choose, a stop of Down; with a menu open, each
+  item it may light, a stop of Down there; each menu of a bar, a stop of
+  Right. What a pointer can use is asked of the tree, so a fault in the
+  focus code is seen, not repeated.
+- **Clipped text:** every text to be seen fits the room its box gives text
+  (a label all of its box; a button less its padding; a check box, radio
+  or switch less the control and its gap; a menu item less its padding and
+  its key's name).
+- **Two things on one key:** no two commands on one key (`tk_bind` refuses
+  it; this is there for the day it does not), no Alt command whose letter
+  a mnemonic takes first (mnemonics come before commands, §7), no two
+  mnemonics that would act on one letter (the first in the tree always
+  wins), and in an open menu none between its items.
+
+Findings are counted, each kind's first named (`tk_audit`: `found`,
+`count`, `name`, `focus`, `clip`, `keys`, `cmd`).
+
+**High contrast** is the third token set (§8): white text and borders, a
+yellow accent and a cyan focus ring on black; `tk_set_contrast(ui, 1)`, and
+dark changes nothing while it is on (the gallery's Ctrl+Shift+H). The
+ratios are WCAG 2.2's, computed in the toolkit (`tk_contrast`, x 100, from
+`tk_srgb_lin`, the sRGB curve x 10^7): high contrast holds every text to
+7:1 against what it is drawn on (1.4.6), disabled text to 4.5:1 (WCAG asks
+none), the accent, ring, border and track to 3:1 against the surface and
+the accent to 3:1 against the track (1.4.11). Light and dark are held to
+4.5:1 for text, muted text and the accent's text, and 3:1 for the ring.
+**Not held, found here:** light and dark's border (1.53 and 1.92:1) and
+track (1.31 and 1.69:1) are under 1.4.11's 3:1, so a check box's outline
+and a slider's track are faint in both. Darker ones change the look: a
+design call, left for Aurora; high contrast is the answer until then. The
+setting is per ui until Settings has a page (2.8c); the theme follows it
+then.
+
+**The witness** (`os/apps/ai_tests.xfxn`, in `xtest`): the API (7000:
+found, walked, states, a press by pointer, mirrored too and refused under a
+dialog, typing, bounds), the audit against what is planted in it (7100:
+each kind, the first named, a clean ui clean and unchanged), the inspector
+(7200: lines and depths, bounds written by the test's own code, the damage,
+a dump cut short, the overlay's pixels), contrast (7300: known ratios, the
+three sets' bounds, the set on the canvas), and **the gallery's boot
+check** (7500-7899): in English at 100, 150 and 200 % and in the
+pseudo-locale (longer, and mirrored), each page, the dialog, each menu of
+the bar and the context menu audit clean. Kept to their checks by
+`tests/sabotage/2.8a5.sab`: each check blinded, and each defect it is there
+for put into the gallery or the toolkit.
