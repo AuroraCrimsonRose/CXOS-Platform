@@ -11,7 +11,8 @@
 // it requires ot_small to be exactly its writer's bytes and its checker to
 // refuse every mutation here, so the two checkers are held to one list.
 
-import "outline.xfxn";
+import "fontfile.xfxn";
+import "raster.xfxn";
 
 // glyph 0 a square; glyph 1 ('A', 'B') a quadratic arch and a triangle;
 // glyph 2 (' ') no contours. Map at 64, glyphs 88, contours 136, points
@@ -202,5 +203,113 @@ fn of_t_system(arg: u64) -> i32 {
     if (of_load(&f, "abcdefghijklmn") != E_NOT_FOUND) { return 1906; }       // 14: a name, no such face
     // the console's bitmap font is XFNT v1: refused by the version, unread past the header
     if (of_load(&f, "console_16") != E_CORRUPT || f.why != OF_W_VERSION || f.mem != 0) { return 1907; }
+    return 0;
+}
+
+// ---- the rasteriser and its cache, on CXK (2.8a′3) ----
+//
+// RasterDiff holds std/raster.xfxn to the oracle on the host; these hold
+// the copy the OS runs, on its own heap, to lines the oracle printed
+// (`cxk font raster --sizes 16,11,48,96` of the image's cxsans):
+// glyph, ppem, then advance 26.6, left, top, width, height, FNV-1a.
+
+const OT_DRAWN: u32 = 5;
+global ot_r_cp: [5]u32 = [111, 103, 65, 64, 32];          // o g A @ space
+global ot_r_ppem: [5]u32 = [16, 11, 48, 96, 16];
+global ot_r_adv: [5]u32 = [574, 372, 1970, 5475, 242];
+global ot_r_left: [5]i32 = [0, 0, 1, 6, 0];
+global ot_r_top: [5]i32 = [-9, -7, -34, -68, 0];
+global ot_r_w: [5]u32 = [9, 6, 29, 74, 0];
+global ot_r_h: [5]u32 = [10, 10, 34, 80, 0];
+global ot_r_fnv: [5]u32 = [0x06479E47, 0x53D3C223, 0x5ACFBC6D, 0x9D86A87C, 0x811C9DC5];
+
+fn ot_fnv(b: *rs_bitmap) -> u32 {
+    let h: u32 = 0x811C9DC5;
+    let n: u32 = b.width * b.height;
+    let i: u32 = 0;
+    while (i < n) {
+        h = (h ^ (b.cov[i] as u32)) * 16777619;
+        i = i + 1;
+    }
+    return h;
+}
+
+// 0 when b is the oracle's line k
+fn ot_r_same(b: *rs_bitmap, k: u32) -> u32 {
+    if (b.advance != ot_r_adv[k] as i64) { return 1; }
+    if (b.left != ot_r_left[k] || b.top != ot_r_top[k]) { return 2; }
+    if (b.width != ot_r_w[k] || b.height != ot_r_h[k]) { return 3; }
+    if (ot_fnv(b) != ot_r_fnv[k]) { return 4; }
+    return 0;
+}
+
+// 2000-2099: glyphs drawn as the oracle draws them; 2100-2199: what
+// rs_draw refuses
+fn of_t_raster(arg: u64) -> i32 {
+    let f: of_face;
+    if (of_load(&f, "cxsans") != 0) { return 2000; }
+    let k: u32 = 0;
+    while (k < OT_DRAWN) {
+        let b: rs_bitmap;
+        let g: u32 = of_lookup(&f, ot_r_cp[k]);
+        if (rs_draw(&f, g, ot_r_ppem[k], &b) != 0) { of_free(&f); return (2010 + 10 * k) as i32; }
+        let why: u32 = ot_r_same(&b, k);
+        rs_release(&b);
+        if (why != 0) { of_free(&f); return (2010 + 10 * k + why) as i32; }
+        k = k + 1;
+    }
+    let b: rs_bitmap;
+    b.width = 77;
+    let o: u32 = of_lookup(&f, 111);
+    if (rs_draw(&f, o, 0, &b) != E_INVALID_ARGS) { of_free(&f); return 2100; }
+    if (rs_draw(&f, o, 1025, &b) != E_INVALID_ARGS) { of_free(&f); return 2101; }
+    if (rs_draw(&f, f.glyphs, 16, &b) != E_INVALID_ARGS) { of_free(&f); return 2102; }
+    if (b.width != 77) { of_free(&f); return 2103; }               // untouched on failure
+    // the sizes at the ends draw (the largest the space: RasterDiff draws
+    // ink at 1024 on the host, where it costs no x test minutes)
+    if (rs_draw(&f, o, 1, &b) != 0) { of_free(&f); return 2104; }
+    rs_release(&b);
+    if (rs_draw(&f, of_lookup(&f, 32), 1024, &b) != 0) { of_free(&f); return 2105; }
+    rs_release(&b);
+    of_free(&f);
+    return 0;
+}
+
+// 2200-2299: the cache keeps, answers from what it keeps, and lets go
+fn of_t_cache(arg: u64) -> i32 {
+    let f: of_face;
+    if (of_load(&f, "cxsans") != 0) { return 2200; }
+    let c: rs_cache;
+    rs_cache_init(&c, &f, 16, 100000);
+    let o: u32 = of_lookup(&f, 111);
+    let p: *rs_bitmap = 0 as *rs_bitmap;
+    let q: *rs_bitmap = 0 as *rs_bitmap;
+    if (rs_cache_get(&c, o, &p) != 0 || ot_r_same(p, 0) != 0) { rs_cache_free(&c); of_free(&f); return 2201; }
+    if (c.misses != 1 || c.hits != 0 || c.count != 1 || c.used != 90) { rs_cache_free(&c); of_free(&f); return 2202; }
+    if (rs_cache_get(&c, o, &q) != 0 || q != p) { rs_cache_free(&c); of_free(&f); return 2203; }
+    if (c.misses != 1 || c.hits != 1) { rs_cache_free(&c); of_free(&f); return 2204; }
+    // 260 glyphs once: past three quarters of the slots it lets go, and
+    // what it answers after is still the glyph asked for
+    let g: u32 = 0;
+    while (g < 260) {
+        if (rs_cache_get(&c, g, &p) != 0) { rs_cache_free(&c); of_free(&f); return 2205; }
+        g = g + 1;
+    }
+    if (c.flushes == 0 || c.count > 192) { rs_cache_free(&c); of_free(&f); return 2206; }
+    if (rs_cache_get(&c, o, &p) != 0 || ot_r_same(p, 0) != 0) { rs_cache_free(&c); of_free(&f); return 2207; }
+    rs_cache_free(&c);
+    if (c.count != 0 || c.used != 0) { of_free(&f); return 2208; }
+    // a budget of 100 bytes keeps 'o' (90 bytes) and lets it go for 'g'
+    rs_cache_init(&c, &f, 16, 100);
+    if (rs_cache_get(&c, o, &p) != 0 || c.flushes != 0) { rs_cache_free(&c); of_free(&f); return 2209; }
+    let gg: u32 = of_lookup(&f, 103);
+    if (rs_cache_get(&c, gg, &p) != 0 || c.flushes != 1 || c.count != 1) { rs_cache_free(&c); of_free(&f); return 2210; }
+    rs_cache_free(&c);
+    // a glyph past the whole budget is drawn and kept alone
+    rs_cache_init(&c, &f, 16, 10);
+    if (rs_cache_get(&c, o, &p) != 0 || ot_r_same(p, 0) != 0 || c.count != 1 || c.flushes != 1) { rs_cache_free(&c); of_free(&f); return 2211; }
+    if (rs_cache_get(&c, gg, &p) != 0 || c.count != 1 || c.flushes != 2) { rs_cache_free(&c); of_free(&f); return 2212; }
+    rs_cache_free(&c);
+    of_free(&f);
     return 0;
 }

@@ -1605,7 +1605,7 @@ language work in `language/CX_X_PLAN.md`.
      in X, sabotages feeding it bad files, fonts only from `/System/Fonts`,
      the faces in the image. **Done.** **a′3** the X rasteriser over integers, a glyph
      cache, and a Differential fact holding it to the oracle pixel for
-     pixel. **a′4** the toolkit's font handle (family, weight, style,
+     pixel. **Done** (`os/std/raster.xfxn`; `RasterDiff`, `cxk font raster`). **a′4** the toolkit's font handle (family, weight, style,
      size), the UI scale setting, the gallery's text in CX Sans. **a′5**
      icons: IBM Carbon (Aurora chose it 2026-11-25 from a sheet of both),
      SVG converted on the host (cubics to quadratics) with a name table.

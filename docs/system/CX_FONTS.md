@@ -136,7 +136,7 @@ and checker), `OutlineConvert.cs` (TrueType to v2), `TrueTypeFont.cs` (the
 host's TrueType reader), `OutlineRaster.cs` (the oracle rasteriser). Tests:
 `CXEX.Tests/Unit/XfntOutlineTests.cs`.
 
-**The OS side** (2.8a′2): `os/std/outline.xfxn`. `of_check` makes the host
+**The OS side** (2.8a′2): `os/std/outline.xfxn`, the format and its check, which needs nothing from the system (so the host builds it too, for the rasteriser's fact), and `os/std/fontfile.xfxn`, which loads a face. `of_check` makes the host
 checker's comparisons in its order and names the rule a file broke
 (`OF_W_*`); `of_load` takes a name, never a path, and reads only
 `/System/Fonts/<name>.xfnt` (a-z, 0-9, `-`, `_`; 14 at most, XSTG's
@@ -189,7 +189,28 @@ and descender from OS/2 when USE_TYPO_METRICS is set. Every font it writes
 is read back through the checker. A damaged source fails as bad data,
 never as a crash (a seeded damage test: `CXEX_TEST_SEED` tries others).
 
-### 4.1 The rasteriser (the oracle; X's copy in 2.8a′3 must match it pixel for pixel)
+### 4.1 The rasteriser (built 2026-11-25, roadmap 2.8a′3)
+
+Two copies, held to each other pixel for pixel: the oracle
+(`devkit/CXEX.Build/Fonts/OutlineRaster.cs`) and the OS's
+(`os/std/raster.xfxn`, `rs_draw`). The Differential fact `RasterDiff`
+runs `os/xc/rastdump.xfxn` on the host against `cxk font raster` (a line a
+glyph and size: box, advance, an FNV-1a of the coverage): every glyph of
+the image's eight faces at 1-48 ppem and a sample at 96, 300 and 1024, and
+faces generated from the seed (points at ±4 em, hairlines, slivers,
+overlaps, degenerate curves, the cap's edge), then the same through the
+cache. The X copy refuses a size past 1-1024 (`E_INVALID_ARGS`) and a box of
+more than 2^22 cells, (width + 1) · height (`E_NO_MEMORY`; 64 MiB of them;
+no face in the image comes near it), and the oracle's verb reports the
+same.
+
+**The cache** (`rs_cache`): one face at one size, 256 slots, open
+addressing on the glyph (Fibonacci hashing, the top 8 bits), and a budget
+of coverage bytes. A miss draws and keeps; at three quarters full, or past
+the budget, everything is let go and the glyph kept alone. A bitmap it
+hands out is valid until the next `rs_cache_get`. An LRU is not worth its
+cost until a′4 measures text drawing.
+
 
 Integers only, and every division is of non-negative numbers:
 

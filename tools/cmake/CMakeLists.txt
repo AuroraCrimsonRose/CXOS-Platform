@@ -576,7 +576,7 @@ add_custom_command(
 # console font is. Plex reserves the name "Plex", and a converted font is a
 # Modified Version: the faces ship as CX Sans and CX Mono. Files are named
 # cx<family>[-b][-i][-bi]: XSTG caps a staged name at 32 bytes, path
-# included, and std/outline.xfxn's of_load takes the name alone.
+# included, and std/fontfile.xfxn's of_load takes the name alone.
 set(PLEX_DIR ${SRC_DIR}/vendor/plex)
 set(OUTLINE_FACES
     "cxsans|sans/IBMPlexSans-Regular|CX Sans"

@@ -154,6 +154,9 @@ app.Configure(config =>
 
         font.AddCommand<FontInspectCommand>("inspect")
             .WithDescription("Reports an .xfnt: v1 geometry and slots (--show a glyph), v2 metrics and counts (--text draws a line in the terminal through the oracle rasteriser).");
+
+        font.AddCommand<FontRasterCommand>("raster")
+            .WithDescription("Draws every glyph of v2 fonts through the oracle rasteriser, a line each with a hash of its coverage: the C# side of the Differential fact that holds std/raster.xfxn to it (os/xc/rastdump.xfxn prints the same).");
     });
 
     // ---- pictures: the desktop's background ----

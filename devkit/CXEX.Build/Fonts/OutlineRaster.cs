@@ -35,6 +35,13 @@ public static class OutlineRaster
     public const int MaxPpem = 1024;
     /// <summary>A curve is cut into at most this many lines.</summary>
     public const int MaxSteps = 16;
+    /// <summary>
+    /// The X rasteriser refuses a glyph whose cells, (width + 1) * height,
+    /// pass this (64 MiB of them): E_NO_MEMORY. No face in the image comes
+    /// near it below the largest size. This copy draws any size; `cxk font
+    /// raster` reports the refusal as the X side does.
+    /// </summary>
+    public const long MaxCells = 4194304;
 
     /// <summary>
     /// An em coordinate to 26.6 pixels, rounded: floor((v * ppem + 32) / 64).
@@ -50,16 +57,7 @@ public static class OutlineRaster
         int adv = (int)Scale(g.Advance, ppem);
         if (g.Contours.Count == 0) return new GlyphBitmap(0, 0, 0, 0, Array.Empty<byte>(), adv);
 
-        // The box, in whole pixels, y down. Every point is inside the glyph's
-        // box and the scale keeps order, so every scaled point is inside this.
-        long x0 = Scale(g.XMin, ppem), x1 = Scale(g.XMax, ppem);
-        long yTop = -Scale(g.YMax, ppem), yBot = -Scale(g.YMin, ppem);
-        // note: -Scale(y) is the y-down 26.6 coordinate
-        int left = (int)(x0 >> 6), top = (int)FloorDiv64(yTop);
-        int right = (int)((x1 + 63) >> 6), bottom = (int)CeilDiv64(yBot);
-        int w = right - left, h = bottom - top;
-        if (w == 0) w = 1;
-        if (h == 0) h = 1;
+        var (left, top, w, h) = Box(g, ppem);
 
         var acc = new Acc(w, h);
         long ox = (long)left * 64, oy = (long)top * 64;
@@ -76,6 +74,25 @@ public static class OutlineRaster
             }
         }
         return new GlyphBitmap(left, top, w, h, acc.Sweep(), adv);
+    }
+
+    /// <summary>
+    /// The box a glyph with contours is drawn in, in whole pixels, y down:
+    /// Draw's, and what the X side checks against <see cref="MaxCells"/>
+    /// before it draws. Every point is inside the glyph's box and the scale
+    /// keeps order, so every scaled point is inside this.
+    /// </summary>
+    public static (int Left, int Top, int Width, int Height) Box(OGlyph g, int ppem)
+    {
+        long x0 = Scale(g.XMin, ppem), x1 = Scale(g.XMax, ppem);
+        // -Scale(y) is the y-down 26.6 coordinate
+        long yTop = -Scale(g.YMax, ppem), yBot = -Scale(g.YMin, ppem);
+        int left = (int)(x0 >> 6), top = (int)FloorDiv64(yTop);
+        int right = (int)((x1 + 63) >> 6), bottom = (int)CeilDiv64(yBot);
+        int w = right - left, h = bottom - top;
+        if (w == 0) w = 1;
+        if (h == 0) h = 1;
+        return (left, top, w, h);
     }
 
     // y-down values can be negative (a glyph above the baseline); these two

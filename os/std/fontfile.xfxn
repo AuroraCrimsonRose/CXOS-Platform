@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/fontfile.xfxn - outline faces, loaded from /System/Fonts.
+// Aurora Tejeda / CATX Systems
+// Threads: any thread.
+//
+// The half of the outline reader that needs the system: reading a face's
+// file into memory of its own. std/outline.xfxn, the format and its check,
+// and std/raster.xfxn, the rasteriser, need nothing below them but memory,
+// so the host builds them too: the Differential fact that holds the
+// rasteriser to the C# oracle runs them there (os/xc/rastdump.xfxn).
+//
+// Fonts are loaded only from /System/Fonts (of_load takes a name, never a
+// path), so a program cannot be pointed at a file another one wrote.
+
+import "outline.xfxn";
+import "display.xfxn";
+import "file.xfxn";
+
+// Load and check /System/Fonts/<name>.xfnt into f: 0, or E_INVALID_ARGS
+// for a name that is not one, an error from the file (E_NOT_FOUND and the
+// like), E_CORRUPT with f.why set, or E_NO_MEMORY. The file is read into
+// a memory object of its own (f.mem), so a server can share it; of_free
+// lets go of it.
+fn of_load(f: *of_face, name: *u8) -> i32 {
+    memzero(f as *u8, sizeof *f);
+    if (of_name_ok(name) == 0) { return E_INVALID_ARGS; }
+    let path: [40]u8;
+    let k: u32 = strcopy(&path[0], "/System/Fonts/", 40);
+    k = k + strcopy(&path[k], name, 40 - k);
+    strcopy(&path[k], ".xfnt", 40 - k);
+    let size: i64 = file_size(&path[0]);
+    if (size < 0) { return size as i32; }
+    if (size < OF_HEADER as i64 || size > OF_FILE_MAX as i64) { f.why = OF_W_LENGTH; return E_CORRUPT; }
+    let n: u32 = size as u32;
+    let addr: u64 = 0;
+    // one byte more than the file: a file that grew since its size was read
+    // is not cut to fit
+    let m: i32 = ds_mem((n + 1) as u64, &addr);
+    if (m <= 0) { return m; }
+    let p: *u8 = addr as *u8;
+    let got: i32 = file_slurp(&path[0], p, n + 1);
+    let rc: i32 = 0;
+    if (got < 0) { rc = got; }
+    else if ((got as u32) != n) { f.why = OF_W_LENGTH; rc = E_CORRUPT; }
+    else { rc = of_check(f, p, n); }
+    if (rc != 0) {
+        let why: u32 = f.why;
+        vm_unmap(addr, 0);
+        handle_close(m);
+        memzero(f as *u8, sizeof *f);
+        f.why = why;
+        return rc;
+    }
+    f.mem = m;
+    f.addr = addr;
+    return 0;
+}
+
+// Let go of a face of_load made.
+fn of_free(f: *of_face) -> void {
+    if (f.mem > 0) {
+        vm_unmap(f.addr, 0);
+        handle_close(f.mem);
+    }
+    memzero(f as *u8, sizeof *f);
+}

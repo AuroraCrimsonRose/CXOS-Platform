@@ -1,0 +1,249 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// rastdump.xfxn - std/raster.xfxn's glyphs, for the oracle to compare.
+// Aurora Tejeda / CATX Systems
+//
+//   rastdump --sizes 1,12,300:17 [--cache BYTES] a.xfnt b.xfnt ...
+//
+// A host program, built as the compiler's dump programs are (HostBuild), and
+// run by the Differential fact RasterDiff against `cxk font raster`, which
+// prints the same lines from the C# oracle (OutlineRaster.cs). Per file:
+//
+//   == <path>
+//   glyphs <n>                              or: refused
+//   <ppem> <glyph> <advance 26.6> <left> <top> <width> <height> <fnv-1a>
+//
+// for each size, each glyph (or each S-th, for P:S), the hash over the
+// coverage bytes. With --cache, every glyph is drawn through an rs_cache of
+// that budget instead: each run of 64 glyphs is asked for twice and the
+// second answer printed, so a cache that hands back the wrong glyph, or a
+// stale one, prints a line the oracle does not. The cached pass takes the
+// glyphs in a scrambled order (see dump_cached), so its lines are compared
+// sorted. Its hits, misses and flushes go to stderr.
+
+import "xc_sys.xfxn";
+
+// the prelude's codes, which a host build has no prelude to give
+const E_INVALID_ARGS: i32 = -3;
+const E_CORRUPT: i32 = -23;
+
+import "raster.xfxn";
+
+global out: buf;
+global sizes: [64]u32;
+global steps: [64]u32;
+global nsizes: u32;
+global budget: u32;
+global cached: bool;
+global hits: u32;
+global misses: u32;
+global flushes: u32;
+
+fn put_i64(v: i64) -> void {
+    if (v < 0) { buf_push(&out, 45); v = 0 - v; }
+    buf_u32(&out, v as u32);
+}
+
+fn put_hex(v: u32) -> void {
+    let i: u32 = 0;
+    while (i < 8) {
+        let d: u32 = (v >> (28 - i * 4)) & 15;
+        if (d < 10) { buf_push(&out, (48 + d) as u8); } else { buf_push(&out, (87 + d) as u8); }
+        i += 1;
+    }
+}
+
+fn fnv(b: *rs_bitmap) -> u32 {
+    let h: u32 = 0x811C9DC5;
+    let n: u32 = b.width * b.height;
+    let i: u32 = 0;
+    while (i < n) {
+        h = (h ^ (b.cov[i] as u32)) * 16777619;
+        i += 1;
+    }
+    return h;
+}
+
+fn line(ppem: u32, g: u32, b: *rs_bitmap) -> void {
+    buf_u32(&out, ppem);
+    buf_push(&out, 32);
+    buf_u32(&out, g);
+    buf_push(&out, 32);
+    put_i64(b.advance);
+    buf_push(&out, 32);
+    put_i64(b.left as i64);
+    buf_push(&out, 32);
+    put_i64(b.top as i64);
+    buf_push(&out, 32);
+    buf_u32(&out, b.width);
+    buf_push(&out, 32);
+    buf_u32(&out, b.height);
+    buf_push(&out, 32);
+    put_hex(fnv(b));
+    buf_push(&out, 10);
+    if (out.len > 1048576) { out_buf(&out); buf_clear(&out); }
+}
+
+fn fail(ppem: u32, g: u32, rc: i32) -> void {
+    buf_str(&out, "error ");
+    buf_u32(&out, ppem);
+    buf_push(&out, 32);
+    buf_u32(&out, g);
+    buf_push(&out, 32);
+    put_i64(rc as i64);
+    buf_push(&out, 10);
+}
+
+// Each glyph at ppem, drawn straight.
+fn dump_direct(f: *of_face, ppem: u32, step: u32) -> void {
+    let g: u32 = 0;
+    while (g < f.glyphs) {
+        let b: rs_bitmap;
+        let rc: i32 = rs_draw(f, g, ppem, &b);
+        if (rc != 0) { fail(ppem, g, rc); }
+        else { line(ppem, g, &b); rs_release(&b); }
+        g += step;
+    }
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    while (b != 0) { let t: u32 = a % b; a = b; b = t; }
+    return a;
+}
+
+// Each glyph at ppem, through a cache: a run of 64 asked for, then asked
+// for again. The glyphs are taken in a scrambled order (the j-th is
+// j * m mod their count, m prime to it): consecutive glyphs fall into a
+// Fibonacci hash's largest gaps, so a glyph kept in the wrong slot would
+// still be found there. The test sorts the lines before it compares them.
+fn dump_cached(f: *of_face, ppem: u32, step: u32) -> void {
+    let c: rs_cache;
+    rs_cache_init(&c, f, ppem, budget);
+    let n: u32 = (f.glyphs + step - 1) / step;
+    let m: u32 = 389 % n;
+    if (m == 0) { m = 1; }
+    while (gcd(m, n) != 1) { m += 1; }
+    let j: u32 = 0;
+    while (j < n) {
+        let pass: u32 = 0;
+        while (pass < 2) {
+            let k: u32 = 0;
+            while (k < 64 && j + k < n) {
+                let h: u32 = step * (((j + k) * m) % n);
+                let p: *rs_bitmap = 0 as *rs_bitmap;
+                let rc: i32 = rs_cache_get(&c, h, &p);
+                if (pass == 1) {
+                    if (rc != 0) { fail(ppem, h, rc); } else { line(ppem, h, p); }
+                }
+                k += 1;
+            }
+            pass += 1;
+        }
+        j += 64;
+    }
+    hits += c.hits;
+    misses += c.misses;
+    flushes += c.flushes;
+    rs_cache_free(&c);
+}
+
+fn dump_file(path: *u8) -> bool {
+    buf_str(&out, "== ");
+    buf_str(&out, path);
+    buf_push(&out, 10);
+    let b: buf = buf_new();
+    if (!read_file(path, &b)) { err_str("rastdump: cannot read "); err_str(path); err_str("\n"); return false; }
+    let f: of_face;
+    if (of_check(&f, b.data, b.len) != 0) {
+        buf_str(&out, "refused\n");
+        buf_free(&b);
+        return true;
+    }
+    buf_str(&out, "glyphs ");
+    buf_u32(&out, f.glyphs);
+    buf_push(&out, 10);
+    let s: u32 = 0;
+    while (s < nsizes) {
+        if (cached) { dump_cached(&f, sizes[s], steps[s]); }
+        else { dump_direct(&f, sizes[s], steps[s]); }
+        s += 1;
+    }
+    buf_free(&b);
+    return true;
+}
+
+fn read_num(s: *u8, at: *u32, v: *u32) -> bool {
+    let i: u32 = *at;
+    let x: u32 = 0;
+    let n: u32 = 0;
+    while (s[i] >= '0' && s[i] <= '9' && n < 9) { x = x * 10 + (s[i] - '0') as u32; i += 1; n += 1; }
+    *at = i;
+    *v = x;
+    return n > 0;
+}
+
+// "P,P:S,...": a size, and every S-th glyph (1 when not given)
+fn read_sizes(s: *u8) -> bool {
+    let i: u32 = 0;
+    nsizes = 0;
+    while (true) {
+        if (nsizes == 64) { return false; }
+        let p: u32 = 0;
+        if (!read_num(s, &i, &p)) { return false; }
+        let st: u32 = 1;
+        if (s[i] == ':') {
+            i += 1;
+            if (!read_num(s, &i, &st) || st == 0) { return false; }
+        }
+        sizes[nsizes] = p;
+        steps[nsizes] = st;
+        nsizes += 1;
+        if (s[i] == 0) { return true; }
+        if (s[i] != ',') { return false; }
+        i += 1;
+    }
+    return false;
+}
+
+fn streq_c(a: *u8, b: *u8) -> bool {
+    let i: u32 = 0;
+    while (a[i] == b[i]) { if (a[i] == 0) { return true; } i += 1; }
+    return false;
+}
+
+fn xc_main() -> i32 {
+    out = buf_new();
+    let i: u32 = 1;
+    let any: bool = false;
+    while (i < xc_argc()) {
+        let a: *u8 = xc_arg(i);
+        if (streq_c(a, "--sizes") && i + 1 < xc_argc()) {
+            if (!read_sizes(xc_arg(i + 1))) { err_str("rastdump: bad --sizes\n"); return 2; }
+            i += 2;
+        } else if (streq_c(a, "--cache") && i + 1 < xc_argc()) {
+            let at: u32 = 0;
+            if (!read_num(xc_arg(i + 1), &at, &budget)) { err_str("rastdump: bad --cache\n"); return 2; }
+            cached = true;
+            i += 2;
+        } else {
+            if (nsizes == 0) { err_str("usage: rastdump --sizes P[:S],... [--cache BYTES] a.xfnt ...\n"); return 2; }
+            if (!dump_file(a)) { out_buf(&out); return 1; }
+            any = true;
+            i += 1;
+        }
+    }
+    out_buf(&out);
+    if (cached) {
+        let e: buf = buf_new();
+        buf_str(&e, "cache hits ");
+        buf_u32(&e, hits);
+        buf_str(&e, " misses ");
+        buf_u32(&e, misses);
+        buf_str(&e, " flushes ");
+        buf_u32(&e, flushes);
+        buf_push(&e, 10);
+        sys_write(2, e.data, e.len);
+    }
+    if (!any) { err_str("rastdump: no fonts\n"); return 2; }
+    return 0;
+}

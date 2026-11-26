@@ -1,0 +1,376 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/raster.xfxn - outline glyphs to coverage, and a cache of them.
+// Aurora Tejeda / CATX Systems
+// Threads: rs_draw on any thread; a cache belongs to one thread at a time.
+//
+// docs/system/CX_FONTS.md §4.1. This is the C# oracle
+// (devkit/CXEX.Build/Fonts/OutlineRaster.cs) step for step, and the
+// Differential fact RasterDiff holds it to the oracle pixel for pixel: every
+// glyph of every face in the image at a range of sizes, and random faces.
+// So it is written as the oracle is: integers only, every division of
+// non-negative numbers, the same order of operations. A change here is a
+// change there too, in the same commit.
+//
+// The method is FreeType's `smooth` area-and-cover accumulation (from
+// memory): each line is cut at every pixel row and column it crosses, and
+// each piece adds to its cell the height it spans (cover) and that height
+// times twice its mean distance from the cell's left edge (area). A sweep
+// along each row turns those into coverage. Non-zero winding by magnitude.
+//
+// Nothing here calls the system: memory comes from std/heap.xfxn, so the
+// host builds this file too (os/xc/rastdump.xfxn).
+
+import "outline.xfxn";
+import "heap.xfxn";
+
+const RS_MAX_PPEM: u32 = 1024;
+const RS_MAX_STEPS: i64 = 16;          // a curve is cut into at most this many lines
+const RS_MAX_CELLS: u64 = 4194304;     // (width + 1) * height: 64 MiB of cells at most
+
+// A drawn glyph: coverage 0-255, row-major, width * height bytes, placed
+// relative to the pen (left) and the baseline (top, y down). advance is in
+// 26.6 pixels. cov is 0 for a glyph with no contours (width and height 0).
+struct rs_bitmap {
+    left: i32,
+    top: i32,
+    width: u32,
+    height: u32,
+    advance: i64,
+    cov: *u8
+}
+
+// The cells: per pixel a cover and an area, one spare column on the right.
+struct rs_acc {
+    w: u32,
+    h: u32,
+    cover: *i64,
+    area: *i64
+}
+
+// An em coordinate to 26.6 pixels, rounded: floor((v * ppem + 32) / 64).
+// The bias of 4 em keeps the shifted number non-negative, and 4 em times
+// any ppem is a whole number of 64ths, so the bias comes back off exactly.
+fn rs_scale(v: i32, ppem: u32) -> i64 {
+    let s: i64 = ((v as i64) + (OF_LIMIT as i64)) * (ppem as i64) + 32;
+    return (s >> 6) - 256 * (ppem as i64);
+}
+
+// floor(v / 64) and ceil(v / 64) of a number that may be negative: the
+// box's edges, the only places a negative is divided.
+fn rs_floor64(v: i64) -> i64 {
+    if (v >= 0) { return v >> 6; }
+    return 0 - ((0 - v + 63) >> 6);
+}
+fn rs_ceil64(v: i64) -> i64 { return 0 - rs_floor64(0 - v); }
+
+fn rs_min(a: i64, b: i64) -> i64 { if (a < b) { return a; } return b; }
+fn rs_max(a: i64, b: i64) -> i64 { if (a > b) { return a; } return b; }
+fn rs_abs(a: i64) -> i64 { if (a < 0) { return 0 - a; } return a; }
+
+// A piece within one cell, from x0 to x1 (26.6, from the box's left), height
+// d. Every x is at most 64 * width, so the column is at most width: the
+// spare one.
+fn rs_cell(a: *rs_acc, r: i64, x0: i64, x1: i64, d: i64, sign: i64) -> void {
+    if (d == 0) { return; }
+    let c: i64 = rs_min(x0, x1) >> 6;
+    let fx: i64 = x0 + x1 - 2 * c * 64;       // fx0 + fx1
+    let at: u32 = (r as u32) * (a.w + 1) + (c as u32);
+    a.cover[at] = a.cover[at] + sign * d;
+    a.area[at] = a.area[at] + sign * d * fx;
+}
+
+// A piece inside row r, its height rising from fya to fyb (0-64), cut at
+// each column edge it crosses.
+fn rs_row(a: *rs_acc, r: i64, xa: i64, fya: i64, xb: i64, fyb: i64, sign: i64) -> void {
+    if (xa == xb) { rs_cell(a, r, xa, xa, fyb - fya, sign); return; }
+    let dfy: i64 = fyb - fya;
+    let fy: i64 = fya;
+    let x: i64 = xa;
+    if (xa < xb) {
+        while (x < xb) {
+            let edge: i64 = rs_min((x >> 6) * 64 + 64, xb);
+            let ny: i64 = fyb;
+            if (edge != xb) { ny = fya + (edge - xa) * dfy / (xb - xa); }
+            rs_cell(a, r, x, edge, ny - fy, sign);
+            x = edge;
+            fy = ny;
+        }
+        return;
+    }
+    while (x > xb) {
+        let edge: i64 = rs_max(((x - 1) >> 6) * 64, xb);
+        let ny: i64 = fyb;
+        if (edge != xb) { ny = fya + (xa - edge) * dfy / (xa - xb); }
+        rs_cell(a, r, x, edge, ny - fy, sign);
+        x = edge;
+        fy = ny;
+    }
+}
+
+// x where the line a-b (a below b, y down) meets height y, a.y <= y <= b.y,
+// dividing non-negatives only.
+fn rs_x_at(ax: i64, ay: i64, bx: i64, by: i64, y: i64) -> i64 {
+    if (y == by) { return bx; }
+    if (bx >= ax) { return ax + (y - ay) * (bx - ax) / (by - ay); }
+    return ax - (y - ay) * (ax - bx) / (by - ay);
+}
+
+// A line, cut at each pixel row it crosses. Every coordinate is >= 0.
+fn rs_line(a: *rs_acc, x0: i64, y0: i64, x1: i64, y1: i64) -> void {
+    if (y0 == y1) { return; }
+    let ax: i64 = x0;
+    let ay: i64 = y0;
+    let bx: i64 = x1;
+    let by: i64 = y1;
+    let sign: i64 = 1;
+    if (ay > by) {
+        ax = x1; ay = y1; bx = x0; by = y0;
+        sign = 0 - 1;
+    }
+    let r: i64 = ay >> 6;
+    while (r * 64 < by) {
+        let ya: i64 = rs_max(ay, r * 64);
+        let yb: i64 = rs_min(by, r * 64 + 64);
+        if (ya != yb) {
+            let xa: i64 = rs_x_at(ax, ay, bx, by, ya);
+            let xb: i64 = rs_x_at(ax, ay, bx, by, yb);
+            rs_row(a, r, xa, ya - r * 64, xb, yb - r * 64, sign);
+        }
+        r = r + 1;
+    }
+}
+
+// A quadratic, cut into n chords: a chord strays by at most dev / (4 n^2)
+// 64ths, kept within an eighth of a pixel, dev <= 32 n^2. Every point and
+// every weight is non-negative; the last point is exactly p2.
+fn rs_quad(a: *rs_acc, x0: i64, y0: i64, x1: i64, y1: i64, x2: i64, y2: i64) -> void {
+    let dev: i64 = rs_max(rs_abs(x0 - 2 * x1 + x2), rs_abs(y0 - 2 * y1 + y2));
+    let n: i64 = 1;
+    while (n < RS_MAX_STEPS && dev > 32 * n * n) { n = n + 1; }
+    let nn: i64 = n * n;
+    let px: i64 = x0;
+    let py: i64 = y0;
+    let i: i64 = 1;
+    while (i <= n) {
+        let u: i64 = n - i;
+        let x: i64 = x2;
+        let y: i64 = y2;
+        if (i != n) {
+            x = (u * u * x0 + 2 * u * i * x1 + i * i * x2 + nn / 2) / nn;
+            y = (u * u * y0 + 2 * u * i * y1 + i * i * y2 + nn / 2) / nn;
+        }
+        rs_line(a, px, py, x, y);
+        px = x;
+        py = y;
+        i = i + 1;
+    }
+}
+
+// Each row left to right: cover accumulates; a pixel is twice its covered
+// area in 64ths squared (a full one 8192), by magnitude, over 32, at most 255.
+fn rs_sweep(a: *rs_acc, out: *u8) -> void {
+    let r: u32 = 0;
+    while (r < a.h) {
+        let cover: i64 = 0;
+        let c: u32 = 0;
+        while (c < a.w) {
+            let at: u32 = r * (a.w + 1) + c;
+            cover = cover + a.cover[at];
+            let v: i64 = rs_abs(cover * 128 - a.area[at]) >> 5;
+            if (v > 255) { v = 255; }
+            out[r * a.w + c] = v as u8;
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+}
+
+// Glyph g of f at ppem pixels to the em, into out (its cov allocated; let
+// go of it with rs_release): 0, E_INVALID_ARGS for a size or glyph out of
+// range, or E_NO_MEMORY (also for a box past RS_MAX_CELLS, which no face in
+// the image comes near below 1024 ppem). out is untouched on failure.
+fn rs_draw(f: *of_face, g: u32, ppem: u32, out: *rs_bitmap) -> i32 {
+    if (ppem < 1 || ppem > RS_MAX_PPEM) { return E_INVALID_ARGS; }
+    let gl: of_glyph;
+    if (of_glyph_get(f, g, &gl) != 0) { return E_INVALID_ARGS; }
+    let adv: i64 = rs_scale(gl.advance as i32, ppem);
+    if (gl.contours == 0) {
+        out.left = 0; out.top = 0; out.width = 0; out.height = 0;
+        out.advance = adv;
+        out.cov = 0 as *u8;
+        return 0;
+    }
+
+    // The box, in whole pixels, y down. Every point is inside the glyph's
+    // box and the scale keeps order, so every scaled point is inside this.
+    let left: i64 = rs_floor64(rs_scale(gl.xmin, ppem));
+    let right: i64 = rs_floor64(rs_scale(gl.xmax, ppem) + 63);
+    let top: i64 = rs_floor64(0 - rs_scale(gl.ymax, ppem));
+    let bottom: i64 = rs_ceil64(0 - rs_scale(gl.ymin, ppem));
+    let w: i64 = right - left;
+    let h: i64 = bottom - top;
+    if (w == 0) { w = 1; }
+    if (h == 0) { h = 1; }
+    let cells: u64 = ((w + 1) as u64) * (h as u64);
+    if (cells > RS_MAX_CELLS) { return E_NO_MEMORY; }
+
+    let a: rs_acc;
+    a.w = w as u32;
+    a.h = h as u32;
+    a.cover = zalloc((cells * 8) as u32) as *i64;
+    a.area = zalloc((cells * 8) as u32) as *i64;
+    let cov: *u8 = alloc((w * h) as u32) as *u8;
+    if (a.cover == 0 as *i64 || a.area == 0 as *i64 || cov == 0 as *u8) {
+        free(a.cover as usize);
+        free(a.area as usize);
+        free(cov as usize);
+        return E_NO_MEMORY;
+    }
+
+    let ox: i64 = left * 64;
+    let oy: i64 = top * 64;
+    let c: u32 = 0;
+    while (c < gl.contours) {
+        let first: u32 = of_contour_first(f, gl.first + c);
+        let n: u32 = of_contour_count(f, gl.first + c);
+        let k: u32 = 0;
+        while (k < n) {
+            let p0: u32 = first + k;
+            let p1: u32 = first + (k + 1) % n;
+            let ax: i64 = rs_scale(of_point_x(f, p0), ppem) - ox;
+            let ay: i64 = 0 - rs_scale(of_point_y(f, p0), ppem) - oy;
+            let bx: i64 = rs_scale(of_point_x(f, p1), ppem) - ox;
+            let by: i64 = 0 - rs_scale(of_point_y(f, p1), ppem) - oy;
+            if (of_point_on(f, p1) != 0) {
+                rs_line(&a, ax, ay, bx, by);
+                k = k + 1;
+            } else {
+                let p2: u32 = first + (k + 2) % n;
+                let cx: i64 = rs_scale(of_point_x(f, p2), ppem) - ox;
+                let cy: i64 = 0 - rs_scale(of_point_y(f, p2), ppem) - oy;
+                rs_quad(&a, ax, ay, bx, by, cx, cy);
+                k = k + 2;
+            }
+        }
+        c = c + 1;
+    }
+    rs_sweep(&a, cov);
+    free(a.cover as usize);
+    free(a.area as usize);
+
+    out.left = left as i32;
+    out.top = top as i32;
+    out.width = w as u32;
+    out.height = h as u32;
+    out.advance = adv;
+    out.cov = cov;
+    return 0;
+}
+
+// Let go of a bitmap rs_draw made.
+fn rs_release(b: *rs_bitmap) -> void {
+    free(b.cov as usize);
+    b.cov = 0 as *u8;
+    b.width = 0;
+    b.height = 0;
+}
+
+// ---- the glyph cache: one face at one size ----
+//
+// Open addressing over RS_SLOTS slots, keyed by glyph. A miss draws the
+// glyph and keeps it; when the slots are three quarters full, or the
+// coverage kept would pass the budget, everything is let go first (a flush)
+// and the glyph is kept alone. A bitmap rs_cache_get returns is the cache's:
+// it stays valid until the next rs_cache_get or rs_cache_free, so draw it
+// before asking for another.
+
+const RS_SLOTS: u32 = 256;             // rs_slot gives 8 bits
+const RS_EMPTY: u32 = 0xFFFFFFFF;
+
+struct rs_cache {
+    face: *of_face,
+    ppem: u32,
+    budget: u32,       // coverage bytes kept at most (a glyph larger is drawn, kept alone)
+    used: u32,         // coverage bytes kept
+    count: u32,        // slots in use
+    hits: u32,
+    misses: u32,
+    flushes: u32,
+    key: [256]u32,     // the glyph, or RS_EMPTY
+    ent: [256]usize    // its rs_bitmap, from alloc
+}
+
+// A cache of f's glyphs at ppem, keeping at most budget bytes of coverage.
+fn rs_cache_init(c: *rs_cache, f: *of_face, ppem: u32, budget: u32) -> void {
+    memzero(c as *u8, sizeof *c);
+    c.face = f;
+    c.ppem = ppem;
+    c.budget = budget;
+    let i: u32 = 0;
+    while (i < RS_SLOTS) { c.key[i] = RS_EMPTY; i = i + 1; }
+}
+
+// Let go of every glyph kept.
+fn rs_cache_flush(c: *rs_cache) -> void {
+    let i: u32 = 0;
+    while (i < RS_SLOTS) {
+        if (c.key[i] != RS_EMPTY) {
+            rs_release(c.ent[i] as *rs_bitmap);
+            free(c.ent[i]);
+            c.key[i] = RS_EMPTY;
+            c.ent[i] = 0;
+        }
+        i = i + 1;
+    }
+    c.used = 0;
+    c.count = 0;
+    c.flushes = c.flushes + 1;
+}
+
+fn rs_cache_free(c: *rs_cache) -> void {
+    rs_cache_flush(c);
+    c.face = 0 as *of_face;
+}
+
+// Fibonacci hashing: the product's top 8 bits (its low ones are g's own
+// mod 256, so a run of glyphs would never meet in a slot).
+fn rs_slot(g: u32) -> u32 { return (g * 0x9E3779B1) >> 24; }
+
+// Glyph g, drawn or kept: its bitmap into *out (the cache's; see above).
+// 0, or what rs_draw returns.
+fn rs_cache_get(c: *rs_cache, g: u32, out: **rs_bitmap) -> i32 {
+    let i: u32 = rs_slot(g);
+    while (c.key[i] != RS_EMPTY) {
+        if (c.key[i] == g) {
+            c.hits = c.hits + 1;
+            *out = c.ent[i] as *rs_bitmap;
+            return 0;
+        }
+        i = (i + 1) & (RS_SLOTS - 1);
+    }
+    let b: rs_bitmap;
+    let rc: i32 = rs_draw(c.face, g, c.ppem, &b);
+    if (rc != 0) { return rc; }
+    let e: usize = alloc(sizeof b);
+    if (e == 0) { rs_release(&b); return E_NO_MEMORY; }
+    c.misses = c.misses + 1;
+    let size: u32 = b.width * b.height;
+    if ((c.count + 1) * 4 > RS_SLOTS * 3 || c.used > c.budget || size > c.budget - c.used) {
+        rs_cache_flush(c);
+        i = rs_slot(g);
+    }
+    let p: *rs_bitmap = e as *rs_bitmap;
+    p.left = b.left;
+    p.top = b.top;
+    p.width = b.width;
+    p.height = b.height;
+    p.advance = b.advance;
+    p.cov = b.cov;
+    c.key[i] = g;
+    c.ent[i] = e;
+    c.count = c.count + 1;
+    c.used = c.used + size;
+    *out = p;
+    return 0;
+}

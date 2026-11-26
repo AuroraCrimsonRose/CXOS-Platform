@@ -473,7 +473,7 @@ edit = os/std/outline.xfxn
 expect = x: fonts: the faces in /System/Fonts @ failed at step 1008
 group = g4
 narrow = yes
-edit = os/std/outline.xfxn
+edit = os/std/fontfile.xfxn
 <<<
         handle_close(f.mem);
     }

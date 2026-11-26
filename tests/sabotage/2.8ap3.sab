@@ -1,0 +1,158 @@
+# Step 2.8a′3, the X rasteriser and its glyph cache (std/raster.xfxn), run
+# by `cxk test sabotage`. Each must turn red exactly the self-tests named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds
+# at most one sabotage per test, and a drawing sabotage that changes a
+# glyph the oracle printed (sweep-shift, quad-coarse) boots alone: the cache
+# test checks the same glyph at its step 2201 and would go red with it.
+#
+# These are the OS's copy on CXK, held to lines the oracle printed. The
+# Differential fact RasterDiff holds the same file to the oracle on the
+# host, glyph for glyph, and is sabotaged there (every step of the method,
+# the cap and the cache; the commit message has its matrix).
+
+# ---- drawing ----
+
+[scale-round]
+# em units round down at the half 64th
+expect = x: fonts: glyphs drawn as the oracle draws @ failed at step 20
+group = g1
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+    let s: i64 = ((v as i64) + (OF_LIMIT as i64)) * (ppem as i64) + 32;
+===
+    let s: i64 = ((v as i64) + (OF_LIMIT as i64)) * (ppem as i64) + 31;
+>>>
+
+[sweep-shift]
+# coverage comes out half what it is
+expect = x: fonts: glyphs drawn as the oracle draws @ failed at step 2014
+group = g7
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+            let v: i64 = rs_abs(cover * 128 - a.area[at]) >> 5;
+===
+            let v: i64 = rs_abs(cover * 128 - a.area[at]) >> 6;
+>>>
+
+[quad-coarse]
+# curves cut into a quarter of the chords they need
+expect = x: fonts: glyphs drawn as the oracle draws @ failed at step 2014
+group = g8
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+    while (n < RS_MAX_STEPS && dev > 32 * n * n) { n = n + 1; }
+===
+    while (n < RS_MAX_STEPS && dev > 512 * n * n) { n = n + 1; }
+>>>
+
+[ppem-zero]
+# a size of 0 is drawn
+expect = x: fonts: glyphs drawn as the oracle draws @ failed at step 2100
+group = g4
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+    if (ppem < 1 || ppem > RS_MAX_PPEM) { return E_INVALID_ARGS; }
+===
+    if (ppem > RS_MAX_PPEM) { return E_INVALID_ARGS; }
+>>>
+
+[ppem-past]
+# 1025 is drawn
+expect = x: fonts: glyphs drawn as the oracle draws @ failed at step 2101
+group = g5
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+    if (ppem < 1 || ppem > RS_MAX_PPEM) { return E_INVALID_ARGS; }
+===
+    if (ppem < 1 || ppem > RS_MAX_PPEM + 1) { return E_INVALID_ARGS; }
+>>>
+
+[glyph-past]
+# a glyph past the face is refused as no memory
+expect = x: fonts: glyphs drawn as the oracle draws @ failed at step 2102
+group = g6
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+    if (of_glyph_get(f, g, &gl) != 0) { return E_INVALID_ARGS; }
+===
+    if (of_glyph_get(f, g, &gl) != 0) { return E_NO_MEMORY; }
+>>>
+
+# ---- the cache ----
+
+[cache-any-key]
+# any kept glyph answers for the one asked for
+expect = x: fonts: the glyph cache @ failed at step 22
+group = g1
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+        if (c.key[i] == g) {
+===
+        if (c.key[i] != RS_EMPTY) {
+>>>
+
+[cache-used]
+# what it keeps is not counted against the budget
+expect = x: fonts: the glyph cache @ failed at step 2202
+group = g2
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+    c.used = c.used + size;
+===
+>>>
+
+[cache-hits]
+# a hit is not counted
+expect = x: fonts: the glyph cache @ failed at step 2204
+group = g3
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+            c.hits = c.hits + 1;
+===
+>>>
+
+[cache-budget-blind]
+# the budget never lets anything go
+expect = x: fonts: the glyph cache @ failed at step 2210
+group = g4
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+    if ((c.count + 1) * 4 > RS_SLOTS * 3 || c.used > c.budget || size > c.budget - c.used) {
+===
+    if ((c.count + 1) * 4 > RS_SLOTS * 3) {
+>>>
+
+[cache-over-budget]
+# a glyph kept past the budget makes the room left wrap round
+expect = x: fonts: the glyph cache @ failed at step 2212
+group = g5
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+    if ((c.count + 1) * 4 > RS_SLOTS * 3 || c.used > c.budget || size > c.budget - c.used) {
+===
+    if ((c.count + 1) * 4 > RS_SLOTS * 3 || size > c.budget - c.used) {
+>>>
+
+[cache-flush-count]
+# a flush lets go of the glyphs and still counts them
+expect = x: fonts: the glyph cache @ failed at step 22
+group = g6
+narrow = yes
+edit = os/std/raster.xfxn
+<<<
+    c.used = 0;
+    c.count = 0;
+===
+    c.used = 0;
+>>>

@@ -312,3 +312,73 @@ public class FontInspectCommand : Command<FontInspectCommand.Settings>
         return 0;
     }
 }
+
+/// <summary>
+/// `cxk font raster` - every glyph of v2 fonts through the oracle
+/// rasteriser, one line each: the C# side of the Differential fact RasterDiff,
+/// which runs os/xc/rastdump.xfxn (std/raster.xfxn) on the same files and
+/// requires the same text. The format is rastdump's.
+/// </summary>
+public class FontRasterCommand : Command<FontRasterCommand.Settings>
+{
+    public class Settings : CommandSettings
+    {
+        [CommandArgument(0, "<XFNT>")]
+        [Description("The v2 .xfnt files to draw")]
+        public string[] Paths { get; set; } = Array.Empty<string>();
+
+        [CommandOption("--sizes")]
+        [Description("Sizes in pixels per em, each P or P:S for every S-th glyph: 1,12,300:17")]
+        public string Sizes { get; set; } = "";
+    }
+
+    protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    {
+        var sizes = new System.Collections.Generic.List<(int Ppem, int Step)>();
+        foreach (string part in settings.Sizes.Split(','))
+        {
+            string[] ps = part.Split(':');
+            if (ps.Length > 2 || !int.TryParse(ps[0], out int p) || p < 0
+                || (ps.Length == 2 && (!int.TryParse(ps[1], out int s0) || s0 < 1)))
+            {
+                Console.Error.WriteLine("error: bad --sizes");
+                return 2;
+            }
+            sizes.Add((p, ps.Length == 2 ? int.Parse(ps[1]) : 1));
+        }
+        if (settings.Paths.Length == 0) { Console.Error.WriteLine("error: no fonts"); return 2; }
+
+        var o = new System.Text.StringBuilder();
+        var stdout = Console.OpenStandardOutput();
+        void Flush() { var b = System.Text.Encoding.ASCII.GetBytes(o.ToString()); stdout.Write(b, 0, b.Length); o.Clear(); }
+        foreach (string path in settings.Paths)
+        {
+            o.Append("== ").Append(path).Append('\n');
+            OutlineFace f;
+            try { f = XfntOutline.Read(File.ReadAllBytes(path)); }
+            catch (InvalidDataException) { o.Append("refused\n"); continue; }
+            o.Append("glyphs ").Append(f.Glyphs.Count).Append('\n');
+            foreach (var (ppem, step) in sizes)
+                for (int g = 0; g < f.Glyphs.Count; g += step)
+                {
+                    // rastdump's codes for what it refuses: a size out of range
+                    // (E_INVALID_ARGS) or a box past its cell cap (E_NO_MEMORY)
+                    if (ppem is < 1 or > OutlineRaster.MaxPpem) { o.Append($"error {ppem} {g} -3\n"); continue; }
+                    if (f.Glyphs[g].Contours.Count > 0)
+                    {
+                        var (_, _, bw, bh) = OutlineRaster.Box(f.Glyphs[g], ppem);
+                        if ((long)(bw + 1) * bh > OutlineRaster.MaxCells) { o.Append($"error {ppem} {g} -8\n"); continue; }
+                    }
+                    var b = OutlineRaster.Draw(f.Glyphs[g], ppem);
+                    uint h = 0x811C9DC5;
+                    foreach (byte v in b.Coverage) h = (h ^ v) * 16777619;
+                    o.Append(ppem).Append(' ').Append(g).Append(' ').Append(b.Advance26_6).Append(' ')
+                     .Append(b.Left).Append(' ').Append(b.Top).Append(' ').Append(b.Width).Append(' ')
+                     .Append(b.Height).Append(' ').Append(h.ToString("x8")).Append('\n');
+                    if (o.Length > 1 << 20) Flush();
+                }
+        }
+        Flush();
+        return 0;
+    }
+}
