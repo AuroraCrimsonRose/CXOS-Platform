@@ -168,6 +168,8 @@ edit = os/std/toolkit.xfxn
 [mirror-pointer-unmirrored]
 # the pointer is taken where it is, not where the ui laid it out
 expect = x: toolkit: the pseudo-locale, mirrored @ failed at step 6820
+# the automation API presses where it shows: mirrored, it must be unmirrored
+expect = x: toolkit: the automation API @ failed at step 7019
 group = g4
 edit = os/std/toolkit.xfxn
 <<<
