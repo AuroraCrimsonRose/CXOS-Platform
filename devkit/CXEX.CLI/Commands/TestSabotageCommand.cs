@@ -35,6 +35,10 @@ public class TestSabotageCommand : Command<TestSabotageCommand.Settings>
         [Description("Run only these sabotages, comma-separated (a group runs whole if any of it is named)")]
         public string? Only { get; set; }
 
+        [CommandOption("--narrow")]
+        [Description("Boot each run with only the self-tests it expects (as narrow = yes does for one sabotage); not with --all")]
+        public bool Narrow { get; set; }
+
         [CommandOption("--dry-run")]
         [Description("Apply and restore each run's edits, checking each applies and the tree comes back; no build, no boot")]
         public bool DryRun { get; set; }
@@ -81,6 +85,11 @@ public class TestSabotageCommand : Command<TestSabotageCommand.Settings>
             AnsiConsole.MarkupLine($"[red]error:[/] no such file: {Markup.Escape(missing)}");
             return 2;
         }
+        if (s.All && s.Narrow)
+        {
+            AnsiConsole.MarkupLine("[red]error:[/] --all boots every test: it re-proves the whole record, so it is never narrowed");
+            return 2;
+        }
         string summaryName = s.All ? "all" : Path.GetFileNameWithoutExtension(s.File!);
 
         IReadOnlyList<IReadOnlyList<Sabotage>> runs;
@@ -92,7 +101,8 @@ public class TestSabotageCommand : Command<TestSabotageCommand.Settings>
                 var parsed = SabotageFile.Parse(System.IO.File.ReadAllText(f), f);
                 string stem = Path.GetFileNameWithoutExtension(f);
                 // with --all, names and groups are a file's own: two files may both say [owner] or group a
-                all.AddRange(s.All ? parsed.Select(x => x with { Name = stem + "/" + x.Name, Group = x.Group is null ? null : stem + "/" + x.Group })
+                // and every boot is full: narrow = yes is for a step's own runs
+                all.AddRange(s.All ? parsed.Select(x => x with { Name = stem + "/" + x.Name, Group = x.Group is null ? null : stem + "/" + x.Group, Narrow = false })
                                    : parsed);
             }
             runs = SabotageFile.Runs(all);
@@ -119,18 +129,23 @@ public class TestSabotageCommand : Command<TestSabotageCommand.Settings>
             AnsiConsole.MarkupLine("[yellow]an earlier run left files sabotaged: restored them first[/]");
             if (left.Count > 0) return Stop("could not restore what an earlier run left", left);
         }
+        string onlyFile = SabotageNarrowing.OnlyFile(root);
+        if (SetOnly(onlyFile, null))
+            AnsiConsole.MarkupLine("[yellow]an earlier run left build/ktest.only narrowed: emptied it[/]");
         string? fp0 = guard.Fingerprint();
         if (fp0 is null) return Stop("git could not report the tree's state", []);
 
         // Ctrl-C kills the build or QEMU child with us; the files go back first.
-        ConsoleCancelEventHandler onCancel = (_, _) => guard.Restore();
+        ConsoleCancelEventHandler onCancel = (_, _) => { guard.Restore(); SetOnly(onlyFile, null); };
         Console.CancelKeyPress += onCancel;
         try
         {
             string[] build = s.Dev ? ["--dev"] : ["--key", s.Key ?? "test"];
             Directory.CreateDirectory(outDir);
 
-            if (!s.DryRun && !s.NoBaseline)
+            // the full baseline only if some run boots every test: a narrowed
+            // run has a baseline of its own, booted with its list
+            if (!s.DryRun && !s.NoBaseline && runs.Any(r => SabotageNarrowing.Filter(r, s.Narrow) is null))
             {
                 AnsiConsole.MarkupLine("[grey]baseline: the tree as it is, built and booted[/]");
                 string dir = Path.Combine(outDir, "baseline");
@@ -144,17 +159,34 @@ public class TestSabotageCommand : Command<TestSabotageCommand.Settings>
             }
 
             var outcomes = new List<SabotageOutcome>();
+            var baselined = new HashSet<string>(StringComparer.Ordinal);
             foreach (var run in runs)
             {
                 string label = string.Join("+", run.Select(x => x.Name));
                 var edits = run.SelectMany(x => x.Edits).ToList();
+                string? filter = SabotageNarrowing.Filter(run, s.Narrow);
+                var bootArgs = filter is null ? run[0].BootArgs : [.. run[0].BootArgs, "--narrowed"];
+                if (filter is not null && !s.DryRun && !s.NoBaseline && baselined.Add(filter))
+                {
+                    AnsiConsole.MarkupLine($"[grey]narrowed baseline for {Markup.Escape(label)}: the tree as it is, only {Markup.Escape(filter.Trim().Replace("\n", "; "))}[/]");
+                    string bdir = Path.Combine(outDir, "baseline-" + label.Replace('/', '_'));
+                    Directory.CreateDirectory(bdir);
+                    SetOnly(onlyFile, filter);
+                    string? bbp = TestSupport.Build(root, build, Path.Combine(bdir, "build.log"), kernelChanged: false);
+                    if (bbp is not null) return Stop("narrowed baseline: " + bbp, []);
+                    var (bboot, bproblem) = TestSupport.Boot(root, bootArgs, bdir, s.TimeoutSeconds);
+                    if (bboot is null) return Stop("narrowed baseline: " + bproblem, []);
+                    if (SabotageNarrowing.BaselineProblem(filter, bboot) is string why)
+                        return Stop($"{why}; nothing narrowed to it can be judged", []);
+                }
+                SetOnly(onlyFile, filter);
                 string? problem = guard.Apply(edits);
                 List<SabotageOutcome> got;
                 if (problem is not null)
                     got = run.Select(x => new SabotageOutcome(x.Name, SabotageVerdict.NotApplied, problem)).ToList();
                 else if (s.DryRun)
                     got = run.Select(x => new SabotageOutcome(x.Name, SabotageVerdict.Caught,
-                        $"applied {x.Edits.Count} edit(s) (dry run)")).ToList();
+                        $"applied {x.Edits.Count} edit(s) (dry run)" + (filter is null ? "" : $", narrowed to {filter.Trim().Replace("\n", "; ")}"))).ToList();
                 else
                 {
                     string dir = Path.Combine(outDir, label.Replace('/', '_'));
@@ -166,7 +198,7 @@ public class TestSabotageCommand : Command<TestSabotageCommand.Settings>
                         got = run.Select(x => new SabotageOutcome(x.Name, SabotageVerdict.BuildFailed, bp)).ToList();
                     else
                     {
-                        var (boot, bootProblem) = TestSupport.Boot(root, run[0].BootArgs, dir, s.TimeoutSeconds);
+                        var (boot, bootProblem) = TestSupport.Boot(root, bootArgs, dir, s.TimeoutSeconds);
                         got = boot is null
                             ? run.Select(x => new SabotageOutcome(x.Name, SabotageVerdict.Inconclusive, bootProblem!)).ToList()
                             : SabotageJudge.Judge(run, boot).ToList();
@@ -191,8 +223,25 @@ public class TestSabotageCommand : Command<TestSabotageCommand.Settings>
         finally
         {
             guard.Restore();
+            SetOnly(onlyFile, null);
             Console.CancelKeyPress -= onCancel;
         }
+    }
+
+    /// <summary>
+    /// Writes ktest.only: <paramref name="text"/>, or empty (every test) when
+    /// null. Only when it changes, since a new one rebuilds the image. True
+    /// when it held something else before.
+    /// </summary>
+    private static bool SetOnly(string path, string? text)
+    {
+        string want = text ?? "";
+        string? had = System.IO.File.Exists(path) ? System.IO.File.ReadAllText(path) : null;
+        if (had == want) return false;
+        if (had is null && text is null) return false;   // never built: the build makes it empty
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        System.IO.File.WriteAllText(path, want);
+        return had is { Length: > 0 };
     }
 
     private static void Print(SabotageOutcome o, bool dry)

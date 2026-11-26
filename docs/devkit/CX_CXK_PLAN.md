@@ -137,8 +137,29 @@ edit = os/std/sync.xfxn
 - `group = <g>`: shares one build and boot with the rest of the group. Only
   for sabotages that land in different tests (CLAUDE.md, efficiency 5).
 - `boot = <args>`: more `verify-boot` arguments (`--cpu max`).
+- `narrow = yes`: boot only the tests the run expects (below). A group's
+  sabotages agree on it; a hang names no test and is never narrowed.
 - `edit = <path>`, then `<<<`, the old text, `===`, the new, `>>>`: any
   number per sabotage, applied in order.
+
+**Narrowed boots** (`narrow = yes`, or `--narrow` for every run; never with
+`--all`). The command writes the run's expects, one a line (`*` for a
+prefix), to `build/ktest.only`, which the build stages as
+`/System/Config/ktest.only` (empty by default, and emptied after every run,
+also by the next run if one died). The kernel (`kernel/ktest.h`) and the X
+runner (`os/std/test.xfxn`) read it by the same rules, each held to them by
+a self-test of its own, and report every other test `skip`:
+`@ktest result i skip 0 name`, an end line `end passed total skipped`, and a
+summary `all N passed, M skipped`. The kernel refuses a skip of a test the
+list names, and with no X test named it never starts the runner (about
+700 s saved). The X runner's own test is judged whenever the runner runs.
+`verify-boot` fails any boot with a skip unless given `--narrowed`, so a
+list left behind cannot pass a gate. Before its first run, each distinct
+list is booted on the clean tree: it must pass, run every test the list
+names, and run nothing else. What a narrowed run gives up is "and nowhere
+else": a red at a test it did not run cannot be seen, so a step's own
+sabotages may be narrowed while `--all` stays full. `tests/sabotage/narrow.sab`
+sabotages the mechanism itself.
 
 It judges boots only: a sabotage of the X compiler is judged by the
 container's Differential run, still by hand. This is mutation testing aimed

@@ -16,9 +16,13 @@ public sealed record SabotageEdit(string File, string Old, string New, int Line)
 public sealed record SabotageExpect(string Name, bool Prefix, string? Detail)
 {
     public bool Matches(BootTestResult r) =>
-        !r.Passed
-        && (Prefix ? r.Name.StartsWith(Name, StringComparison.Ordinal) : r.Name == Name)
-        && (Detail is null || r.Detail.Any(d => d.Contains(Detail, StringComparison.Ordinal)));
+        r.Failed && Names(r) && (Detail is null || r.Detail.Any(d => d.Contains(Detail, StringComparison.Ordinal)));
+
+    /// <summary>Whether <paramref name="r"/> is a test this names, whatever its result.</summary>
+    public bool Names(BootTestResult r) => Prefix ? r.Name.StartsWith(Name, StringComparison.Ordinal) : r.Name == Name;
+
+    /// <summary>This as a line of ktest.only (kernel/ktest.h): the name, and a <c>*</c> for a prefix.</summary>
+    public string OnlyLine => Name + (Prefix ? "*" : "");
 
     public override string ToString() => Name + (Prefix ? "*" : "") + (Detail is null ? "" : " @ " + Detail);
 }
@@ -27,13 +31,18 @@ public sealed record SabotageExpect(string Name, bool Prefix, string? Detail)
 /// One deliberate break of the tree and where it must be caught
 /// (roadmap 1.5d3, safety/CX_SAFETY.md §7). <paramref name="Hangs"/>: the
 /// sabotage removes a wakeup or a deadlock refusal, so a caught boot hangs
-/// (INCONCLUSIVE) instead of failing; it is booted alone.
+/// (INCONCLUSIVE) instead of failing; it is booted alone. <paramref name="Narrow"/>:
+/// booted with only the tests its run expects (<see cref="SabotageNarrowing"/>).
 /// </summary>
 public sealed record Sabotage(string Name, IReadOnlyList<SabotageEdit> Edits, IReadOnlyList<SabotageExpect> Expects,
-                              bool Hangs, string? Group, IReadOnlyList<string> BootArgs, int Line);
+                              bool Hangs, string? Group, IReadOnlyList<string> BootArgs, int Line, bool Narrow = false);
 
 /// <summary>A self-test's result as <c>cxk verify-boot --json</c> prints it.</summary>
-public sealed record BootTestResult(int Index, string Name, bool Passed, IReadOnlyList<string> Detail);
+public sealed record BootTestResult(int Index, string Name, bool Passed, IReadOnlyList<string> Detail, bool Skipped = false)
+{
+    /// <summary>Ran and failed: a skipped test is never red.</summary>
+    public bool Failed => !Passed && !Skipped;
+}
 
 /// <summary>What <c>cxk verify-boot --json</c> printed: its outcome (pass, fail, inconclusive), reason and results.</summary>
 public sealed record BootJson(string Outcome, string Reason, IReadOnlyList<BootTestResult> Results)
@@ -51,7 +60,8 @@ public sealed record BootJson(string Outcome, string Reason, IReadOnlyList<BootT
                         r.GetProperty("index").GetInt32(),
                         r.GetProperty("name").GetString() ?? "",
                         r.GetProperty("passed").GetBoolean(),
-                        r.GetProperty("detail").EnumerateArray().Select(d => d.GetString() ?? "").ToList()));
+                        r.GetProperty("detail").EnumerateArray().Select(d => d.GetString() ?? "").ToList(),
+                        r.TryGetProperty("skipped", out var sk) && sk.GetBoolean()));
             return new BootJson(root.GetProperty("outcome").GetString() ?? "",
                                 root.GetProperty("reason").GetString() ?? "", results);
         }
@@ -73,6 +83,7 @@ public sealed record BootJson(string Outcome, string Reason, IReadOnlyList<BootT
 /// expect = hang            (caught means the boot hangs; booted alone)
 /// group = a                (shares one build and boot with the rest of group a)
 /// boot = --cpu max         (more verify-boot arguments)
+/// narrow = yes             (boot only the tests the run expects: see SabotageNarrowing)
 /// edit = os/std/sync.xfxn
 /// &lt;&lt;&lt;
 /// the text to replace, exactly, every line
@@ -95,7 +106,7 @@ public static class SabotageFile
         var edits = new List<SabotageEdit>();
         var expects = new List<SabotageExpect>();
         var boot = new List<string>();
-        bool hangs = false;
+        bool hangs = false, narrow = false;
         string? group = null;
 
         void Fail(int line, string msg) => throw new FormatException($"{source}:{line}: {msg}");
@@ -108,7 +119,8 @@ public static class SabotageFile
                 Fail(nameLine, $"[{name}] has no expect: say which self-test must go red");
             if (hangs && expects.Count > 0) Fail(nameLine, $"[{name}] expects a hang and a red test; a hang has no results to name");
             if (hangs && group is not null) Fail(nameLine, $"[{name}] expects a hang: it is booted alone, never in a group");
-            list.Add(new Sabotage(name, edits.ToList(), expects.ToList(), hangs, group, boot.ToList(), nameLine));
+            if (hangs && narrow) Fail(nameLine, $"[{name}] expects a hang: it names no test to narrow the boot to");
+            list.Add(new Sabotage(name, edits.ToList(), expects.ToList(), hangs, group, boot.ToList(), nameLine, narrow));
             name = null;
         }
 
@@ -127,7 +139,7 @@ public static class SabotageFile
                 if (list.Any(s => s.Name == name)) Fail(ln, $"[{name}] is named twice");
                 nameLine = ln;
                 edits.Clear(); expects.Clear(); boot.Clear();
-                hangs = false; group = null;
+                hangs = false; group = null; narrow = false;
                 continue;
             }
 
@@ -154,6 +166,12 @@ public static class SabotageFile
                 case "group":
                     group = value;
                     break;
+                case "narrow" when value is "yes" or "no":
+                    narrow = value == "yes";
+                    break;
+                case "narrow":
+                    Fail(ln, $"narrow is yes or no, not '{value}'");
+                    break;
                 case "boot":
                     boot.AddRange(value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
                     break;
@@ -178,7 +196,7 @@ public static class SabotageFile
                     break;
                 }
                 default:
-                    Fail(ln, $"unknown key '{key}' (expect, group, boot, edit)");
+                    Fail(ln, $"unknown key '{key}' (expect, group, boot, narrow, edit)");
                     break;
             }
         }
@@ -205,6 +223,8 @@ public static class SabotageFile
             }
             else if (!g[0].BootArgs.SequenceEqual(s.BootArgs))
                 throw new FormatException($"[{s.Name}] and [{g[0].Name}] share group {s.Group} but boot differently");
+            else if (g[0].Narrow != s.Narrow)
+                throw new FormatException($"[{s.Name}] and [{g[0].Name}] share group {s.Group} but only one is narrowed");
             g.Add(s);
         }
         return runs;
@@ -253,7 +273,7 @@ public static class SabotageJudge
 {
     public static IReadOnlyList<SabotageOutcome> Judge(IReadOnlyList<Sabotage> run, BootJson boot)
     {
-        var red = boot.Results.Where(r => !r.Passed).ToList();
+        var red = boot.Results.Where(r => r.Failed).ToList();
         var outcomes = new List<SabotageOutcome>();
 
         if (run.Count == 1 && run[0].Hangs)
@@ -299,4 +319,55 @@ public static class SabotageJudge
         rs.Count == 0 ? reason
         : string.Join("; ", rs.Take(6).Select(r => r.Detail.Count > 0 ? $"{r.Name} ({r.Detail[0]})" : r.Name))
           + (rs.Count > 6 ? $"; and {rs.Count - 6} more" : "");
+}
+
+/// <summary>
+/// A narrowed run (<c>narrow = yes</c>, or <c>cxk test sabotage --narrow</c>):
+/// built with a ktest.only naming only the tests the run expects
+/// (kernel/ktest.h), so that a sabotage of one X test boots in minutes, not
+/// the whole suite's half hour. What it gives up is the full boot's "and
+/// nowhere else": a red at a test it did not run cannot be seen. So it is
+/// opt-in, <c>--all</c> stays full, and each list is first booted on the
+/// clean tree, where every test it names must run and pass (a test that
+/// fails alone would read as caught).
+/// </summary>
+public static class SabotageNarrowing
+{
+    /// <summary>Where the build stages ktest.only from (tools/cmake/CMakeLists.txt, KTEST_ONLY).</summary>
+    public static string OnlyFile(string root) => Path.Combine(root, "build", "ktest.only");
+
+    /// <summary>
+    /// The ktest.only text for <paramref name="run"/>, or null when it boots
+    /// every test: not narrowed, or naming no test (a hang, booted alone).
+    /// </summary>
+    public static string? Filter(IReadOnlyList<Sabotage> run, bool narrowAll)
+    {
+        if (!(narrowAll || run.Any(s => s.Narrow))) return null;
+        var lines = run.SelectMany(s => s.Expects).Select(e => e.OnlyLine).Distinct(StringComparer.Ordinal).ToList();
+        return lines.Count == 0 ? null : string.Join("\n", lines) + "\n";
+    }
+
+    /// <summary>
+    /// Null when a clean boot under <paramref name="filter"/> is one a run can be
+    /// judged against: it passed, every test the filter names ran, and nothing
+    /// else did but the X runner's own test (judged whenever the runner runs,
+    /// kernel/ktest_loader.c). Otherwise why not.
+    /// </summary>
+    public static string? BaselineProblem(string filter, BootJson boot)
+    {
+        if (boot.Outcome != "pass") return $"the narrowed baseline is not green ({boot.Outcome}: {boot.Reason})";
+        var named = filter.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.EndsWith('*') ? new SabotageExpect(line[..^1], true, null) : new SabotageExpect(line, false, null))
+            .ToList();
+        foreach (var e in named)
+            if (!boot.Results.Any(r => !r.Skipped && e.Names(r)))
+                return $"the narrowed baseline ran no test named {e.OnlyLine}";
+        var extra = boot.Results.Where(r => !r.Skipped && r.Name != RunnerTest && !named.Any(e => e.Names(r))).ToList();
+        if (extra.Count > 0)
+            return $"the narrowed baseline ran {extra.Count} test(s) the list does not name, {extra[0].Name} first: the boot was not narrowed";
+        return null;
+    }
+
+    /// <summary>The X runner's own test (kernel/ktest_loader.c, ktest_xtests).</summary>
+    public const string RunnerTest = "x tests: the runner ran cleanly";
 }

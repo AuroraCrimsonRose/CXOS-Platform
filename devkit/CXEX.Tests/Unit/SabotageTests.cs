@@ -143,13 +143,66 @@ public class SabotageTests
     public void Verify_boot_json_reads_back()
     {
         string json = SelfTestReport.Json(new BootVerdict(BootOutcome.Fail, "1 failed", 0),
-            SelfTestReport.Parse("@ktest\tbegin\n[KTEST   ] - [ERR ] - failed at step 3\n@ktest\tresult\t0\tfail\t5\tx: one\n@ktest\tend\t0\t1\n"),
+            SelfTestReport.Parse("@ktest\tbegin\n[KTEST   ] - [ERR ] - failed at step 3\n@ktest\tresult\t0\tfail\t5\tx: one\n@ktest\tresult\t1\tskip\t0\tx: two\n@ktest\tend\t0\t2\t1\n"),
             "img", "log", true, null);
         var b = BootJson.Parse(json)!;
         Assert.Equal("fail", b.Outcome);
         Assert.Equal("x: one", b.Results[0].Name);
         Assert.Equal(["failed at step 3"], b.Results[0].Detail);
+        Assert.False(b.Results[0].Skipped);
+        Assert.True(b.Results[1].Skipped);
+        Assert.False(b.Results[1].Failed);
         Assert.Null(BootJson.Parse("not json"));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_skipped_test_is_never_red()
+    {
+        var skip = new BootTestResult(1, "owner", false, [], Skipped: true);
+        Assert.False(E("owner").Matches(skip));
+        // a red at a skipped test the run did not name is no red at all
+        var boot = new BootJson("fail", "", [R(0, "a", false), skip]);
+        Assert.Equal(SabotageVerdict.Caught, SabotageJudge.Judge([S("s", E("a"))], boot)[0].Verdict);
+        // nor does a skip satisfy an expect
+        Assert.Equal(SabotageVerdict.RedElsewhere, SabotageJudge.Judge([S("s", E("a")), S("t", E("owner"))], boot)[1].Verdict);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_narrowed_run_names_the_tests_it_expects_and_nothing_else()
+    {
+        string text = "[a]\nexpect = x: one @ step 2\nexpect = x: t*\nnarrow = yes\ngroup = g\nedit = f\n<<<\nx\n===\ny\n>>>\n" +
+                      "[b]\nexpect = x: one\nnarrow = yes\ngroup = g\nedit = h\n<<<\nx\n===\ny\n>>>\n" +
+                      "[c]\nexpect = k\nedit = f\n<<<\nx\n===\ny\n>>>\n" +
+                      "[d]\nexpect = hang\nedit = f\n<<<\nx\n===\ny\n>>>\n";
+        var runs = SabotageFile.Runs(SabotageFile.Parse(text));
+        Assert.Equal("x: one\nx: t*\n", SabotageNarrowing.Filter(runs[0], narrowAll: false));
+        Assert.Null(SabotageNarrowing.Filter(runs[1], narrowAll: false));
+        Assert.Equal("k\n", SabotageNarrowing.Filter(runs[1], narrowAll: true));
+        // a hang names no test: never narrowed
+        Assert.Null(SabotageNarrowing.Filter(runs[2], narrowAll: true));
+
+        Assert.Throws<FormatException>(() => SabotageFile.Parse("[a]\nexpect = t\nnarrow = maybe\nedit = f\n<<<\nx\n===\ny\n>>>\n"));
+        Assert.Throws<FormatException>(() => SabotageFile.Parse("[a]\nexpect = hang\nnarrow = yes\nedit = f\n<<<\nx\n===\ny\n>>>\n"));
+        Assert.Throws<FormatException>(() => SabotageFile.Runs(SabotageFile.Parse(
+            "[a]\nexpect = t\nnarrow = yes\ngroup = g\nedit = f\n<<<\nx\n===\ny\n>>>\n[b]\nexpect = t\ngroup = g\nedit = f\n<<<\nx\n===\ny\n>>>\n")));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_narrowed_baseline_must_pass_and_run_every_test_it_names()
+    {
+        const string filter = "x: one\nx: t*\n";
+        var ran = new BootJson("pass", "", [R(0, "k", false) with { Skipped = true }, R(1, "x: one", true), R(2, "x: two", true),
+                                            R(3, SabotageNarrowing.RunnerTest, true)]);
+        Assert.Null(SabotageNarrowing.BaselineProblem(filter, ran));
+        // a kernel that ignored the list
+        var wide = new BootJson("pass", "", [R(0, "k", true), R(1, "x: one", true), R(2, "x: two", true)]);
+        Assert.Contains("not narrowed", SabotageNarrowing.BaselineProblem(filter, wide));
+        var missing = new BootJson("pass", "", [R(0, "x: one", true), R(1, "x: two", false) with { Skipped = true }]);
+        Assert.Contains("no test named x: t*", SabotageNarrowing.BaselineProblem(filter, missing));
+        Assert.Contains("not green", SabotageNarrowing.BaselineProblem(filter, new BootJson("fail", "red", [])));
     }
 
     private static string Scratch()

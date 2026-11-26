@@ -3452,6 +3452,7 @@ fn gx_gallery_qps(arg: u64) -> i32 {
 }
 
 fn all() -> void {
+    test_run("test: ktest.only read by the kernel's rules", test_only_rules,           30000);
     test_run("threads: create refusals",               t_create_refused,           30000);
     test_run("threads: workers joined with codes",     t_workers_joined,           30000);
     test_run("threads: stacks, a join's deadline",     t_stacks_and_join_deadline, 30000);

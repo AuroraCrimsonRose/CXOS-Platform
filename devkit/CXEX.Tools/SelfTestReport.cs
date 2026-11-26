@@ -12,7 +12,13 @@ namespace CXEX.Tools;
 /// <param name="Ms">Virtual milliseconds (icount) since the line before it.</param>
 /// <param name="Detail">For a failed test, the error and failure lines the
 /// kernel logged while it ran (its "failed at step N"), prefix stripped.</param>
-public sealed record SelfTestResult(int Index, string Name, bool Passed, long Ms, IReadOnlyList<string> Detail);
+/// <param name="Skipped">Not run: a narrowed boot's ktest.only does not name it
+/// (kernel/ktest.h). Never also <paramref name="Passed"/>, and never a failure.</param>
+public sealed record SelfTestResult(int Index, string Name, bool Passed, long Ms, IReadOnlyList<string> Detail, bool Skipped = false)
+{
+    /// <summary>Ran and failed.</summary>
+    public bool Failed => !Passed && !Skipped;
+}
 
 /// <summary>
 /// The kernel's per-test lines (kernel/ktest.c, roadmap 1.5d): one
@@ -20,19 +26,22 @@ public sealed record SelfTestResult(int Index, string Name, bool Passed, long Ms
 /// <c>@ktest end</c>, tab-separated, on serial only. A line is matched
 /// anywhere it starts, not only at column 0: the kernel writes it whole with
 /// interrupts off, but it may land after half of another thread's line.
+/// The end line is <c>end passed total skipped</c>; total counts every result
+/// line, a skipped one too.
 /// </summary>
-public sealed record SelfTestReport(bool Begun, IReadOnlyList<SelfTestResult> Results, int? EndPassed, int? EndTotal)
+public sealed record SelfTestReport(bool Begun, IReadOnlyList<SelfTestResult> Results, int? EndPassed, int? EndTotal, int? EndSkipped = null)
 {
     private static readonly Regex Tagged = new(@"@ktest\t([^\r\n]*)");
     // "[KTEST   ] - [ERR ] - message": a line the kernel logged as a failure.
     private static readonly Regex Problem = new(@"\[[^\]]*\] - \[(ERR |FAIL)\] - (.*)$");
 
-    public int Failed => Results.Count(r => !r.Passed);
+    public int Failed => Results.Count(r => r.Failed);
+    public int Skipped => Results.Count(r => r.Skipped);
 
     public static SelfTestReport Parse(string log)
     {
         bool begun = false;
-        int? endPassed = null, endTotal = null;
+        int? endPassed = null, endTotal = null, endSkipped = null;
         var results = new List<SelfTestResult>();
         var pending = new List<string>();
 
@@ -53,42 +62,45 @@ public sealed record SelfTestReport(bool Begun, IReadOnlyList<SelfTestResult> Re
                 case "begin":
                     begun = true;
                     results.Clear();
-                    endPassed = endTotal = null;
+                    endPassed = endTotal = endSkipped = null;
                     break;
                 case "result" when f.Length >= 5 && Int(f[1]) is int idx && Int(f[3]) is int ms
-                                   && (f[2] == "pass" || f[2] == "fail"):
-                    bool passed = f[2] == "pass";
+                                   && (f[2] == "pass" || f[2] == "fail" || f[2] == "skip"):
+                    bool passed = f[2] == "pass", skipped = f[2] == "skip";
                     string name = string.Join('\t', f[4..]);
                     // the summary's own FAIL line names the test: not detail
-                    IReadOnlyList<string> detail = passed ? [] : pending.Where(d => d != name).ToList();
-                    results.Add(new SelfTestResult(idx, name, passed, ms, detail));
+                    IReadOnlyList<string> detail = passed || skipped ? [] : pending.Where(d => d != name).ToList();
+                    results.Add(new SelfTestResult(idx, name, passed, ms, detail, skipped));
                     break;
-                case "end" when f.Length >= 3:
+                case "end" when f.Length == 4:
                     endPassed = Int(f[1]);
                     endTotal = Int(f[2]);
+                    endSkipped = Int(f[3]);
                     break;
             }
             pending.Clear();
         }
-        return new SelfTestReport(begun, results, endPassed, endTotal);
+        return new SelfTestReport(begun, results, endPassed, endTotal, endSkipped);
     }
 
     /// <summary>
     /// Whether these lines agree with the summary's "all <paramref name="n"/>
-    /// passed": a begin, then n results numbered 0 to n-1, each a pass, and an
-    /// end of n of n. Null if they do; otherwise what is wrong.
+    /// passed[, <paramref name="skipped"/> skipped]": a begin, then n + skipped
+    /// results numbered from 0, n of them passes and the rest skips, and an end
+    /// line saying so. Null if they do; otherwise what is wrong.
     /// </summary>
-    public string? DisagreesWith(int n)
+    public string? DisagreesWith(int n, int skipped = 0)
     {
         if (!Begun) return "no @ktest lines: the per-test results are missing";
-        if (EndTotal is null || EndPassed is null) return "the @ktest results have no end line";
-        if (EndTotal != n || EndPassed != n)
-            return $"the @ktest end line says {EndPassed} of {EndTotal}, the summary all {n}";
-        if (Results.Count != n) return $"{Results.Count} @ktest results for {n} self-tests";
+        if (EndTotal is null || EndPassed is null || EndSkipped is null) return "the @ktest results have no end line";
+        if (EndTotal != n + skipped || EndPassed != n || EndSkipped != skipped)
+            return $"the @ktest end line says {EndPassed} of {EndTotal}, {EndSkipped} skipped; the summary all {n}, {skipped} skipped";
+        if (Results.Count != n + skipped) return $"{Results.Count} @ktest results for {n + skipped} self-tests";
         for (int i = 0; i < Results.Count; i++)
             if (Results[i].Index != i) return $"@ktest result {i} is numbered {Results[i].Index}";
-        var bad = Results.FirstOrDefault(r => !r.Passed);
+        var bad = Results.FirstOrDefault(r => r.Failed);
         if (bad is not null) return $"@ktest result {bad.Index} ({bad.Name}) failed";
+        if (Skipped != skipped) return $"{Skipped} @ktest results skipped, the summary {skipped}";
         return null;
     }
 
@@ -124,8 +136,9 @@ public sealed record SelfTestReport(bool Begun, IReadOnlyList<SelfTestResult> Re
             w.WriteBoolean("begun", tests.Begun);
             w.WriteBoolean("ended", tests.EndTotal is not null);
             w.WriteNumber("total", tests.Results.Count);
-            w.WriteNumber("passed", tests.Results.Count - tests.Failed);
+            w.WriteNumber("passed", tests.Results.Count - tests.Failed - tests.Skipped);
             w.WriteNumber("failed", tests.Failed);
+            w.WriteNumber("skipped", tests.Skipped);
             w.WriteStartArray("results");
             foreach (var r in tests.Results)
             {
@@ -133,6 +146,7 @@ public sealed record SelfTestReport(bool Begun, IReadOnlyList<SelfTestResult> Re
                 w.WriteNumber("index", r.Index);
                 w.WriteString("name", r.Name);
                 w.WriteBoolean("passed", r.Passed);
+                w.WriteBoolean("skipped", r.Skipped);
                 w.WriteNumber("ms", r.Ms);
                 w.WriteStartArray("detail");
                 foreach (string d in r.Detail) w.WriteStringValue(d);

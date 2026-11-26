@@ -60,6 +60,10 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         [Description("The kernel the image carries: x86_64 (default), or x86_32 for an image from the retired 32-bit line, which boots it on qemu-system-i386")]
         public string? Arch { get; set; }
 
+        [CommandOption("--narrowed")]
+        [Description("Accept skipped self-tests (the image's /System/Config/ktest.only names some, kernel/ktest.h). Without it a skip fails the boot: a gate runs every test")]
+        public bool Narrowed { get; set; }
+
         [CommandOption("--json")]
         [Description("Print the verdict and every self-test's result (the kernel's @ktest lines) as one JSON object, and nothing else. Exit codes are unchanged")]
         public bool Json { get; set; }
@@ -121,7 +125,7 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         try
         {
             v = BootVerifier.Run(settings.ImagePath, log, TimeSpan.FromSeconds(settings.TimeoutSeconds), settings.Full,
-                                 line => Say(settings, $"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign, arch, settings.Smp, settings.Stress);
+                                 line => Say(settings, $"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign, arch, settings.Smp, settings.Stress, settings.Narrowed);
         }
         catch (System.ComponentModel.Win32Exception ex)
         {

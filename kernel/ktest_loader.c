@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "ktest_loader.h"
+#include "ktest.h"             /* ktest_wanted, ktest_skip: a narrowed boot */
 #include "cxex.h"
 #include "cxex_load.h"
 #include "cxk_abi.h"
@@ -1184,6 +1185,7 @@ done:
  *   @xtest case <i> <name>, for every test before any runs
  *   @xtest start <i>, before test i runs
  *   @xtest result <i> pass|fail|hung <code>
+ *   @xtest skip <i>, in place of start and result, in a narrowed boot
  *   @xtest end <passed> <total>
  * Each result is reported as it arrives, "x: <name>". A test that never got
  * one (the process crashed in it, or the run stopped at a hang before it)
@@ -1287,6 +1289,15 @@ static void xt_line(struct xt_run *r) {
         r->passed += r->report(xt_names[i], ok);
         r->next++;
         r->started = -1;
+    } else if (xt_is(f[0], "skip") && n == 2) {
+        /* a narrowed boot (ktest.h): the runner read ktest.only as the
+           kernel did, and may leave out only what it lets go */
+        if (i != (int64_t)r->next || i >= (int64_t)r->cases || r->started >= 0)
+            { xt_bad(r, "x tests: a skip out of order"); return; }
+        if (ktest_wanted(xt_names[i]))
+            { xt_bad(r, "x tests: a skip of a test ktest.only names"); return; }
+        ktest_skip(xt_names[i]);
+        r->next++;
     } else if (xt_is(f[0], "end") && n == 3) {
         int64_t passed = xt_num(f[1]), total = xt_num(f[2]);
         if (r->started >= 0 || r->next != r->cases || total != (int64_t)r->cases
@@ -1434,6 +1445,12 @@ int ktest_xtests(int (*report)(const char *, int), int *total) {
     *total = 0;
     if (!cxfs_is_mounted()) return 0;                                 /* nothing mounted - skip */
     if (cxfs_resolve("/Shared/Programs/xtest.xuex", 0) < 0) return 0;  /* nothing staged - skip */
+    /* A narrowed boot naming no X test and not the runner: ~700 s saved. The
+       runner's own test is judged whenever it runs, as in a full boot. */
+    if (!ktest_wanted_prefix("x: ") && !ktest_wanted("x tests: the runner ran cleanly")) {
+        ktest_skip("x tests: the runner ran cleanly");
+        return 0;
+    }
 
     static struct xt_run r;
     r = (struct xt_run){ .report = report, .started = -1 };
@@ -1514,8 +1531,10 @@ done:
     paging_unmap(SHP_VA);
     pmm_free(frame);
 
-    /* the tests with no result, in their places */
+    /* the tests with no result, in their places; in a narrowed boot, those
+       it does not name are skipped, run or not */
     for (uint32_t i = r.next; i < r.cases; i++) {
+        if (!ktest_wanted(xt_names[i])) { ktest_skip(xt_names[i]); continue; }
         klog("KTEST", SEV_ERR, xt_names[i]);
         klog("KTEST", SEV_ERR, (int32_t)i == r.started ? "  no result: the run ended in it"
                                                        : "  not run: the run ended before it");

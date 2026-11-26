@@ -1,0 +1,77 @@
+# Narrowed sabotage boots (kernel/ktest.h, `narrow = yes`), run by
+# `cxk test sabotage`. Each must turn red exactly the self-tests named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+#
+# Every one is narrowed, so the file is also the proof that a narrowed run
+# works end to end: a narrowed baseline per list, then the sabotage. The
+# DevKit's half (the verdict's skips, the judge, the .sab key, the baseline
+# check) is sabotaged on the host: BootVerdictTests, SabotageTests.
+
+# ---- the kernel holds the X runner to the list ----
+
+[x-skips-wanted]
+# the runner skips every test, the named one too: the kernel refuses that
+# skip, and reports the tests the list does not name as skipped, not failed
+# (without either, this is green or red at every X test)
+expect = x: test: ktest.only read by the kernel's rules @ a skip of a test ktest.only names
+expect = x tests: the runner ran cleanly
+narrow = yes
+edit = os/std/test.xfxn
+<<<
+    return test_only_scan(&test_only[0], test_only_len, &full[0], 0);
+===
+    return 0;
+>>>
+
+# ---- the kernel's reading of the list ----
+
+[kernel-cr-kept]
+expect = ktest.only is read by its rules @ rules failed at step 2
+narrow = yes
+edit = kernel/ktest.c
+<<<
+        while (e > s && (b[e - 1] == ' ' || b[e - 1] == '\t' || b[e - 1] == '\r')) e--;
+===
+        while (e > s && (b[e - 1] == ' ' || b[e - 1] == '\t')) e--;
+>>>
+
+[kernel-prefix-exact]
+expect = ktest.only is read by its rules @ rules failed at step 4
+narrow = yes
+edit = kernel/ktest.c
+<<<
+        *prefix = b[e - 1] == '*';
+===
+        *prefix = 0;
+>>>
+
+[kernel-comment-read]
+expect = ktest.only is read by its rules @ rules failed at step 6
+narrow = yes
+edit = kernel/ktest.c
+<<<
+        if (s == e || b[s] == '#') continue;
+===
+        if (s == e) continue;
+>>>
+
+# ---- the X runner's reading of it ----
+
+[x-cr-kept]
+expect = x: test: ktest.only read by the kernel's rules @ failed at step 2
+narrow = yes
+edit = os/std/test.xfxn
+<<<
+        while (e > s && (b[e - 1] == 32 || b[e - 1] == 9 || b[e - 1] == 13)) { e = e - 1; }
+===
+        while (e > s && (b[e - 1] == 32 || b[e - 1] == 9)) { e = e - 1; }
+>>>
+
+[x-prefix-exact]
+expect = x: test: ktest.only read by the kernel's rules @ failed at step 4
+narrow = yes
+edit = os/std/test.xfxn
+<<<
+            if (b[e - 1] == 42) { prefix = 1; e = e - 1; }
+===
+>>>

@@ -86,8 +86,9 @@
 /* ---- results a machine reads (roadmap 1.5d) ----
  * One line per self-test on the serial port only, beside the human log:
  *   @ktest<TAB>begin
- *   @ktest<TAB>result<TAB>index<TAB>pass|fail<TAB>ms<TAB>name
- *   @ktest<TAB>end<TAB>passed<TAB>total
+ *   @ktest<TAB>result<TAB>index<TAB>pass|fail|skip<TAB>ms<TAB>name
+ *   @ktest<TAB>end<TAB>passed<TAB>total<TAB>skipped
+ * total counts every result line, skipped ones too (a narrowed boot, ktest.h).
  * Tagged and tab-separated like XNU's ktest_emit.c ("[KTEST]\tTESTBEGIN\t..."),
  * so `cxk verify-boot` reads each test's verdict, not just the summary. Never
  * on the screen, and never wrapped: serial_puts, not the console. Each line is
@@ -117,23 +118,24 @@ static void kt_begin(void) {
     kt_line(p, 1);
 }
 
-static void kt_result(const char *name, int ok) {
+static void kt_result(const char *name, const char *verdict) {
     uint64_t now = timer_now_ns();
     uint64_t ms = (now - kt_last_ns) / 1000000u;
     kt_last_ns = now;
     char idx[12], dur[12];
     kt_u32(idx, kt_index++);
     kt_u32(dur, ms > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)ms);
-    const char *p[] = { "result", idx, ok ? "pass" : "fail", dur, name };
+    const char *p[] = { "result", idx, verdict, dur, name };
     kt_line(p, 5);
 }
 
-static void kt_end(int passed, int total) {
-    char a[12], b[12];
+static void kt_end(int passed, int total, int skipped) {
+    char a[12], b[12], c[12];
     kt_u32(a, (uint32_t)passed);
     kt_u32(b, (uint32_t)total);
-    const char *p[] = { "end", a, b };
-    kt_line(p, 3);
+    kt_u32(c, (uint32_t)skipped);
+    const char *p[] = { "end", a, b, c };
+    kt_line(p, 4);
 }
 
 /* concise pass/fail reporter */
@@ -161,11 +163,136 @@ static int report(const char *name, int ok) {
     ok = ok != 0;
     if (!ok)
         klog("KTEST", SEV_FAIL, name);
-    kt_result(name, ok);
+    kt_result(name, ok ? "pass" : "fail");
     kt_progress(name);
 
     return ok;
 }
+
+/* ---- a narrowed boot: only the tests ktest.only names (ktest.h) ----
+ * The file is read once, before the first test, and kept as read; each
+ * question scans it, so there is no table to overflow and nothing the X
+ * runner (test.xfxn, test_only_scan) could count differently. The scans take
+ * the text as arguments, so the test below holds them to the rules on text
+ * of its own whatever this boot's file says. */
+static char     kt_only[KTEST_ONLY_CAP];
+static uint32_t kt_only_len;
+static int      kt_only_on;            /* the file names at least one test */
+static int      kt_skipped;
+
+/* The next pattern in b[0..n) from *at: its start and length, and whether it
+   ends '*' (not counted in the length). 0 at the end. */
+static int kt_only_next(const char *b, uint32_t n, uint32_t *at,
+                        const char **pat, uint32_t *len, int *prefix) {
+    while (*at < n) {
+        uint32_t s = *at, e = s;
+        while (e < n && b[e] != '\n') e++;
+        *at = e < n ? e + 1 : e;
+        while (s < e && (b[s] == ' ' || b[s] == '\t')) s++;
+        while (e > s && (b[e - 1] == ' ' || b[e - 1] == '\t' || b[e - 1] == '\r')) e--;
+        if (s == e || b[s] == '#') continue;
+        *prefix = b[e - 1] == '*';
+        *pat = b + s;
+        *len = e - s - (uint32_t)*prefix;
+        return 1;
+    }
+    return 0;
+}
+
+static int kt_only_any(const char *b, uint32_t n) {
+    uint32_t at = 0, len; const char *pat; int prefix;
+    return kt_only_next(b, n, &at, &pat, &len, &prefix);
+}
+
+/* Whether b[0..n) names the test called `name`. */
+static int kt_only_names(const char *b, uint32_t n, const char *name) {
+    uint32_t at = 0, len; const char *pat; int prefix;
+    while (kt_only_next(b, n, &at, &pat, &len, &prefix)) {
+        uint32_t k = 0;
+        while (k < len && name[k] == pat[k]) k++;
+        if (k == len && (prefix || name[k] == 0)) return 1;
+    }
+    return 0;
+}
+
+/* Whether b[0..n) might name a test whose name starts `start`: a pattern
+   holds all of it, or is a prefix that ends inside it. */
+static int kt_only_names_some(const char *b, uint32_t n, const char *start) {
+    uint32_t at = 0, len; const char *pat; int prefix;
+    while (kt_only_next(b, n, &at, &pat, &len, &prefix)) {
+        uint32_t k = 0;
+        while (k < len && start[k] && start[k] == pat[k]) k++;
+        if (start[k] == 0 ? (k < len || prefix) : (prefix && k == len)) return 1;
+    }
+    return 0;
+}
+
+static void kt_only_load(void) {
+    kt_only_len = 0; kt_only_on = 0; kt_skipped = 0;
+    if (!cxfs_is_mounted()) return;
+    struct cxfs_entry e;
+    if (cxfs_stat_path(KTEST_ONLY_PATH, &e) != 0) return;   /* none: every test */
+    if (e.size > KTEST_ONLY_CAP) {
+        klog("KTEST", SEV_WARN, KTEST_ONLY_PATH " is too large: every test runs");
+        return;
+    }
+    int n = cxfs_read_path(KTEST_ONLY_PATH, kt_only, KTEST_ONLY_CAP);
+    if (n < 0 || (uint32_t)n != (uint32_t)e.size) {
+        klog("KTEST", SEV_WARN, KTEST_ONLY_PATH " unreadable: every test runs");
+        return;
+    }
+    kt_only_len = (uint32_t)n;
+    kt_only_on = kt_only_any(kt_only, kt_only_len);
+    if (kt_only_on) klog("KTEST", SEV_WARN, "a narrowed boot: only the tests " KTEST_ONLY_PATH " names run");
+}
+
+int ktest_wanted(const char *name) {
+    return !kt_only_on || kt_only_names(kt_only, kt_only_len, name);
+}
+
+int ktest_wanted_prefix(const char *start) {
+    return !kt_only_on || kt_only_names_some(kt_only, kt_only_len, start);
+}
+
+void ktest_skip(const char *name) {
+    kt_skipped++;
+    kt_result(name, "skip");
+}
+
+/* The rules, on text of the test's own (os/std/test.xfxn's copy has the same
+   cases, "test: ktest.only read by the kernel's rules"). 0 = pass, else the
+   step that failed. */
+static int kt_only_rules(void) {
+    static const char t[] = "# a comment\n\n  heap kmalloc/kfree \t\r\nx: sync*\nexact\n";
+    uint32_t n = sizeof t - 1;
+    if (!kt_only_any(t, n)) return 1;
+    if (!kt_only_names(t, n, "heap kmalloc/kfree")) return 2;      /* trimmed */
+    if (kt_only_names(t, n, "heap kmalloc/kfree2")) return 3;      /* exact */
+    if (!kt_only_names(t, n, "x: sync: a mutex")) return 4;        /* a prefix */
+    if (kt_only_names(t, n, "x: syn")) return 5;
+    if (kt_only_names(t, n, "# a comment")) return 6;              /* a comment */
+    if (kt_only_names(t, n, "exac") || !kt_only_names(t, n, "exact")) return 7;
+    if (kt_only_names(t, n, "")) return 8;                         /* a blank names nothing */
+    if (!kt_only_names_some(t, n, "x: ")) return 9;
+    if (kt_only_names_some(t, n, "y: ")) return 10;
+    if (!kt_only_names_some("x*\n", 3, "x: ")) return 11;         /* a prefix inside it */
+    if (kt_only_names_some("x: one", 6, "x: one two")) return 12;
+    if (kt_only_any("# only\n \n\r\n", 11)) return 13;             /* nothing named: no filter */
+    if (!kt_only_names("last", 4, "last")) return 14;              /* no newline at the end */
+    return 0;
+}
+
+static int test_ktest_only_rules(void) {
+    int step = kt_only_rules();
+    if (step) klog_u32("KTEST", SEV_ERR, "ktest.only rules failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return step == 0;
+}
+
+/* One self-test, or its skip line. */
+#define KT(name, call) do {                                                    \
+        if (ktest_wanted(name)) { total++; passed += report((name), (call)); } \
+        else ktest_skip(name);                                                 \
+    } while (0)
 
 /* ---- IPC endpoints: reference counted, and reclaimed (security §7) ----
    Before this, closing an endpoint handle blanked the handle slot but left
@@ -3681,6 +3808,7 @@ void ktest_run(void) {
     /* each test: total++, and passed += its pass/fail. report() prints only on
        failure, so the only per-test output is failures. */
     kt_begin();
+    kt_only_load();
 
     /* the architecture's own first (arch/ktest_arch.h): some state what boot
        left, such as a kernel space with nothing in its user half, which the
@@ -3688,177 +3816,191 @@ void ktest_run(void) {
     unsigned n_arch;
     const struct ktest_arch_case *arch_case = ktest_arch_cases(&n_arch);
     for (unsigned i = 0; i < n_arch; i++) {
-        total++; passed += report(arch_case[i].name, arch_case[i].fn());
+        KT(arch_case[i].name, arch_case[i].fn());
     }
 
-    total++; passed += report("paging maps, and refuses what it must not", test_paging());
-    total++; passed += report("I/O windows refuse what lies outside them", test_iowin());
-    total++; passed += report("heap kmalloc/kfree",               test_heap());
-    total++; passed += report("scheduler (cooperative)",          test_sched_coop());
-    total++; passed += report("scheduler (preemptive)",           test_sched_preempt());
-    total++; passed += report("esp0 follows the running thread",  test_esp0_follows_thread());
-    total++; passed += report("ring 3 single round-trip",         test_ring3_single());
-    total++; passed += report("every syscall passes one point",   test_sysrec());
-    total++; passed += report("syscall table refuses unknowns",   test_syscall_table());
-    total++; passed += report("ring 3 processes (coop+preempt)",  test_ring3_processes());
-    total++; passed += report("identity (user never UID 0)",      test_identity());
-    total++; passed += report("storage (ATA read sector 0)",      test_storage());
-    total++; passed += report("pci (bus enumeration)",            test_pci());
-    total++; passed += report("ahci (controller + read)",         test_ahci());
-    total++; passed += report("device DMA held, below 4 GB",      test_dma_regions());
-    total++; passed += report("cxfs (read-only mount check)",     test_cxfs());
-    total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
-    total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
-    total++; passed += report("clock + timed sleep",               test_clock_sleep());
-    total++; passed += report("tick counter wraparound",           test_timer_wraparound());
-    total++; passed += report("a tick is a millisecond, by the PM timer", test_tick_rate());
-    total++; passed += report("the cycle counter measures time",   test_cycle_counter());
-    total++; passed += report("the wall clock reads a plausible date", test_wallclock());
-    total++; passed += report("the boot handover came through CXBI", test_cxbi());
-    total++; passed += report("a crash record goes to the crash area and back", test_crashlog());
-    total++; passed += report("a user fault is saved to the crash area", test_user_fault_saved());
-    total++; passed += report("the system log is saved to the crash area", test_bootlog_saved());
-    total++; passed += report("disk writes reach only the CXOS disk", test_disk_write_guard());
-    total++; passed += report("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
-    total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());
-    total++; passed += report("hardware report: checked, counted, saved", ktest_platform_hw_report());
-    total++; passed += report("memory mappings (SYS_VM_*)",     test_vmregion());
-    total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
-    total++; passed += report("bounded strings: cap, truncation", test_bounded_strings());
-    total++; passed += report("block-device contract",             test_disk_contract());
-    total++; passed += report("ipv4 parser refuses bad frames",   ktest_ip_parse_adversarial());
-    total++; passed += report("arp parser refuses bad frames",    ktest_arp_input_adversarial());
-    total++; passed += report("cxfs refuses bad superblocks",     ktest_cxfs_sb_adversarial());
-    total++; passed += report("cxfs refuses bad extents + names", ktest_cxfs_entry_adversarial());
-    total++; passed += report("guarded kernel stacks",             test_kstack());
-    total++; passed += report("double fault on its own stack",     ktest_arch_double_fault_stack());
-    total++; passed += report("thread 0 on a guarded stack",       test_main_stack());
-    total++; passed += report("kernel config (X Data, linked X)",  test_kconfig());
-    total++; passed += report("thread limit + stack size",         test_thread_limit());
-    total++; passed += report("thread and pid tables grow past 64", test_thread_table_grows());
-    total++; passed += report("a handle table grows to its limit and is freed", test_handle_table_grows());
-    total++; passed += report("a process that faults gives back everything", test_process_exit_releases());
-    total++; passed += report("the cpu feature table is this cpu's",   ktest_arch_cpu_features());
-    total++; passed += report("a syscall leaves ring 3 its segments",  ktest_arch_user_segments_kept());
-    total++; passed += report("syscalls through the system page",     usermode_syspage_test());
-    total++; passed += report("cxex signature + tamper",           test_cxex_signature());
-    total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
-    total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
-    total++; passed += report("user pointer writability",          ktest_user_ptr_writability());
-    total++; passed += report("SYS_SPAWN verifies its image",      ktest_spawn_verifies_image());
-    total++; passed += report("the shell from disk, through pipes", ktest_shell_pipeline());
-    total++; passed += report("user threads, from disk", ktest_threads());
-    total++; passed += report("a futex waiter's process ends", ktest_futex());
+    KT("ktest.only is read by its rules",          test_ktest_only_rules());
+    KT("paging maps, and refuses what it must not", test_paging());
+    KT("I/O windows refuse what lies outside them", test_iowin());
+    KT("heap kmalloc/kfree",               test_heap());
+    KT("scheduler (cooperative)",          test_sched_coop());
+    KT("scheduler (preemptive)",           test_sched_preempt());
+    KT("esp0 follows the running thread",  test_esp0_follows_thread());
+    KT("ring 3 single round-trip",         test_ring3_single());
+    KT("every syscall passes one point",   test_sysrec());
+    KT("syscall table refuses unknowns",   test_syscall_table());
+    KT("ring 3 processes (coop+preempt)",  test_ring3_processes());
+    KT("identity (user never UID 0)",      test_identity());
+    KT("storage (ATA read sector 0)",      test_storage());
+    KT("pci (bus enumeration)",            test_pci());
+    KT("ahci (controller + read)",         test_ahci());
+    KT("device DMA held, below 4 GB",      test_dma_regions());
+    KT("cxfs (read-only mount check)",     test_cxfs());
+    KT("cxfs offset I/O + compaction",      test_cxfs_offset());
+    KT("cxfs volume tags",                  test_cxfs_volumes());
+    KT("clock + timed sleep",               test_clock_sleep());
+    KT("tick counter wraparound",           test_timer_wraparound());
+    KT("a tick is a millisecond, by the PM timer", test_tick_rate());
+    KT("the cycle counter measures time",   test_cycle_counter());
+    KT("the wall clock reads a plausible date", test_wallclock());
+    KT("the boot handover came through CXBI", test_cxbi());
+    KT("a crash record goes to the crash area and back", test_crashlog());
+    KT("a user fault is saved to the crash area", test_user_fault_saved());
+    KT("the system log is saved to the crash area", test_bootlog_saved());
+    KT("disk writes reach only the CXOS disk", test_disk_write_guard());
+    KT("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
+    KT("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());
+    KT("hardware report: checked, counted, saved", ktest_platform_hw_report());
+    KT("memory mappings (SYS_VM_*)",     test_vmregion());
+    KT("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
+    KT("bounded strings: cap, truncation", test_bounded_strings());
+    KT("block-device contract",             test_disk_contract());
+    KT("ipv4 parser refuses bad frames",   ktest_ip_parse_adversarial());
+    KT("arp parser refuses bad frames",    ktest_arp_input_adversarial());
+    KT("cxfs refuses bad superblocks",     ktest_cxfs_sb_adversarial());
+    KT("cxfs refuses bad extents + names", ktest_cxfs_entry_adversarial());
+    KT("guarded kernel stacks",             test_kstack());
+    KT("double fault on its own stack",     ktest_arch_double_fault_stack());
+    KT("thread 0 on a guarded stack",       test_main_stack());
+    KT("kernel config (X Data, linked X)",  test_kconfig());
+    KT("thread limit + stack size",         test_thread_limit());
+    KT("thread and pid tables grow past 64", test_thread_table_grows());
+    KT("a handle table grows to its limit and is freed", test_handle_table_grows());
+    KT("a process that faults gives back everything", test_process_exit_releases());
+    KT("the cpu feature table is this cpu's",   ktest_arch_cpu_features());
+    KT("a syscall leaves ring 3 its segments",  ktest_arch_user_segments_kept());
+    KT("syscalls through the system page",     usermode_syspage_test());
+    KT("cxex signature + tamper",           test_cxex_signature());
+    KT("disk: ATA LBA range refused",        test_disk_lba_range());
+    KT("cxex loader refuses bad images",    ktest_loader_adversarial());
+    KT("user pointer writability",          ktest_user_ptr_writability());
+    KT("SYS_SPAWN verifies its image",      ktest_spawn_verifies_image());
+    KT("the shell from disk, through pipes", ktest_shell_pipeline());
+    KT("user threads, from disk", ktest_threads());
+    KT("a futex waiter's process ends", ktest_futex());
     { int n; passed += ktest_xtests(report, &n); total += n; }   /* each X test, its own */
-    total++; passed += report("xfnt: loadable font validated",     test_xfnt());
-    total++; passed += report("variable font cell size",           test_font_cell());
-    total++; passed += report("console font staged on disk",       test_console_font_disk());
-    total++; passed += report("disk durability: flush is askable", test_disk_durability());
-    total++; passed += report("USB flush: when a stick is not asked", test_usb_flush_policy());
-    total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
-    total++; passed += report("exec admission (dev / release)",   test_exec_admit());
-    total++; passed += report("file syscalls (SYS_FILE_*)",        usermode_file_test());
-    total++; passed += report("memory syscalls (SYS_VM_*)",        usermode_vm_test());
-    total++; passed += report("syscalls use user memory only through the copy", usermode_copies_test());
-    total++; passed += report("power and input syscalls",          usermode_power_input_test());
-    total++; passed += report("framebuffer syscalls (SYS_FB_*)",   usermode_fb_test());
-    total++; passed += report("framebuffer: drawn in a copy, the screen only written", test_fb_copy());
-    total++; passed += report("network syscalls (SYS_NET_*)",       usermode_net_test());
-    total++; passed += report("background output goes to the log", usermode_log_test());
-    total++; passed += report("advisory locks follow the open file", usermode_flock_test());
-    total++; passed += report("process handles: wait, how it ended", usermode_process_test());
-    total++; passed += report("process kill: every wait, both safe points", usermode_kill_test());
-    total++; passed += report("process stop: asked, then ended at the deadline", usermode_stop_test());
-    total++; passed += report("jobs: memory and thread budgets, nested, killed together", usermode_job_test());
-    total++; passed += report("timers: absolute deadlines on the monotonic clock", usermode_timer_test());
-    total++; passed += report("queues: one-shot keys, re-armed, many objects", usermode_queue_test());
-    total++; passed += report("notifications: bits that combine, signallers", usermode_notify_test());
-    total++; passed += report("pipes: two ends over a ring", usermode_pipe_test());
-    total++; passed += report("memory objects: first touch, strict commit", usermode_mem_test());
-    total++; passed += report("devices: open, held, registers as memory objects", usermode_devhost_test());
-    total++; passed += report("devices: an interrupt as a handle", usermode_devhost_irq_test());
-    total++; passed += report("devices: DMA buffers, retired until bus mastering is off", usermode_devhost_dma_test());
-    total++; passed += report("input: the keys as a handle, one holder", usermode_input_handle_test());
-    total++; passed += report("lease: a buffer stays unwritable while it is lent", usermode_lease_test());
-    total++; passed += report("USB keyboard: found after its reader went to sleep", ktest_usb_kbd_after_reader());
-    total++; passed += report("USB mouse: no usable layout, not attached and not boot", ktest_usb_mouse_no_layout());
-    total++; passed += report("USB mouse: 16-bit X and Y, from its report descriptor", ktest_usb_mouse_16_bit());
-    total++; passed += report("USB mouse: extended usages name their own page", ktest_usb_mouse_extended_usages());
-    total++; passed += report("USB mouse: numbered reports and 12-bit fields", ktest_usb_mouse_numbered());
-    total++; passed += report("display server: real screen, real keys, given back", ktest_display_server());
-    total++; passed += report("screen: one holder, mapped write-combining, given back", usermode_screen_test());
-    total++; passed += report("screen: a mode its driver sets, then the boot's again", usermode_screen_mode_test());
-    total++; passed += report("bochs: the program sets a mode, then the boot's again", ktest_bochs_program());
-    total++; passed += report("device: its PCI configuration space, read only", usermode_device_config_test());
-    total++; passed += report("virtio-gpu: the program against the real device", ktest_virtgpu_program());
-    total++; passed += report("processes: listed for GRANT_INSPECT, and the device tree", usermode_process_query_test());
-    total++; passed += report("procman: the program against the kernel's count", ktest_procman_program());
-    total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
-    total++; passed += report("ipc: handles in messages", usermode_ipc_handles_test());
-    total++; passed += report("ipc: priority through calls", usermode_prio_test());
-    total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
-    total++; passed += report("object caches map and return pages", test_ocache_pages());
-    total++; passed += report("hooks: the Nth allocation fails, armed thread only", ktest_fault_nth());
-    total++; passed += report("hooks: live counts see what comes and goes", ktest_live_counts());
-    total++; passed += report("hooks: race points call and park", ktest_race_points());
-    total++; passed += report("hooks: chaos yields replay from their seed", ktest_chaos());
-    total++; passed += report("hooks: the lock order is checked",  ktest_lock_order());
-    total++; passed += report("hooks: the scheduler takes its lock", ktest_sched_lock());
-    total++; passed += report("hooks: physical memory is mapped by the rules", ktest_physmap());
-    total++; passed += report("hooks: kernel stacks take their lock", ktest_kstack_lock());
-    total++; passed += report("every allocation of six creations fails cleanly", ktest_alloc_sweeps());
-    total++; passed += report("every syscall from ring 3: refusals take nothing", ktest_syscall_census());
-    total++; passed += report("every allocation of 13 syscalls fails cleanly", ktest_syscall_sweeps());
-    total++; passed += report("futex: a word unmapped after its fault-in", ktest_futex_unmapped());
-    total++; passed += report("futex: a wake as the deadline comes", ktest_futex_deadline());
-    total++; passed += report("futex: one word through two processes", ktest_futex_shared());
-    total++; passed += report("futex: a word remapped between its key and its read", ktest_futex_remapped());
-    total++; passed += report("ipc: a token closed as its reply is read", ktest_ipc_reply_close());
-    total++; passed += report("ipc: IPC_MSG_MAX each way", ktest_ipc_msg_max());
-    total++; passed += report("ipc: an endpoint closed under its call", ktest_ipc_from_detach());
-    total++; passed += report("ipc: a server thread ends with a call", ktest_ipc_thread_exit());
-    total++; passed += report("queue: an event taken as a waiter wakes", ktest_queue_taken());
-    total++; passed += report("queue: a waiter killed in the wait", ktest_queue_kill());
-    total++; passed += report("proc: a refused vector ends every thread", ktest_proc_refused_vector());
-    total++; passed += report("pipe: a reader and a writer killed in the wait", ktest_pipe_kill());
-    total++; passed += report("vm: a map over a quota a sibling filled", ktest_vm_room_map());
-    total++; passed += report("vm: a map past a region cap a sibling filled", ktest_vm_room_regions());
-    total++; passed += report("vm: a stack over a quota a sibling filled", ktest_vm_room_stack());
-    total++; passed += report("vm: a charge over a quota a sibling filled", ktest_vm_room_charge());
-    total++; passed += report("ipc: an endpoint over a quota a sibling filled", ktest_ep_quota());
-    total++; passed += report("devtree: the most specific driver wins", ktest_devtree_specific());
-    total++; passed += report("devtree: a declined start falls to the next", ktest_devtree_fallback());
-    total++; passed += report("devtree: start order, then the group limit", ktest_devtree_order());
-    total++; passed += report("devtree: a gone node is removed and freed", ktest_devtree_gone());
-    total++; passed += report("devtree: the boot bound by the rules", ktest_devtree_boot());
-    total++; passed += report("panic: the QR code's fit rule at its edges", ktest_panic_fit());
-    total++; passed += report("panic: the fixed record encodes to its fingerprint", ktest_panic_qr());
-    total++; passed += report("panic: the symbol table is this link's", ktest_panic_ksym());
-    total++; passed += report("panic: a stack walk names its callers", ktest_panic_walk());
-    total++; passed += report("random: chacha20 gives RFC 8439's block", ktest_random_chacha());
-    total++; passed += report("random: interrupts sampled, then hashed in", ktest_random_interrupts());
-    total++; passed += report("random: random_read from ring 3", ktest_random_syscall());
-    total++; passed += report("random: the boot seed counts the CPU's words", ktest_random_boot_seed());
-    total++; passed += report("random: the seed file counts once read back", ktest_random_seed_file());
-    total++; passed += report("two threads share one process",   test_proc_threads());
-    total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
-    total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());
-    total++; passed += report("CR0.WP: kernel obeys read-only",     test_cr0_write_protect());
-    total++; passed += report("lockstat: a contended take is counted", ktest_lockstat_count());
+    KT("xfnt: loadable font validated",     test_xfnt());
+    KT("variable font cell size",           test_font_cell());
+    KT("console font staged on disk",       test_console_font_disk());
+    KT("disk durability: flush is askable", test_disk_durability());
+    KT("USB flush: when a stick is not asked", test_usb_flush_policy());
+    KT("crypto profile: one key shape only", test_crypto_profile());
+    KT("exec admission (dev / release)",   test_exec_admit());
+    KT("file syscalls (SYS_FILE_*)",        usermode_file_test());
+    KT("memory syscalls (SYS_VM_*)",        usermode_vm_test());
+    KT("syscalls use user memory only through the copy", usermode_copies_test());
+    KT("power and input syscalls",          usermode_power_input_test());
+    KT("framebuffer syscalls (SYS_FB_*)",   usermode_fb_test());
+    KT("framebuffer: drawn in a copy, the screen only written", test_fb_copy());
+    KT("network syscalls (SYS_NET_*)",       usermode_net_test());
+    KT("background output goes to the log", usermode_log_test());
+    KT("advisory locks follow the open file", usermode_flock_test());
+    KT("process handles: wait, how it ended", usermode_process_test());
+    KT("process kill: every wait, both safe points", usermode_kill_test());
+    KT("process stop: asked, then ended at the deadline", usermode_stop_test());
+    KT("jobs: memory and thread budgets, nested, killed together", usermode_job_test());
+    KT("timers: absolute deadlines on the monotonic clock", usermode_timer_test());
+    KT("queues: one-shot keys, re-armed, many objects", usermode_queue_test());
+    KT("notifications: bits that combine, signallers", usermode_notify_test());
+    KT("pipes: two ends over a ring", usermode_pipe_test());
+    KT("memory objects: first touch, strict commit", usermode_mem_test());
+    KT("devices: open, held, registers as memory objects", usermode_devhost_test());
+    KT("devices: an interrupt as a handle", usermode_devhost_irq_test());
+    KT("devices: DMA buffers, retired until bus mastering is off", usermode_devhost_dma_test());
+    KT("input: the keys as a handle, one holder", usermode_input_handle_test());
+    KT("lease: a buffer stays unwritable while it is lent", usermode_lease_test());
+    KT("USB keyboard: found after its reader went to sleep", ktest_usb_kbd_after_reader());
+    KT("USB mouse: no usable layout, not attached and not boot", ktest_usb_mouse_no_layout());
+    KT("USB mouse: 16-bit X and Y, from its report descriptor", ktest_usb_mouse_16_bit());
+    KT("USB mouse: extended usages name their own page", ktest_usb_mouse_extended_usages());
+    KT("USB mouse: numbered reports and 12-bit fields", ktest_usb_mouse_numbered());
+    KT("display server: real screen, real keys, given back", ktest_display_server());
+    KT("screen: one holder, mapped write-combining, given back", usermode_screen_test());
+    KT("screen: a mode its driver sets, then the boot's again", usermode_screen_mode_test());
+    KT("bochs: the program sets a mode, then the boot's again", ktest_bochs_program());
+    KT("device: its PCI configuration space, read only", usermode_device_config_test());
+    KT("virtio-gpu: the program against the real device", ktest_virtgpu_program());
+    KT("processes: listed for GRANT_INSPECT, and the device tree", usermode_process_query_test());
+    KT("procman: the program against the kernel's count", ktest_procman_program());
+    KT("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
+    KT("ipc: handles in messages", usermode_ipc_handles_test());
+    KT("ipc: priority through calls", usermode_prio_test());
+    KT("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
+    KT("object caches map and return pages", test_ocache_pages());
+    KT("hooks: the Nth allocation fails, armed thread only", ktest_fault_nth());
+    KT("hooks: live counts see what comes and goes", ktest_live_counts());
+    KT("hooks: race points call and park", ktest_race_points());
+    KT("hooks: chaos yields replay from their seed", ktest_chaos());
+    KT("hooks: the lock order is checked",  ktest_lock_order());
+    KT("hooks: the scheduler takes its lock", ktest_sched_lock());
+    KT("hooks: physical memory is mapped by the rules", ktest_physmap());
+    KT("hooks: kernel stacks take their lock", ktest_kstack_lock());
+    KT("every allocation of six creations fails cleanly", ktest_alloc_sweeps());
+    KT("every syscall from ring 3: refusals take nothing", ktest_syscall_census());
+    KT("every allocation of 13 syscalls fails cleanly", ktest_syscall_sweeps());
+    KT("futex: a word unmapped after its fault-in", ktest_futex_unmapped());
+    KT("futex: a wake as the deadline comes", ktest_futex_deadline());
+    KT("futex: one word through two processes", ktest_futex_shared());
+    KT("futex: a word remapped between its key and its read", ktest_futex_remapped());
+    KT("ipc: a token closed as its reply is read", ktest_ipc_reply_close());
+    KT("ipc: IPC_MSG_MAX each way", ktest_ipc_msg_max());
+    KT("ipc: an endpoint closed under its call", ktest_ipc_from_detach());
+    KT("ipc: a server thread ends with a call", ktest_ipc_thread_exit());
+    KT("queue: an event taken as a waiter wakes", ktest_queue_taken());
+    KT("queue: a waiter killed in the wait", ktest_queue_kill());
+    KT("proc: a refused vector ends every thread", ktest_proc_refused_vector());
+    KT("pipe: a reader and a writer killed in the wait", ktest_pipe_kill());
+    KT("vm: a map over a quota a sibling filled", ktest_vm_room_map());
+    KT("vm: a map past a region cap a sibling filled", ktest_vm_room_regions());
+    KT("vm: a stack over a quota a sibling filled", ktest_vm_room_stack());
+    KT("vm: a charge over a quota a sibling filled", ktest_vm_room_charge());
+    KT("ipc: an endpoint over a quota a sibling filled", ktest_ep_quota());
+    KT("devtree: the most specific driver wins", ktest_devtree_specific());
+    KT("devtree: a declined start falls to the next", ktest_devtree_fallback());
+    KT("devtree: start order, then the group limit", ktest_devtree_order());
+    KT("devtree: a gone node is removed and freed", ktest_devtree_gone());
+    KT("devtree: the boot bound by the rules", ktest_devtree_boot());
+    KT("panic: the QR code's fit rule at its edges", ktest_panic_fit());
+    KT("panic: the fixed record encodes to its fingerprint", ktest_panic_qr());
+    KT("panic: the symbol table is this link's", ktest_panic_ksym());
+    KT("panic: a stack walk names its callers", ktest_panic_walk());
+    KT("random: chacha20 gives RFC 8439's block", ktest_random_chacha());
+    KT("random: interrupts sampled, then hashed in", ktest_random_interrupts());
+    KT("random: random_read from ring 3", ktest_random_syscall());
+    KT("random: the boot seed counts the CPU's words", ktest_random_boot_seed());
+    KT("random: the seed file counts once read back", ktest_random_seed_file());
+    KT("two threads share one process",   test_proc_threads());
+    KT("user copies validated at the copy",  test_user_copy_validation());
+    KT("user copy faults are recoverable",   test_user_copy_fault_recovery());
+    KT("CR0.WP: kernel obeys read-only",     test_cr0_write_protect());
+    KT("lockstat: a contended take is counted", ktest_lockstat_count());
     /* Last, so the profile after it covers the whole suite (1.9f). */
-    total++; passed += report("smp stress: a token round every CPU", ktest_smp_stress());
-    total++; passed += report("profile: printed, saved to the crash area", ktest_profile_report());
+    KT("smp stress: a token round every CPU", ktest_smp_stress());
+    KT("profile: printed, saved to the crash area", ktest_profile_report());
 
 #if CXK_LOCK_CHECK
     lockorder_report();   /* which locks nested under which, as the tests ran */
 #endif
     /* single summary line: green if all passed, red if any failed. */
-    kt_end(passed, total);
+    kt_end(passed, total + kt_skipped, kt_skipped);
     crashlog_bootlog_note(0, 0);   /* the summary says the tests ended */
-    if (passed == total) {
+    if (passed == total && kt_skipped == 0) {
         klog_u32("KTEST", SEV_OK, "self-tests: all ",
                         (uint32_t)total,
                         LOG_COLOR_VALUE, " passed");
+    } else if (passed == total) {
+        /* "all N passed, M skipped": read as a count the same way, and failed
+           by a reader that knows nothing of skips (ktest.h) */
+        char line[64];
+        uint32_t k = 0;
+        const char *a = "self-tests: all ", *b = " passed, ", *c = " skipped";
+        while (*a) line[k++] = *a++;
+        k += (uint32_t)fmt_u32(line + k, (uint32_t)total);
+        while (*b) line[k++] = *b++;
+        k += (uint32_t)fmt_u32(line + k, (uint32_t)kt_skipped);
+        while (*c) line[k++] = *c++;
+        line[k] = 0;
+        klog("KTEST", SEV_OK, line);
     } else {
         klog_u32("KTEST", SEV_FAIL, "self-tests failed: ",
                         (uint32_t)(total - passed),
@@ -3871,6 +4013,8 @@ void ktest_run(void) {
         klog_child_u32("tests passed: ",
                         (uint32_t)passed,
                         VGA_ATTR(VGA_LIGHT_GREEN, VGA_BLACK), "");
+        if (kt_skipped)
+            klog_child_u32("tests skipped: ", (uint32_t)kt_skipped, LOG_COLOR_VALUE, "");
     }
 
 #if CXK_KTEST_STACK_OVERFLOW

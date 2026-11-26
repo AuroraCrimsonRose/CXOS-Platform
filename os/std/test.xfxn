@@ -26,7 +26,12 @@
 //   @xtest  case    <index> <name>          every test, before any runs
 //   @xtest  start   <index>                 before it runs: a crash names it
 //   @xtest  result  <index> pass|fail|hung  <code>
+//   @xtest  skip    <index>                 instead of start and result
 //   @xtest  end     <passed> <total>        after the last
+// A skip is a narrowed boot's: /System/Config/ktest.only names some tests
+// (kernel/ktest.h), and a test it does not name, as "x: <name>", is not run.
+// It is read here by the kernel's rules, and the kernel fails a skip of a
+// test the file names.
 // The kernel's self-test (ktest_loader.c, ktest_xtests) reports each as a
 // self-test of its own, and a test with no result as failed. The lines are
 // written with SYS_FILE_WRITE directly, never through io.xfxn's lock or the
@@ -48,6 +53,92 @@ global test_listing: u32;   // 1 while `all` is only naming its tests
 global test_index:   u32;
 global test_passed:  u32;
 global test_out:     i32;   // the output handle, or -1 for the console
+
+const TEST_ONLY_CAP: u32 = 2048;   // KTEST_ONLY_CAP (kernel/ktest.h)
+global test_only:     [2049]u8;    // ktest.only as read: one byte more shows "too large"
+global test_only_len: u32;
+global test_only_on:  u32;         // 1: it names at least one test
+
+// Whether b[0..n) names the test called `name` (any = 1: whether it names
+// any test at all), scanning as kernel/ktest.c's kt_only_next does: a
+// pattern a line, blanks and lines starting '#' ignored, spaces, tabs and a
+// CR around it trimmed, a trailing '*' a prefix.
+fn test_only_scan(b: *u8, n: u32, name: *u8, any: u32) -> u32 {
+    let at: u32 = 0;
+    while (at < n) {
+        let s: u32 = at;
+        let e: u32 = at;
+        while (e < n && b[e] != 10) { e = e + 1; }
+        if (e < n) { at = e + 1; } else { at = e; }
+        while (s < e && (b[s] == 32 || b[s] == 9)) { s = s + 1; }
+        while (e > s && (b[e - 1] == 32 || b[e - 1] == 9 || b[e - 1] == 13)) { e = e - 1; }
+        if (s < e && b[s] != 35) {
+            if (any == 1) { return 1; }
+            let prefix: u32 = 0;
+            if (b[e - 1] == 42) { prefix = 1; e = e - 1; }
+            let k: u32 = 0;
+            while (s + k < e && name[k] == b[s + k]) { k = k + 1; }
+            if (s + k == e && (prefix == 1 || name[k] == 0)) { return 1; }
+        }
+    }
+    return 0;
+}
+
+// The rules, on text of the test's own: kernel/ktest.c's kt_only_rules,
+// case for case where they apply here. 0 = pass, else the failing step.
+fn test_only_rules(arg: u64) -> i32 {
+    let t: *u8 = "# a comment\n\n  heap kmalloc/kfree \t\r\nx: sync*\nexact\n";
+    let n: u32 = 0;
+    while (t[n] != 0) { n = n + 1; }
+    if (test_only_scan(t, n, "", 1) != 1) { return 1; }
+    if (test_only_scan(t, n, "heap kmalloc/kfree", 0) != 1) { return 2; }
+    if (test_only_scan(t, n, "heap kmalloc/kfree2", 0) != 0) { return 3; }
+    if (test_only_scan(t, n, "x: sync: a mutex", 0) != 1) { return 4; }
+    if (test_only_scan(t, n, "x: syn", 0) != 0) { return 5; }
+    if (test_only_scan(t, n, "# a comment", 0) != 0) { return 6; }
+    if (test_only_scan(t, n, "exac", 0) != 0 || test_only_scan(t, n, "exact", 0) != 1) { return 7; }
+    if (test_only_scan(t, n, "", 0) != 0) { return 8; }
+    if (test_only_scan("# only\n \n\r\n", 11, "", 1) != 0) { return 13; }
+    if (test_only_scan("last", 4, "last", 0) != 1) { return 14; }
+    return 0;
+}
+
+// ktest.only, once: none, unreadable or larger than the cap is no filter.
+fn test_only_load() -> void {
+    test_only_len = 0;
+    test_only_on = 0;
+    let h: i32 = file_open("/System/Config/ktest.only", FOPEN_READ);
+    if (h < 0) { return; }
+    let total: u32 = 0;
+    let bad: u32 = 0;
+    while (total < TEST_ONLY_CAP + 1) {
+        let n: i32 = file_read(h, &test_only[total], (TEST_ONLY_CAP + 1 - total) as u64);
+        if (n < 0) { bad = 1; break; }
+        if (n == 0) { break; }
+        total = total + (n as u32);
+    }
+    file_close(h);
+    if (bad == 1 || total > TEST_ONLY_CAP) { return; }
+    test_only_len = total;
+    test_only_on = test_only_scan(&test_only[0], test_only_len, "", 1);
+}
+
+// Whether the test called `name` runs: its name as the kernel reports it,
+// "x: " and at most TEST_NAME_MAX bytes, anything unprintable a '?'.
+fn test_wanted(name: *u8) -> u32 {
+    if (test_only_on == 0) { return 1; }
+    let full: [52]u8;
+    full[0] = 120; full[1] = 58; full[2] = 32;          // "x: "
+    let k: u32 = 0;
+    while (name[k] != 0 && k < TEST_NAME_MAX) {
+        let c: u8 = name[k];
+        if (c < 32 || c > 126) { c = 63; }               // '?'
+        full[3 + k] = c;
+        k = k + 1;
+    }
+    full[3 + k] = 0;
+    return test_only_scan(&test_only[0], test_only_len, &full[0], 0);
+}
 
 // One line: "@xtest", then each part after a tab, then a newline.
 fn test_line(parts: *u64, n: u32) -> void {
@@ -88,6 +179,11 @@ fn test_run(name: *u8, f: thread_fn, ms: u32) -> void {
         test_line(&p[0], 3);
         return;
     }
+    if (test_wanted(name) == 0) {
+        p[0] = "skip" as u64;
+        test_line(&p[0], 2);
+        return;
+    }
     p[0] = "start" as u64;
     test_line(&p[0], 2);
 
@@ -123,6 +219,7 @@ fn test_run(name: *u8, f: thread_fn, ms: u32) -> void {
 fn test_main(all: fn() -> void) -> void {
     test_out = args_handle(ARGS_STDOUT);
     if (test_out < 0) { test_out = 0 - 1; }
+    test_only_load();
     test_listing = 1;
     test_index = 0;
     all();

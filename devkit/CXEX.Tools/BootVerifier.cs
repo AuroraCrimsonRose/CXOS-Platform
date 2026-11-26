@@ -19,7 +19,7 @@ public enum BootOutcome
 public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsPassed)
 {
     /// <summary>The kernel's own summary line.</summary>
-    private static readonly Regex Summary = new(@"self-tests?:\s*all\s+(\d+)\s+passed", RegexOptions.IgnoreCase);
+    private static readonly Regex Summary = new(@"self-tests?:\s*all\s+(\d+)\s+passed(?:,\s*(\d+)\s+skipped)?", RegexOptions.IgnoreCase);
     private static readonly Regex TestsFailed = new(@"self-tests failed", RegexOptions.IgnoreCase);
 
     /// <summary>
@@ -56,9 +56,12 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
     /// all of which the self-test summary precedes. With
     /// <paramref name="results"/> (every x86-64 kernel since 1.5d), a summary
     /// also needs the per-test <c>@ktest</c> lines behind it, agreeing with it
-    /// (<see cref="SelfTestReport"/>): a summary alone fails.
+    /// (<see cref="SelfTestReport"/>): a summary alone fails. A skipped test
+    /// (a narrowed boot, kernel/ktest.h) fails the boot unless
+    /// <paramref name="narrowed"/>: a gate runs every test, and a ktest.only
+    /// left behind must not pass one quietly.
     /// </summary>
-    public static BootVerdict Classify(string log, bool full, bool results = true, IReadOnlySet<string>? notJudged = null)
+    public static BootVerdict Classify(string log, bool full, bool results = true, IReadOnlySet<string>? notJudged = null, bool narrowed = false)
     {
         var panic = Panic.Match(log);
         if (panic.Success)
@@ -72,18 +75,23 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
         if (TestsFailed.IsMatch(log))
         {
             var report = results ? SelfTestReport.Parse(log) : null;
-            var failed = report?.Results.Where(r => !r.Passed).Select(r => r.Name).ToList() ?? [];
+            var failed = report?.Results.Where(r => r.Failed).Select(r => r.Name).ToList() ?? [];
+            int skippedHere = report?.Skipped ?? 0;
             var judged = failed.Where(f => notJudged is null || !notJudged.Contains(f)).ToList();
             // Only failures of tests this boot does not judge, and the end
             // line agreeing with the results: judged as if they had passed,
             // and named in the verdict, never silently (the stress boot).
             if (failed.Count == 0 || judged.Count > 0 || report!.EndTotal is not int total
-                || report.EndPassed != total - failed.Count || report.Results.Count != total)
+                || report.EndPassed != total - failed.Count - skippedHere || report.Results.Count != total
+                || report.EndSkipped != skippedHere)
                 return new BootVerdict(BootOutcome.Fail, judged.Count == 0 && failed.Count == 0
                     ? "the self-tests reported a failure"
                     : "the self-tests reported a failure: " + string.Join("; ", judged.Count > 0 ? judged : failed), null);
-            n = total - failed.Count;
-            head = $"self-tests: {total - failed.Count} of {total} passed, the rest not judged here ({string.Join("; ", failed)})";
+            n = total - failed.Count - skippedHere;
+            head = $"self-tests: {n} of {total - skippedHere} passed, the rest not judged here ({string.Join("; ", failed)})";
+            if (skippedHere > 0 && !narrowed)
+                return new BootVerdict(BootOutcome.Fail, $"{head}, but {skippedHere} skipped: a narrowed boot (ktest.only) where every test must run", n);
+            if (skippedHere > 0) head += $", {skippedHere} skipped";
         }
         else
         {
@@ -92,9 +100,12 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
                 return new BootVerdict(BootOutcome.Inconclusive, "no self-test summary yet", null);
 
             n = int.Parse(s.Groups[1].Value);
-            head = $"self-tests: all {n} passed";
-            if (results && SelfTestReport.Parse(log).DisagreesWith(n) is string wrong)
+            int skipped = s.Groups[2].Success ? int.Parse(s.Groups[2].Value) : 0;
+            head = skipped > 0 ? $"self-tests: all {n} passed, {skipped} skipped" : $"self-tests: all {n} passed";
+            if (results && SelfTestReport.Parse(log).DisagreesWith(n, skipped) is string wrong)
                 return new BootVerdict(BootOutcome.Fail, $"{head}, but {wrong}", n);
+            if (skipped > 0 && !narrowed)
+                return new BootVerdict(BootOutcome.Fail, $"{head}: a narrowed boot (ktest.only) where every test must run", n);
         }
         // The hardware report precedes the self-tests (kmain), so a summary
         // without a whole one behind it means the serial copy was lost or torn.
@@ -230,8 +241,8 @@ public static class BootVerifier
     /// time is up. Kills only the QEMU it started: killing by process name
     /// would take down any other emulator on the machine.
     /// </summary>
-    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null, bool stress = false)
-        => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full, results: arch == QemuArch.X86_64, notJudged: stress ? StressNotJudged : null), progress, cpu, snapshot: true, usb, foreignDisk, arch, smp, stress);
+    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null, bool stress = false, bool narrowed = false)
+        => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full, results: arch == QemuArch.X86_64, notJudged: stress ? StressNotJudged : null, narrowed: narrowed), progress, cpu, snapshot: true, usb, foreignDisk, arch, smp, stress);
 
     /// <summary>
     /// The same boot with the verdict decided by <paramref name="classify"/>,

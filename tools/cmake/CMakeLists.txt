@@ -775,6 +775,16 @@ else()
     set(XDCHECK COMMAND ${CMAKE_COMMAND} -E echo "  service descriptors and kernel.xkco NOT checked - cxk predates check-xdata")
 endif()
 
+# A narrowed boot's list of self-tests (kernel/ktest.h): written by `cxk test
+# sabotage --narrow` and emptied after it, outside the tree so that the tree
+# check sees nothing. Empty, every test runs. Made empty here if missing.
+set(KTEST_ONLY ${BUILD_DIR}/ktest.only)
+add_custom_command(
+    OUTPUT ${KTEST_ONLY}
+    COMMAND ${CMAKE_COMMAND} -E touch ${KTEST_ONLY}
+    COMMENT "An empty ktest.only: every self-test runs"
+)
+
 # What the system partition holds.
 set(CXK_STAGED_PROGRAMS
     --stage System/Boot.xoex=${EXEC_XOEX}
@@ -827,6 +837,7 @@ set(CXK_STAGED_SHARED
     --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
     --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
     --stage System/Config/kernel.xkco=${KERNEL_XKCO}
+    --stage System/Config/ktest.only=${KTEST_ONLY}
 )
 
 # ---- the disk: stage1 + XBPT + stage2 + BOOT/STAGE/SYSTEM partitions ----
@@ -840,7 +851,7 @@ add_custom_command(
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_DISK_ELF} ${EXEC_XOEX} ${DISK_APP_XUEX}
             ${SUPERVISOR_XSEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
             ${SETCHECK_XUEX} ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX} ${FUTEX_XUEX} ${XTEST_XUEX} ${DISPLAYD_XUEX} ${WDEMO_XUEX} ${GALLERY_XUEX} ${BOCHS_XUEX} ${VIRTGPU_XUEX} ${PROCMAN_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
-            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${OUTLINE_XFNTS} ${LOCALE_FILES} ${BACKGROUND_QOIS} ${CXK}
+            ${SERVICE_XOSV} ${KERNEL_XKCO} ${KTEST_ONLY} ${CONSOLE16_XFNT} ${OUTLINE_XFNTS} ${LOCALE_FILES} ${BACKGROUND_QOIS} ${CXK}
     COMMENT "Building the CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})

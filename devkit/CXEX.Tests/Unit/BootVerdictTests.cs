@@ -34,7 +34,7 @@ public class BootVerdictTests
         for (int i = 0; i < n; i++)
             s.Append($"\r\n@ktest\tresult\t{i}\t{(i == failAt ? "fail" : "pass")}\t{i % 7}\ttest number {i}\r\n");
         int passed = endPassed >= 0 ? endPassed : (failAt >= 0 ? n - 1 : n);
-        s.Append($"\r\n@ktest\tend\t{passed}\t{n}\r\n");
+        s.Append($"\r\n@ktest\tend\t{passed}\t{n}\t0\r\n");
         return s.ToString();
     }
     private const string Refusal = "-> signature check failed - unsigned, or signed by a key this kernel does not trust\n";
@@ -89,7 +89,7 @@ public class BootVerdictTests
         Assert.Equal(BootOutcome.Fail, bare.Outcome);
         Assert.Contains("missing", bare.Reason);
 
-        string noEnd = Results(45, -1).Replace("\r\n@ktest\tend\t45\t45\r\n", "");
+        string noEnd = Results(45, -1).Replace("\r\n@ktest\tend\t45\t45\t0\r\n", "");
         Assert.Contains("no end line", BootVerdict.Classify(noEnd + SummaryLine, full: false).Reason);
 
         var fewer = BootVerdict.Classify(Results(44, -1) + SummaryLine, full: false);
@@ -108,6 +108,60 @@ public class BootVerdictTests
         Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(SummaryLine, full: false, results: false).Outcome);
     }
 
+    /// <summary>A narrowed boot's lines (kernel/ktest.h): result 1 skipped, then the end and summary given.</summary>
+    private static string Narrowed(string end, string summary) =>
+        Hw + "\r\n@ktest\tbegin\r\n" +
+        "\r\n@ktest\tresult\t0\tpass\t1\tpaging maps\r\n" +
+        "\r\n@ktest\tresult\t1\tskip\t0\tx: one\r\n" +
+        "\r\n@ktest\tresult\t2\tpass\t0\tCR0.WP\r\n" +
+        end + summary;
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_skipped_test_passes_only_a_boot_told_it_is_narrowed()
+    {
+        const string end = "\r\n@ktest\tend\t2\t3\t1\r\n";
+        const string summary = "[KTEST   ] - [OK  ] - self-tests: all 2 passed, 1 skipped\n";
+        // a gate: a ktest.only left behind must not pass quietly
+        var gate = BootVerdict.Classify(Narrowed(end, summary), full: false);
+        Assert.Equal(BootOutcome.Fail, gate.Outcome);
+        Assert.Contains("narrowed boot", gate.Reason);
+        var v = BootVerdict.Classify(Narrowed(end, summary), full: false, narrowed: true);
+        Assert.Equal(BootOutcome.Pass, v.Outcome);
+        Assert.Equal("self-tests: all 2 passed, 1 skipped", v.Reason);
+        Assert.Equal(1, SelfTestReport.Parse(Narrowed(end, summary)).Skipped);
+
+        // the counts must agree: a skip the summary hides, or one the end line does
+        Assert.Equal(BootOutcome.Fail, BootVerdict.Classify(Narrowed(end, "[KTEST   ] - [OK  ] - self-tests: all 2 passed\n"),
+                                                            full: false, narrowed: true).Outcome);
+        Assert.Contains("end line", BootVerdict.Classify(Narrowed("\r\n@ktest\tend\t2\t3\t0\r\n", summary),
+                                                         full: false, narrowed: true).Reason);
+        // an end line without the skipped count is no end line
+        Assert.Contains("no end line", BootVerdict.Classify(Narrowed("\r\n@ktest\tend\t2\t3\r\n", summary),
+                                                            full: false, narrowed: true).Reason);
+
+        // a failure beside a skip names the failure, and a gate still refuses the skip
+        string failed = Narrowed(end, "").Replace("\tresult\t2\tpass\t", "\tresult\t2\tfail\t").Replace("\tend\t2\t3\t1", "\tend\t1\t3\t1")
+                        + "[KTEST   ] - [FAIL] - self-tests failed: 1 failure(s)\n";
+        var red = BootVerdict.Classify(failed, full: false, narrowed: true);
+        Assert.Equal(BootOutcome.Fail, red.Outcome);
+        Assert.EndsWith("CR0.WP", red.Reason);
+        Assert.Equal(1, SelfTestReport.Parse(failed).Failed);
+
+        // a failure not judged here (the stress boot) beside a skip: passed over
+        // only when narrowed, and only with an end line that counts the skip
+        var cr0 = new HashSet<string> { "CR0.WP" };
+        var over = BootVerdict.Classify(failed, full: false, notJudged: cr0, narrowed: true);
+        Assert.Equal(BootOutcome.Pass, over.Outcome);
+        Assert.StartsWith("self-tests: 1 of 2 passed, the rest not judged here (CR0.WP), 1 skipped", over.Reason);
+        var gated = BootVerdict.Classify(failed, full: false, notJudged: cr0);
+        Assert.Equal(BootOutcome.Fail, gated.Outcome);
+        Assert.Contains("1 skipped", gated.Reason);
+        var uncounted = BootVerdict.Classify(failed.Replace("\tend\t1\t3\t1", "\tend\t1\t3\t0"), full: false, notJudged: cr0, narrowed: true);
+        Assert.Equal(BootOutcome.Fail, uncounted.Outcome);
+        Assert.DoesNotContain("not judged", uncounted.Reason);
+    }
+
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
     public void A_failed_self_test_is_named_with_what_it_logged()
@@ -122,7 +176,7 @@ public class BootVerdictTests
             // a line another thread was halfway through when the result came
             "[PROC    ] - [INFO] - half a li\r\n@ktest\tresult\t1\tfail\t5040\tfutexes and std/sync, from disk\r\nne\r\n" +
             "\r\n@ktest\tresult\t2\tpass\t0\tCR0.WP\r\n" +
-            "\r\n@ktest\tend\t2\t3\r\n" +
+            "\r\n@ktest\tend\t2\t3\t0\r\n" +
             "[KTEST   ] - [FAIL] - self-tests failed: 1 failure(s)\r\n";
         var v = BootVerdict.Classify(log, full: false);
         Assert.Equal(BootOutcome.Fail, v.Outcome);
@@ -151,7 +205,7 @@ public class BootVerdictTests
             "\r\n@ktest\tresult\t2\tpass\t0\tCR0.WP\r\n" +
             end +
             "[KTEST   ] - [FAIL] - self-tests failed: 1 failure(s)\r\n";
-        string log = Log("\r\n@ktest\tend\t2\t3\r\n");
+        string log = Log("\r\n@ktest\tend\t2\t3\t0\r\n");
 
         // judged everywhere but a stress boot
         Assert.Equal(BootOutcome.Fail, BootVerdict.Classify(log, full: false).Outcome);
@@ -164,7 +218,7 @@ public class BootVerdictTests
         Assert.Equal(BootOutcome.Fail, other.Outcome);
         Assert.EndsWith("slack: a timer fires at a later one's interrupt", other.Reason);
         // an end line that disagrees with the results is no pass of any kind
-        var torn = BootVerdict.Classify(Log("\r\n@ktest\tend\t1\t3\r\n"), full: false, notJudged: BootVerifier.StressNotJudged);
+        var torn = BootVerdict.Classify(Log("\r\n@ktest\tend\t1\t3\t0\r\n"), full: false, notJudged: BootVerifier.StressNotJudged);
         Assert.Equal(BootOutcome.Fail, torn.Outcome);
         Assert.DoesNotContain("not judged", torn.Reason);
     }
