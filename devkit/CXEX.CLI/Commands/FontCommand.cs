@@ -12,7 +12,7 @@ using Spectre.Console.Cli;
 namespace CXEX.CLI.Commands;
 
 /// <summary>
-/// `cxk font build` - a published BDF font -> a console XFNT for one standard
+/// `cxk font build` - a published BDF font -> a console XFNT v1 for one standard
 /// character set.
 ///
 /// CXOS uses existing fonts rather than drawing its own (decided 2026-10-16);
@@ -20,13 +20,17 @@ namespace CXEX.CLI.Commands;
 /// a font that lacks a character of the set fails with the missing codepoints
 /// named, and a glyph that does not fit the cell is refused rather than
 /// cropped.
+///
+/// A TrueType source becomes an XFNT v2 outline font instead (roadmap
+/// 2.8a′1): converted here so the OS never parses TrueType, under a face name
+/// of its own, and read back through the same checks the OS makes.
 /// </summary>
 public class FontBuildCommand : Command<FontBuildCommand.Settings>
 {
     public class Settings : CommandSettings
     {
-        [CommandArgument(0, "<BDF>")]
-        [Description("The font's BDF source, as its publisher ships it")]
+        [CommandArgument(0, "<SOURCE>")]
+        [Description("The font as its publisher ships it: a BDF, or a TrueType .ttf")]
         public string Bdf { get; set; } = string.Empty;
 
         [CommandOption("-o|--out")]
@@ -39,9 +43,8 @@ public class FontBuildCommand : Command<FontBuildCommand.Settings>
         public string Charset { get; set; } = "cp437";
 
         [CommandOption("--face")]
-        [Description("The face name stored in the font, at most 8 characters. Never the source font's own name: OFL fonts reserve it for unmodified copies")]
-        [DefaultValue("Console")]
-        public string Face { get; set; } = "Console";
+        [Description("The face name stored in the font: at most 8 characters for a BDF (default Console), 16 for a TrueType (required). Never the source font's own name: OFL fonts reserve it for unmodified copies, and a name sharing a word of the source's family is refused")]
+        public string? Face { get; set; }
 
         [CommandOption("--check")]
         [Description("Report only; write nothing")]
@@ -55,6 +58,9 @@ public class FontBuildCommand : Command<FontBuildCommand.Settings>
             AnsiConsole.MarkupLine($"[red]error:[/] no such file: {Markup.Escape(settings.Bdf)}");
             return 1;
         }
+        string ext = Path.GetExtension(settings.Bdf).ToLowerInvariant();
+        if (ext is ".ttf" or ".otf") return BuildOutline(settings);
+
         if (!Enum.TryParse<ConsoleFont.Charset>(settings.Charset, true, out var set))
         {
             AnsiConsole.MarkupLine($"[red]error:[/] --charset must be cp437; got '{Markup.Escape(settings.Charset)}'");
@@ -65,7 +71,7 @@ public class FontBuildCommand : Command<FontBuildCommand.Settings>
         try
         {
             var font = BdfFont.Load(settings.Bdf);
-            result = ConsoleFont.Build(font, set, settings.Face);
+            result = ConsoleFont.Build(font, set, settings.Face ?? "Console");
         }
         catch (FontNotReadyException nr)
         {
@@ -108,6 +114,60 @@ public class FontBuildCommand : Command<FontBuildCommand.Settings>
         AnsiConsole.MarkupLine($"[green]SUCCESS:[/] wrote [cyan]{Markup.Escape(outPath)}[/]");
         return 0;
     }
+
+    /// <summary>TrueType to a v2 outline XFNT (roadmap 2.8a′1).</summary>
+    private static int BuildOutline(Settings settings)
+    {
+        if (string.IsNullOrEmpty(settings.Face))
+        {
+            AnsiConsole.MarkupLine("[red]error:[/] a converted TrueType needs a name of its own: --face \"CX Sans\" or the like");
+            return 1;
+        }
+        byte[] bytes;
+        OutlineFace face;
+        string family;
+        try
+        {
+            var tt = TrueTypeFont.Load(settings.Bdf);
+            family = tt.Family;
+            string? clash = OutlineConvert.NameClash(settings.Face, tt.Family);
+            if (clash is not null)
+            {
+                AnsiConsole.MarkupLine($"[red]error:[/] --face '{Markup.Escape(settings.Face)}' shares \"{Markup.Escape(clash)}\" with the source's family " +
+                                       $"'{Markup.Escape(tt.Family)}'; an OFL Reserved Font Name may not go on a converted font");
+                return 1;
+            }
+            face = OutlineConvert.Convert(tt, settings.Face);
+            bytes = XfntOutline.Write(face); // reads itself back through the checker
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+
+        AnsiConsole.MarkupLine($"[green]{Markup.Escape(face.Face)}[/] from {Markup.Escape(family)}  weight {face.Weight}" +
+                               $"{(face.Italic ? " italic" : "")}{(face.Monospace ? " monospace" : "")}  " +
+                               $"{face.Map.Count} characters, {face.Glyphs.Count} glyphs, {bytes.Length} bytes");
+        if (settings.Check)
+        {
+            AnsiConsole.MarkupLine("[grey]--check: nothing written.[/]");
+            return 0;
+        }
+        string outPath = settings.Out ?? Path.ChangeExtension(settings.Bdf, ".xfnt");
+        try
+        {
+            File.WriteAllBytes(outPath, bytes);
+            XfntOutline.Read(File.ReadAllBytes(outPath));
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        AnsiConsole.MarkupLine($"[green]SUCCESS:[/] wrote [cyan]{Markup.Escape(outPath)}[/]");
+        return 0;
+    }
 }
 
 /// <summary>`cxk font inspect` - what is actually in an .xfnt.</summary>
@@ -123,10 +183,31 @@ public class FontInspectCommand : Command<FontInspectCommand.Settings>
         [Description("Also print this slot's glyph as ASCII art")]
         [DefaultValue(-1)]
         public int Show { get; set; } = -1;
+
+        [CommandOption("--text")]
+        [Description("v2: draw this text in the terminal through the oracle rasteriser")]
+        public string? Text { get; set; }
+
+        [CommandOption("--size")]
+        [Description("v2: the size --text is drawn at, in pixels per em")]
+        [DefaultValue(24)]
+        public int Size { get; set; } = 24;
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
+        try
+        {
+            var head = File.ReadAllBytes(settings.Path);
+            if (head.Length >= 6 && BitConverter.ToUInt16(head, 4) == XfntOutline.Version)
+                return InspectOutline(head, settings);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+
         byte[] file;
         XfntFormat.Header h;
         try
@@ -170,6 +251,63 @@ public class FontInspectCommand : Command<FontInspectCommand.Settings>
                 }
                 AnsiConsole.MarkupLine($"  [grey]{sb}[/]");
             }
+        }
+        return 0;
+    }
+
+    private static int InspectOutline(byte[] file, Settings settings)
+    {
+        OutlineFace f;
+        try { f = XfntOutline.Read(file); }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        int contours = f.Glyphs.Sum(g => g.Contours.Count), points = f.Glyphs.Sum(g => g.PointCount);
+        AnsiConsole.MarkupLine($"[green]{Markup.Escape(f.Face)}[/]  XFNT v{XfntOutline.Version} (outline)  weight {f.Weight}" +
+                               $"{(f.Italic ? " italic" : "")}{(f.Monospace ? " monospace" : "")}");
+        AnsiConsole.MarkupLine($"  em          {XfntOutline.Em}; ascender {f.Ascender}, descender {f.Descender}, gap {f.LineGap}");
+        AnsiConsole.MarkupLine($"  heights     cap {f.CapHeight}, x {f.XHeight}; underline {f.UnderlinePosition} / {f.UnderlineThickness}");
+        AnsiConsole.MarkupLine($"  glyphs      {f.Glyphs.Count}, {contours} contours, {points} points");
+        AnsiConsole.MarkupLine($"  characters  {f.Map.Count}" + (f.Map.Count > 0 ? $" (U+{f.Map[0].Codepoint:X4} to U+{f.Map[^1].Codepoint:X4})" : ""));
+
+        if (settings.Text is null) return 0;
+        if (settings.Size is < 1 or > OutlineRaster.MaxPpem)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] --size must be 1-{OutlineRaster.MaxPpem}");
+            return 1;
+        }
+        // one line of text into a coverage buffer, the pen in 26.6
+        int ppem = settings.Size;
+        int asc = (int)((OutlineRaster.Scale(f.Ascender, ppem) + 63) >> 6);
+        int desc = (int)((OutlineRaster.Scale(-f.Descender, ppem) + 63) >> 6);
+        int height = asc + desc;
+        var drawn = new List<(int X, GlyphBitmap B)>();
+        long pen = 0;
+        foreach (var rune in settings.Text.EnumerateRunes())
+        {
+            var b = OutlineRaster.Draw(f.Glyphs[f.Lookup((uint)rune.Value)], ppem);
+            drawn.Add(((int)(pen >> 6), b));
+            pen += b.Advance26_6;
+        }
+        int width = (int)((pen + 63) >> 6) + 2;
+        var buf = new int[width * height];
+        foreach (var (x, b) in drawn)
+            for (int y = 0; y < b.Height; y++)
+                for (int c = 0; c < b.Width; c++)
+                {
+                    int px = x + b.Left + c, py = asc + b.Top + y;
+                    if (px < 0 || px >= width || py < 0 || py >= height) continue;
+                    buf[py * width + px] = Math.Min(255, buf[py * width + px] + b.At(c, y));
+                }
+        const string shades = " .:-=+*#%@";
+        AnsiConsole.WriteLine();
+        for (int y = 0; y < height; y++)
+        {
+            var sb = new System.Text.StringBuilder(width);
+            for (int x = 0; x < width; x++) sb.Append(shades[buf[y * width + x] * (shades.Length - 1) / 255]);
+            AnsiConsole.WriteLine(sb.ToString().TrimEnd());
         }
         return 0;
     }

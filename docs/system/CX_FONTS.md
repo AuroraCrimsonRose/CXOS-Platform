@@ -1,7 +1,8 @@
 # Fonts and character sets
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
-> **Status: DECIDED 2026-10-16; the console part is built.** CXOS uses
+> **Status: DECIDED 2026-10-16; the console part is built; XFNT v2 outlines
+> built on the host (2026-11-25, §4).** CXOS uses
 > published fonts and standard character sets. It does not draw its own fonts.
 
 ---
@@ -126,3 +127,83 @@
    `->`, `!=`) need a sequence-to-glyph table carried in XFNT v2 and a
    lookup when text is laid out: a step after 2.8a′; without it those faces
    still draw, unjoined.
+
+## 4. XFNT v2, the outline format (built 2026-11-25, roadmap 2.8a′1)
+
+The host (`cxk font build <font>.ttf --face "CX Sans"`) writes it; the OS
+reads it (2.8a′2). Code: `devkit/CXEX.Build/Fonts/XfntOutline.cs` (writer
+and checker), `OutlineConvert.cs` (TrueType to v2), `TrueTypeFont.cs` (the
+host's TrueType reader), `OutlineRaster.cs` (the oracle rasteriser). Tests:
+`CXEX.Tests/Unit/XfntOutlineTests.cs`.
+
+**No offsets.** Every section's place follows from the header's four
+counts, every index is checked against a running sum, and the file is
+exactly as long as the counts say. All fields are little-endian.
+
+| Offset | Field |
+|---|---|
+| 0 | `u32` magic `XFNT` · `u16` version 2 · `u8` kind 2 (outline) · `u8` flags (1 italic, 2 monospace) |
+| 8 | `u16` em, always 4096 · `u16` weight 1-1000 |
+| 12 | `i16` ascender > 0, descender ≤ 0, line gap ≥ 0, cap height, x height, underline position, underline thickness · `u16` 0 |
+| 28 | `u32` glyphs (1-65535), map entries, contours, points · `u32` 0 |
+| 48 | face name: 16 bytes of printable ASCII, NUL padded |
+
+Then, in this order:
+
+1. **Map**, 8 bytes each: `u32` codepoint, `u32` glyph. Strictly ascending;
+   no surrogates, nothing past U+10FFFF; every glyph in the font. A
+   codepoint not in the map draws glyph 0.
+2. **Glyphs**, 16 bytes: `u16` advance; `i16` box xmin, ymin, xmax, ymax;
+   `u16` contour count; `u32` first contour (the running sum). The box is
+   the points' own (the control box), all zero for a glyph with no contours.
+3. **Contours**, 8 bytes: `u32` first point (the running sum), `u32` count
+   ≥ 2.
+4. **Points**, 4 bytes: `i16` x, y, in em units, y up. Every point lies in
+   its glyph's box; every coordinate, box and advance within ±4 em.
+5. **On-curve flags**, a byte per point, 0 or 1, zero-padded to 4 bytes.
+   Each contour starts on the curve and never has two off-curve points
+   together, so every segment is a line or one quadratic. (The converter
+   writes TrueType's implied midpoints out.)
+
+Caps: 2^22 contours, 2^24 points. Not carried yet: kerning (a pair table, a
+later step), ligatures (§3 item 5), icon names (2.8a′5).
+
+**The converter** (host only): reads `glyf` TrueType (CFF is refused for
+now: no default face needs it), picks `cmap` 3/10 or 0/4-6 format 12 over
+3/1 or 0/x format 4, flattens composites (offsets, the three scale forms,
+SCALED_COMPONENT_OFFSET, ROUND_XY_TO_GRID, USE_MY_METRICS; point matching
+refused), cuts the font to glyph 0 and what `cmap` reaches, rescales to the
+4096 em and rounds once, drops contours that draw nothing, reads ascender
+and descender from OS/2 when USE_TYPO_METRICS is set. Every font it writes
+is read back through the checker. A damaged source fails as bad data,
+never as a crash (a seeded damage test: `CXEX_TEST_SEED` tries others).
+
+### 4.1 The rasteriser (the oracle; X's copy in 2.8a′3 must match it pixel for pixel)
+
+Integers only, and every division is of non-negative numbers:
+
+1. **Scale** (ppem 1-1024): an em coordinate becomes 26.6 pixels as
+   `((v + 16384) * ppem + 32 >> 6) - 256 * ppem`, which is
+   `floor((v * ppem + 32) / 64)`. The bias keeps the shift's operand
+   non-negative, so X needs no signed shift. Y is negated (y down).
+2. **Box**: left = floor(xmin / 64 px), right = ceil(xmax), top =
+   floor(-ymax), bottom = ceil(-ymin); a zero width or height becomes one.
+   Every point is shifted by (left, top) · 64, so all are ≥ 0.
+3. **Curves**: dev = max(|p0 − 2p1 + p2|) over x and y; n is the least of
+   1-16 with dev ≤ 32n² (an eighth of a pixel at most); point i is
+   `((n−i)²p0 + 2i(n−i)p1 + i²p2 + n²/2) / n²`, the last exactly p2.
+4. **Lines** are cut at each pixel row, then each column. With the ends
+   ordered y-up (sign −1 if swapped), x at height y is
+   `a.x ± (y − a.y)·|b.x − a.x| / (b.y − a.y)`, and y at a column edge
+   the same way round. Each piece adds to its cell (column
+   floor(min x / 64), at most `width`, the spare column): cover += sign·dy,
+   area += sign·dy·(fx0 + fx1), fx relative to the cell.
+5. **Sweep** each row left to right: cover accumulates; a pixel is
+   `|cover·128 − area| >> 5`, clamped to 255 (non-zero winding by magnitude,
+   as FreeType's default).
+6. **Advance**: Scale(advance), in 26.6.
+
+The method is FreeType's `smooth` area-and-cover accumulation (from memory;
+FreeType is not on disk). SerenityOS's `Userland/Libraries/LibGfx/EdgeFlagPathRasterizer.cpp`
+(sampled edge flags) was the other candidate: exact only to its sample
+count, which an oracle would have to reproduce too.

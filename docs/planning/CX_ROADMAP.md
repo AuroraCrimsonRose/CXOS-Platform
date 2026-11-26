@@ -1594,9 +1594,21 @@ language work in `language/CX_X_PLAN.md`.
      with it. The terminal defaults to Plex Mono. A choice of faces,
      proportional and monospace, with a core in the image and the rest as
      packages later: `CX_FONTS.md` §3 item 5 (ligatures a later step).
-     Icons with it (`system/CX_ICONS.md`): Phosphor's symbols as XFNT v2
+     Icons with it (`system/CX_ICONS.md`): IBM Carbon's symbols as XFNT v2
      glyphs by name, on the same rasteriser; colour and file-type icons
      with the first system apps.
+     **Sub-steps** (2026-11-25): **a′1** the host side: XFNT v2 (fixed
+     records, no offsets; `CX_FONTS.md` §4), `cxk font build` for TrueType,
+     the oracle rasteriser, IBM Plex Sans and Mono vendored (Reserved Font
+     Name "Plex": they ship as CX Sans and CX Mono). **Done.** CFF is
+     refused until a face needs it. **a′2** the OS reader: the same checks
+     in X, sabotages feeding it bad files, fonts only from `/System/Fonts`,
+     the faces in the image. **a′3** the X rasteriser over integers, a glyph
+     cache, and a Differential fact holding it to the oracle pixel for
+     pixel. **a′4** the toolkit's font handle (family, weight, style,
+     size), the UI scale setting, the gallery's text in CX Sans. **a′5**
+     icons: IBM Carbon (Aurora chose it 2026-11-25 from a sheet of both),
+     SVG converted on the host (cubics to quadratics) with a name table.
      Decided in 2.8a's design (2026-11-11, `system/CX_TOOLKIT.md` §2): the
      rasteriser runs in the client toolkit, since windows are client-drawn;
      displayd links the same library. `CX_FONTS.md` updated.

@@ -144,16 +144,16 @@ app.Configure(config =>
             .WithDescription("Compares two reports fact by fact: expected differences (firmware-chosen addresses, hypervisor leaves, rates within 1%) apart from findings. Exit 1 on a finding.");
     });
 
-    // ---- bitmap fonts ----
+    // ---- fonts: bitmap (v1) and outline (v2) ----
     config.AddBranch("font", font =>
     {
-        font.SetDescription("Builds and inspects XFNT bitmap fonts for the console and framebuffer.");
+        font.SetDescription("Builds and inspects XFNT fonts: v1 bitmaps for the console, v2 outlines for the GUI.");
 
         font.AddCommand<FontBuildCommand>("build")
-            .WithDescription("Converts a published BDF font into a console .xfnt for one standard character set (CP437). Refuses a font missing any character of the set, and names them.");
+            .WithDescription("A BDF becomes a console v1 .xfnt for one character set (CP437), refusing a font missing any of it. A TrueType .ttf becomes a v2 outline .xfnt under a name of its own (--face), cut to the characters it maps.");
 
         font.AddCommand<FontInspectCommand>("inspect")
-            .WithDescription("Reports an .xfnt's geometry and slot usage, and can print one glyph as ASCII art.");
+            .WithDescription("Reports an .xfnt: v1 geometry and slots (--show a glyph), v2 metrics and counts (--text draws a line in the terminal through the oracle rasteriser).");
     });
 
     // ---- pictures: the desktop's background ----

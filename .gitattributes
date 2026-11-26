@@ -26,3 +26,6 @@
 # fuzz inputs are bytes, whatever they happen to look like
 kernel/test/host/corpus/** binary
 kernel/test/host/regress/** binary
+
+# Vendored as distributed, byte for byte (CRLF licence text included).
+vendor/plex/** -text
