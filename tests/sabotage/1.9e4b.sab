@@ -154,10 +154,10 @@ edit = kernel/drivers/video/fb.c
 expect = a signature's arithmetic answers an AP's shootdown @ tlb modexp: step 3
 edit = kernel/lib/crypto/bignum.c
 <<<
-           served here, as a spin serves; with interrupts on the IPI does. */
-        if (!(i & 255) && !arch_irqs_enabled()) smp_serve();
+           run of them can't hold one past its timeout. */
+        BN_SERVE();
 ===
-           served here, as a spin serves; with interrupts on the IPI does. */
+           run of them can't hold one past its timeout. */
 >>>
 
 # ---- cpu/sched.c ----

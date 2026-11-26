@@ -7,9 +7,11 @@
  * (CX_EXTENSION_SYSTEM.md section 10). Just the operations modular
  * exponentiation needs: load/store big-endian bytes, compare, multiply, modulo.
  *
- * Schoolbook arithmetic - chosen deliberately: verification runs only a handful
- * of times (kernel/driver load), so speed is irrelevant, and simplicity keeps
- * this security-critical code correct and auditable. No Montgomery, no signing.
+ * Schoolbook multiply and a word-wise remainder (Knuth's Algorithm D). Every
+ * program load checks a signature, about 30 s of guest time each under icount
+ * with the old bit-serial remainder (2.8a'4b), so speed matters; but the
+ * code stays plain enough to audit. No Montgomery, no signing. Host-tested
+ * against a bit-serial oracle (kernel/test/host/test_bignum.c).
  *
  * Representation: little-endian array of 32-bit limbs (limb[0] = least
  * significant). Sized to hold a full 4096-bit product (2*2048) plus headroom,
@@ -47,7 +49,7 @@ int  bn_cmp(const bignum *a, const bignum *b);
 /* r = a * b   (schoolbook). r must not alias a or b. */
 void bn_mul(bignum *r, const bignum *a, const bignum *b);
 
-/* r = a mod m   (schoolbook bit-shift division). r may alias a. */
+/* r = a mod m   (Algorithm D, a word a step). r may alias a; m == 0 gives 0. */
 void bn_mod(bignum *r, const bignum *a, const bignum *m);
 
 /* result = base^exp mod m   (square-and-multiply). The only public entry the

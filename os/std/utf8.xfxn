@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/utf8.xfxn - UTF-8: a character read, one written, characters counted.
+// Aurora Tejeda / CATX Systems
+// Threads: any thread; nothing here keeps state.
+//
+// import "utf8.xfxn";
+//
+// The toolkit's text is UTF-8. Its own file since 2.8a′4b, so that
+// std/toolkit.xfxn and std/toolkit_font.xfxn can each be compiled alone.
+
+// The character at s[at] of n bytes: its length (1 to 4) and *cp, or 0 if
+// the bytes there are not UTF-8 (overlong, a surrogate, past U+10FFFF, cut).
+fn tk_utf8_at(s: *u8, n: u32, at: u32, cp: *u32) -> u32 {
+    if (at >= n) { return 0; }
+    let b: u32 = s[at] as u32;
+    if (b < 0x80) { *cp = b; return 1; }
+    let len: u32 = 0;
+    let v: u32 = 0;
+    let lo: u32 = 0x80;     // the second byte's range, for the special leads
+    let hi: u32 = 0xBF;
+    if (b >= 0xC2 && b <= 0xDF) { len = 2; v = b & 0x1F; }
+    else if (b >= 0xE0 && b <= 0xEF) {
+        len = 3; v = b & 0x0F;
+        if (b == 0xE0) { lo = 0xA0; }
+        if (b == 0xED) { hi = 0x9F; }
+    }
+    else if (b >= 0xF0 && b <= 0xF4) {
+        len = 4; v = b & 0x07;
+        if (b == 0xF0) { lo = 0x90; }
+        if (b == 0xF4) { hi = 0x8F; }
+    }
+    else { return 0; }
+    if (at + len > n) { return 0; }
+    let k: u32 = 1;
+    while (k < len) {
+        let c: u32 = s[at + k] as u32;
+        if (k == 1 && (c < lo || c > hi)) { return 0; }
+        if (c < 0x80 || c > 0xBF) { return 0; }
+        v = (v << 6) | (c & 0x3F);
+        k = k + 1;
+    }
+    *cp = v;
+    return len;
+}
+
+// cp as UTF-8 into out (room for 4): its length.
+fn tk_utf8_put(cp: u32, out: *u8) -> u32 {
+    if (cp < 0x80) { out[0] = cp as u8; return 1; }
+    if (cp < 0x800) {
+        out[0] = (0xC0 | (cp >> 6)) as u8;
+        out[1] = (0x80 | (cp & 0x3F)) as u8;
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (0xE0 | (cp >> 12)) as u8;
+        out[1] = (0x80 | ((cp >> 6) & 0x3F)) as u8;
+        out[2] = (0x80 | (cp & 0x3F)) as u8;
+        return 3;
+    }
+    out[0] = (0xF0 | (cp >> 18)) as u8;
+    out[1] = (0x80 | ((cp >> 12) & 0x3F)) as u8;
+    out[2] = (0x80 | ((cp >> 6) & 0x3F)) as u8;
+    out[3] = (0x80 | (cp & 0x3F)) as u8;
+    return 4;
+}
+
+// How many characters n bytes are: a byte that is not UTF-8 is one.
+fn tk_utf8_count(s: *u8, n: u32) -> u32 {
+    let at: u32 = 0;
+    let count: u32 = 0;
+    while (at < n) {
+        let cp: u32 = 0;
+        let l: u32 = tk_utf8_at(s, n, at, &cp);
+        if (l == 0) { l = 1; }
+        at = at + l;
+        count = count + 1;
+    }
+    return count;
+}

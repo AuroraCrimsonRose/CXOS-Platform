@@ -2015,13 +2015,15 @@ static int t_tlb_modexp_serves(void) {
     uint32_t irq = arch_irq_save();
     if (smp_call_start(1, ap_shoot, &s)) { arch_irq_restore(irq); return smp_fail("tlb modexp: step ", 1, 1); }
     /* Raised again until the shootdown's 300 ms have passed with interrupts
-       off: one is that long under icount, a few ms on Hyper-V (1.9f). */
+       off: since the remainder went word-wise (2.8a'4b) one is tens of ms
+       under icount and well under one on Hyper-V, so the bound is the time;
+       the count only stops a clock that never moves. */
     uint64_t t0 = timer_now_ns(), took;
     unsigned runs = 0;
     do {
         bn_modexp(&m, &b, RSA_PROFILE_EXPONENT, &n);
         took = timer_now_ns() - t0;
-    } while (took < 300000000ull && ++runs < 1000u);
+    } while (took < 300000000ull && ++runs < 1000000u);
     arch_irq_restore(irq);
     if (smp_call_wait(1, 1000000000ull)) return smp_fail("tlb modexp: step ", 1, 2);
     if (s.missing) return smp_fail("tlb modexp: step ", 1, 3);

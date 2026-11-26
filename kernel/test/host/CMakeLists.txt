@@ -26,6 +26,7 @@ set(KERNEL_SOURCES
     ${KDIR}/lib/crypto/sha256.c
     ${KDIR}/lib/crypto/chacha20.c
     ${KDIR}/lib/crypto/fortuna.c
+    ${KDIR}/lib/crypto/bignum.c
     ${KDIR}/object/kobj.c
     ${KDIR}/object/htab.c
     ${KDIR}/object/idtab.c

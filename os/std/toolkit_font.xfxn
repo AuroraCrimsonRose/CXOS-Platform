@@ -11,8 +11,7 @@
 // ui's scale (CX_TOOLKIT.md §4: fonts are asked for by device pixel size),
 // with a glyph cache (std/raster.xfxn) for that size alone. A display
 // client has no GRANT_DISK: its faces are the server's, mapped read-only
-// (of_map). This file uses the toolkit's UTF-8 reader (tk_utf8_at), so it
-// is imported by std/toolkit.xfxn, never alone.
+// (of_map).
 //
 // The toolkit's sizes (TK_TEXT_SIZE, TK_HEAD_SIZE): body text 13, a
 // heading 18 bold, in logical units (Aurora, 2026-11-26).
@@ -25,6 +24,7 @@
 
 import "fontfile.xfxn";
 import "raster.xfxn";
+import "utf8.xfxn";
 
 const TK_FONT_BUDGET: u32 = 262144;    // coverage bytes a font's cache keeps
 const TK_TEXT_SIZE: u32 = 13;
