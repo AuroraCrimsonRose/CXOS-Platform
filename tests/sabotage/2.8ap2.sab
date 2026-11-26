@@ -3,18 +3,33 @@
 # Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds
 # at most one sabotage per test.
 #
-# The mutation test stops at its first red, so one blinded rule a boot. A
-# rule from each part of the checker is blinded (the header, the length,
-# the map, the glyphs, the points, the padding); the rest share its loop.
-# The host's XfntOutlineTests holds the X file's face and mutations to the
-# C# checker, which is sabotaged on the host.
+# The mutation test stops at its first red, so one blinded rule a boot:
+# every check line of of_check is blinded, each in a run of its own (or a
+# group whose other members land in other tests), and every run is
+# narrowed to the fonts tests (`narrow = yes`); `--all` re-proves them
+# full. A rule's step is 100 + the first mutation it must refuse
+# (ot_m_why); a blinded rule's mutation is either read on or refused by a
+# later rule, and both are red there. The host's XfntOutlineTests holds the
+# X file's face and mutations to the C# checker, which is sabotaged on the
+# host.
 
 # ---- the header ----
+
+[short-blind]
+# a file shorter than the header is read on (and refused by its length)
+expect = x: fonts: each rule refuses its own break @ failed at step 300
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (n < OF_HEADER) { return of_refuse(f, OF_W_SHORT); }
+===
+>>>
 
 [magic-blind]
 # any first four bytes pass
 expect = x: fonts: each rule refuses its own break @ failed at step 100
 group = g1
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
     if (p[0] != 88 || p[1] != 70 || p[2] != 78 || p[3] != 84) { return of_refuse(f, OF_W_MAGIC); }   // "XFNT"
@@ -26,9 +41,150 @@ edit = os/std/outline.xfxn
 expect = x: fonts: each rule refuses its own break @ failed at step 101
 expect = x: fonts: the faces in /System/Fonts @ failed at step 1907
 group = g2
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
     if (of_u16(p, 4) != 2) { return of_refuse(f, OF_W_VERSION); }
+===
+>>>
+
+[kind-blind]
+# a kind other than outlines
+expect = x: fonts: each rule refuses its own break @ failed at step 102
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (p[6] != 2) { return of_refuse(f, OF_W_KIND); }
+===
+>>>
+
+[flags-blind]
+# an unknown flag
+expect = x: fonts: each rule refuses its own break @ failed at step 103
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if ((flags & ~(OF_ITALIC | OF_MONOSPACE)) != 0) { return of_refuse(f, OF_W_FLAGS); }
+===
+>>>
+
+[em-blind]
+# an em other than 4096
+expect = x: fonts: each rule refuses its own break @ failed at step 104
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (of_u16(p, 8) != OF_EM) { return of_refuse(f, OF_W_EM); }
+===
+>>>
+
+[weight-blind]
+# a weight of 0
+expect = x: fonts: each rule refuses its own break @ failed at step 105
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (weight < 1 || weight > 1000) { return of_refuse(f, OF_W_WEIGHT); }
+===
+>>>
+
+[ascender-blind]
+# an ascender on the baseline
+expect = x: fonts: each rule refuses its own break @ failed at step 106
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (asc <= 0 || asc > OF_LIMIT) { return of_refuse(f, OF_W_ASCENDER); }
+===
+>>>
+
+[descender-blind]
+# a descender above the baseline
+expect = x: fonts: each rule refuses its own break @ failed at step 107
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (desc > 0 || desc < 0 - OF_LIMIT) { return of_refuse(f, OF_W_DESCENDER); }
+===
+>>>
+
+[gap-blind]
+# a negative line gap
+expect = x: fonts: each rule refuses its own break @ failed at step 108
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (gap < 0 || gap > OF_LIMIT) { return of_refuse(f, OF_W_GAP); }
+===
+>>>
+
+[heights-blind]
+# a negative cap height
+expect = x: fonts: each rule refuses its own break @ failed at step 109
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (cap < 0 || cap > OF_LIMIT || xh < 0 || xh > OF_LIMIT) { return of_refuse(f, OF_W_HEIGHTS); }
+===
+>>>
+
+[underline-blind]
+# a negative underline thickness
+expect = x: fonts: each rule refuses its own break @ failed at step 110
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (of_in_limit(ulpos) == 0 || ulthick < 0 || ulthick > OF_LIMIT) { return of_refuse(f, OF_W_UNDERLINE); }
+===
+>>>
+
+[reserved-blind]
+# a reserved field set
+expect = x: fonts: each rule refuses its own break @ failed at step 111
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (of_u16(p, 26) != 0 || of_u32(p, 44) != 0) { return of_refuse(f, OF_W_RESERVED); }
+===
+>>>
+
+[glyphs-blind]
+# no glyphs (refused by the length instead)
+expect = x: fonts: each rule refuses its own break @ failed at step 113
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (glyphs < 1 || glyphs > OF_MAX_GLYPHS) { return of_refuse(f, OF_W_GLYPHS); }
+===
+>>>
+
+[map-count-blind]
+# more map entries than characters
+expect = x: fonts: each rule refuses its own break @ failed at step 114
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (map > OF_MAX_MAP) { return of_refuse(f, OF_W_MAP_COUNT); }
+===
+>>>
+
+[contour-count-blind]
+# a contour count past the limit
+expect = x: fonts: each rule refuses its own break @ failed at step 115
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (contours > OF_MAX_CONTOURS) { return of_refuse(f, OF_W_CONTOUR_COUNT); }
+===
+>>>
+
+[point-count-blind]
+# a point count past the limit
+expect = x: fonts: each rule refuses its own break @ failed at step 116
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (points > OF_MAX_POINTS) { return of_refuse(f, OF_W_POINT_COUNT); }
 ===
 >>>
 
@@ -36,9 +192,41 @@ edit = os/std/outline.xfxn
 # the counts need not describe the file
 expect = x: fonts: each rule refuses its own break @ failed at step 117
 group = g3
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
     if (of_length(glyphs, map, contours, points) != (n as u64)) { return of_refuse(f, OF_W_LENGTH); }
+===
+>>>
+
+[name-empty-blind]
+# an empty name (refused by the name's padding instead)
+expect = x: fonts: each rule refuses its own break @ failed at step 118
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (len == 0) { return of_refuse(f, OF_W_NAME_EMPTY); }
+===
+>>>
+
+[name-char-blind]
+# a control character in the name
+expect = x: fonts: each rule refuses its own break @ failed at step 119
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        if (i < len) { if (b < 32 || b > 126) { return of_refuse(f, OF_W_NAME); } }
+===
+        if (i < len) { }
+>>>
+
+[name-pad-blind]
+# a byte after the name's NUL
+expect = x: fonts: each rule refuses its own break @ failed at step 120
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        else if (b != 0) { return of_refuse(f, OF_W_NAME); }
 ===
 >>>
 
@@ -48,9 +236,80 @@ edit = os/std/outline.xfxn
 # codepoints in any order
 expect = x: fonts: each rule refuses its own break @ failed at step 121
 group = g4
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
         if (i > 0 && cp <= prev) { return of_refuse(f, OF_W_MAP_ORDER); }
+===
+>>>
+
+[map-char-blind]
+# a surrogate mapped (refused by the order instead)
+expect = x: fonts: each rule refuses its own break @ failed at step 122
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) { return of_refuse(f, OF_W_MAP_CHAR); }
+===
+>>>
+
+[map-glyph-blind]
+# a character mapped to a glyph past the font
+expect = x: fonts: each rule refuses its own break @ failed at step 124
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        if (g >= f.glyphs) { return of_refuse(f, OF_W_MAP_GLYPH); }
+===
+>>>
+
+[advance-blind]
+# an advance past the limit
+expect = x: fonts: each rule refuses its own break @ failed at step 125
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        if (adv > (OF_LIMIT as u32)) { return of_refuse(f, OF_W_ADVANCE); }
+===
+>>>
+
+[first-contour-blind]
+# a glyph's contours not after the last glyph's
+expect = x: fonts: each rule refuses its own break @ failed at step 126
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        if (first != sum) { return of_refuse(f, OF_W_FIRST_CONTOUR); }
+===
+>>>
+
+[contours-past-blind]
+# a glyph's contours run past the table (refused by the total instead)
+expect = x: fonts: each rule refuses its own break @ failed at step 127
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        if ((sum as u64) + (nc as u64) > (f.contours as u64)) { return of_refuse(f, OF_W_CONTOURS_PAST); }
+===
+>>>
+
+[box-inverted-blind]
+# a box with its left past its right (refused as points outside it instead)
+expect = x: fonts: each rule refuses its own break @ failed at step 129
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+            if (x0 > x1 || y0 > y1) { return of_refuse(f, OF_W_BOX); }
+===
+>>>
+
+[box-limit-blind]
+# a box past the limit
+expect = x: fonts: each rule refuses its own break @ failed at step 130
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+            if (of_in_limit(x0) == 0 || of_in_limit(x1) == 0 || of_in_limit(y0) == 0 || of_in_limit(y1) == 0) { return of_refuse(f, OF_W_BOX); }
 ===
 >>>
 
@@ -58,9 +317,90 @@ edit = os/std/outline.xfxn
 # a glyph with no contours may carry a box
 expect = x: fonts: each rule refuses its own break @ failed at step 131
 group = g5
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
             if (x0 != 0 || y0 != 0 || x1 != 0 || y1 != 0) { return of_refuse(f, OF_W_BOX); }
+===
+>>>
+
+[contour-total-blind]
+# the glyphs hold fewer contours than the table
+expect = x: fonts: each rule refuses its own break @ failed at step 128
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (sum != f.contours) { return of_refuse(f, OF_W_CONTOUR_TOTAL); }
+===
+>>>
+
+[first-point-blind]
+# a contour's points not after the last contour's
+expect = x: fonts: each rule refuses its own break @ failed at step 132
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        if (first != sum) { return of_refuse(f, OF_W_FIRST_POINT); }
+===
+>>>
+
+[few-points-blind]
+# a contour of one point (refused by the total instead)
+expect = x: fonts: each rule refuses its own break @ failed at step 133
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        if (k < 2) { return of_refuse(f, OF_W_FEW_POINTS); }
+===
+>>>
+
+[points-past-blind]
+# a contour's points run past the table (refused by the total instead)
+expect = x: fonts: each rule refuses its own break @ failed at step 134
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+        if ((sum as u64) + (k as u64) > (f.points as u64)) { return of_refuse(f, OF_W_POINTS_PAST); }
+===
+>>>
+
+[point-total-blind]
+# the contours hold fewer points than the table
+expect = x: fonts: each rule refuses its own break @ failed at step 135
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+    if (sum != f.points) { return of_refuse(f, OF_W_POINT_TOTAL); }
+===
+>>>
+
+[outside-blind]
+# a point outside its glyph's box
+expect = x: fonts: each rule refuses its own break @ failed at step 136
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+                if (x < x0 || x > x1 || y < y0 || y > y1) { return of_refuse(f, OF_W_OUTSIDE); }
+===
+>>>
+
+[flag-blind]
+# an on-curve flag of 2
+expect = x: fonts: each rule refuses its own break @ failed at step 137
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+                if (on > 1) { return of_refuse(f, OF_W_FLAG); }
+===
+>>>
+
+[starts-off-blind]
+# a contour starting off the curve (refused as two off-curve points instead)
+expect = x: fonts: each rule refuses its own break @ failed at step 138
+narrow = yes
+edit = os/std/outline.xfxn
+<<<
+                if (j == 0 && on == 0) { return of_refuse(f, OF_W_STARTS_OFF); }
 ===
 >>>
 
@@ -68,6 +408,7 @@ edit = os/std/outline.xfxn
 # two off-curve points together: a segment that is not a line or one quadratic
 expect = x: fonts: each rule refuses its own break @ failed at step 139
 group = g6
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
                 if (on == 0 && prev_off == 1) { return of_refuse(f, OF_W_TWO_OFF); }
@@ -78,6 +419,7 @@ edit = os/std/outline.xfxn
 # anything after the flags
 expect = x: fonts: each rule refuses its own break @ failed at step 140
 group = g7
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
         if (p[i] != 0) { return of_refuse(f, OF_W_PADDING); }
@@ -90,6 +432,7 @@ edit = os/std/outline.xfxn
 # the binary search never looks at the last entry
 expect = x: fonts: an XFNT v2 face reads as written @ failed at step 8
 group = g1
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
     let hi: u32 = f.map;
@@ -103,6 +446,7 @@ edit = os/std/outline.xfxn
 # a glyph's first contour read from its contour count
 expect = x: fonts: an XFNT v2 face reads as written @ failed at step 12
 group = g3
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
     out.first = of_u32(f.p, r + 12);
@@ -116,6 +460,7 @@ edit = os/std/outline.xfxn
 # of_load lets a '/' into the path
 expect = x: fonts: the faces in /System/Fonts @ failed at step 1902
 group = g1
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
         if (!((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 95)) { return 0; }
@@ -127,6 +472,7 @@ edit = os/std/outline.xfxn
 # of_free lets go of the memory and leaves the face looking loaded
 expect = x: fonts: the faces in /System/Fonts @ failed at step 1008
 group = g4
+narrow = yes
 edit = os/std/outline.xfxn
 <<<
         handle_close(f.mem);
@@ -141,6 +487,7 @@ edit = os/std/outline.xfxn
 # the image lacks a face
 expect = x: fonts: the faces in /System/Fonts @ failed at step 1701
 group = g5
+narrow = yes
 edit = tools/cmake/CMakeLists.txt
 <<<
     "cxmono-bi|mono/IBMPlexMono-BoldItalic|CX Mono")
