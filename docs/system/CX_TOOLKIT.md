@@ -95,6 +95,21 @@ fractional-scale bug of systems that round sizes). Hairlines (borders,
 focus rings) are a whole number of device pixels, at least 1. Fonts are
 asked for by device pixel size. The gallery shows 100, 150 and 200 %.
 
+**2.8a′4, as built (2026-11-26).** Text is set in outline fonts
+(`CX_FONTS.md` §4.2) once `tk_set_fonts` gives the ui three of them:
+body text (`TK_ST_TEXT`, 13 regular), a table's header cells
+(`TK_ST_STRONG`, 13 bold) and headings (`TK_ST_HEAD`, 18 bold), all in
+logical units. `tk_set_scale` resizes all three. A text grid's cells stay
+in the bitmap font (`TK_ST_CELL`). A ui with no outline fonts uses the
+bitmap font exactly as before, pixel for pixel. A window gets its fonts
+with `tk_win_fonts`, which maps the faces displayd puts in spawn slots 6
+and 7, and its scale with `tk_win_scale`, which reads slot 8
+(`WIN_UI_SLOT`). Slot 8 is a page of `u32` version and `u32` scale in
+quarters. displayd fills it from `/Shared/Config/ui.xuco`: `face` (a
+family in /System/Fonts) and `scale` (100–400 in steps of 25). The
+shell's `ui` command shows these settings and changes them. A change
+reaches the windows started after it.
+
 ## 5. Layout
 
 Two passes over the tree, each a plain walk:
@@ -243,9 +258,10 @@ setting and can be forced per ui (the gallery does).
   characters and a drag selects. Typing replaces the selection; only whole
   characters that fit go in. One level of undo: a run of typed characters
   is one change, and undo again after an undo is refused (redo puts it
-  back). The text is drawn through UTF-8 to code page 437 (the v1 bitmap
-  font's), so the Latin-1 letters it has are shown and anything else is
-  `?`, until 2.8a′'s fonts. The node's text is the field's accessible name;
+  back). In the bitmap font the text is drawn through UTF-8 to code page 437, so
+  the Latin-1 letters it has show and anything else is `?`. In an outline
+  font (2.8a′4) each character is its own glyph, a column is as wide as
+  its advance, and the caret, scroll and pointer go by those widths. The node's text is the field's accessible name;
   the field's own text is `tk_field_text`.
 - **The clipboard** (design goal 7) is the server's: text, at most
   `WM_CLIP_MAX` (4096) bytes, `DS_OP_CLIP_SET` and `DS_OP_CLIP_GET` with a

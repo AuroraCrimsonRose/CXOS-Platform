@@ -30,6 +30,7 @@ import "locale_tests.xfxn";
 import "picture_tests.xfxn";
 import "outline_tests.xfxn";
 import "ai_tests.xfxn";
+import "font_tests.xfxn";
 
 const MS: u64 = 1000000;
 
@@ -3224,6 +3225,27 @@ fn v_sim(arg: u64) -> i32 {
 // ---- the toolkit's witness: the gallery, through the server (2.8a1) ----
 
 global gx_ui: tk_ui;
+global gx_face: [2]of_face;
+global gx_ft: [3]tk_font;
+
+// The replay in the faces the server gives its clients (2.8a′4), mapped as
+// a client maps them, at the server's scale: 0, or 1.
+fn gx_fonts() -> i32 {
+    if (wx.face[0].mem <= 0 || wx.face[1].mem <= 0 || wx.ui_mem <= 0) { return 1; }
+    if (of_map(&gx_face[0], wx.face[0].mem) != 0) { return 1; }
+    if (of_map(&gx_face[1], wx.face[1].mem) != 0) { of_free(&gx_face[0]); return 1; }
+    tk_font_init(&gx_ft[0], &gx_face[0], TK_TEXT_SIZE, wx.scale);
+    tk_font_init(&gx_ft[1], &gx_face[1], TK_TEXT_SIZE, wx.scale);
+    tk_font_init(&gx_ft[2], &gx_face[1], TK_HEAD_SIZE, wx.scale);
+    tk_set_fonts(&gx_ui, &gx_ft[0], &gx_ft[1], &gx_ft[2]);
+    return 0;
+}
+
+fn gx_unfonts() -> void {
+    tk_set_fonts(&gx_ui, 0 as *tk_font, 0 as *tk_font, 0 as *tk_font);
+    tk_font_free(&gx_ft[0]); tk_font_free(&gx_ft[1]); tk_font_free(&gx_ft[2]);
+    of_free(&gx_face[0]); of_free(&gx_face[1]);
+}
 // how long a key may take to reach the window: the slowest, a new scale,
 // takes about 25 s under icount (a full canvas, drawn on both sides)
 const GX_KEY_MS: u64 = 60000;
@@ -3310,19 +3332,23 @@ fn gx_key(code: u32, ch: u32, mods: u32) -> void {
 // another size).
 fn gx_gallery(arg: u64) -> i32 {
     if (wx_up() != 0) { return 4600; }
+    // the server's faces and scale (a real screen's; the test asks for them)
+    dsv_ui_load(&wx);
     let blob: [16]u8;
     let n: u32 = strcopy(&blob[0], "gallery", 16) + 1;
     if (dsv_launch(&wx, "/Shared/Programs/gallery.xuex", &blob[0], n) < 0) { wx_down(); return 4601; }
-    // the test's server has no font: nor has the replay. It has the
-    // gallery's English (2.8a4), as the gallery has from the server
-    tk_init(&gx_ui, 4, 0 as *ds_font);
-    if (lt_tables() != 0) { wx_down(); return 4642; }
+    // the test's server has no bitmap font: nor has the replay. Its text
+    // is in the server's outline faces (2.8a′4), and in the gallery's
+    // English (2.8a4), as the gallery's is
+    tk_init(&gx_ui, wx.scale, 0 as *ds_font);
+    if (gx_fonts() != 0) { wx_down(); return 4643; }
+    if (lt_tables() != 0) { gx_unfonts(); wx_down(); return 4642; }
     tk_set_locale(&gx_ui, &lt_en, 0 as *lc_table);
-    if (gp_build(&gx_ui) != 0) { wx_down(); return 4602; }
+    if (gp_build(&gx_ui) != 0) { gx_unfonts(); wx_down(); return 4602; }
     let w: u32 = 0;
     let h: u32 = 0;
     tk_fit(&gx_ui, &w, &h);
-    if (tk_size(&gx_ui, w, h) != 0) { wx_down(); return 4603; }
+    if (tk_size(&gx_ui, w, h) != 0) { gx_unfonts(); wx_down(); return 4603; }
     let d: ds_damage;
     tk_paint(&gx_ui, &d);
     let rc: i32 = 0;
@@ -3354,8 +3380,8 @@ fn gx_gallery(arg: u64) -> i32 {
     }
     // the text field (two Tabs on: the slider, then it): typed into, a
     // selection, an accent waiting, and the letter it goes on in place of
-    // the selection. The test has no font, so this is the box, the
-    // selection, the underline and the caret.
+    // the selection: the box, the selection, the underline, the caret and
+    // the text, in CX Sans.
     if (rc == 0) { gx_key(KC_TAB, 0, 0); gx_key(KC_TAB, 0, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4614; } }
     if (rc == 0) { gx_key(KC_A, 97, 0); gx_key(KC_B, 98, 0); if (gx_matches(GX_KEY_MS) == 0) { rc = 4615; } }
     if (rc == 0) { gx_key(KC_LEFT, 0, KEYMOD_SHIFT); if (gx_matches(GX_KEY_MS) == 0) { rc = 4616; } }
@@ -3408,6 +3434,7 @@ fn gx_gallery(arg: u64) -> i32 {
         else if (gx_matches(GX_KEY_MS) == 0) { rc = 4613; }
     }
     tk_free(&gx_ui);
+    gx_unfonts();
     wx_down();
     return rc;
 }
@@ -3549,8 +3576,12 @@ fn all() -> void {
     test_run("toolkit: the audit sees what is planted", ai_audits,                 30000);
     test_run("toolkit: the inspector",                 ai_inspector,               30000);
     test_run("toolkit: contrast and its tokens",       ai_contrast,                30000);
+    test_run("fonts: the handle, its sizes and widths",  fh_handle,                  60000);
+    test_run("fonts: text drawn as rs_draw draws it",    fh_draw,                    60000);
+    test_run("fonts: layout and the text field",         fh_field,                   60000);
+    test_run("fonts: a shared face, the UI setting",     fh_share,                   60000);
     test_run("gallery: audited at every scale and locale", ai_gallery,             300000);
-    test_run("gallery: the window holds what was drawn", gx_gallery,                300000);
+    test_run("gallery: the window holds what was drawn", gx_gallery,                450000);
     test_run("gallery: in the pseudo-locale",          gx_gallery_qps,             300000);
 }
 

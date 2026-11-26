@@ -23,7 +23,10 @@ struct tk_win {
     font: ds_font,
     has_font: u32,
     loc: lc_table,      // the program's tables from the server (2.8a4): tk_win_locale
-    en: lc_table
+    en: lc_table,
+    // 2.8a′4: the UI face from the server, regular and bold (tk_win_fonts)
+    face: [2]of_face,
+    ft: [3]tk_font      // body text, a table's heads, headings
 }
 
 // The server's font, from slot WIN_FONT_SLOT, mapped read-only and checked
@@ -42,6 +45,43 @@ fn tk_win_font(tw: *tk_win) -> u32 {
     tw.has_font = 1;
     return 1;
 }
+
+// The scale the user chose (2.8a′4), from slot WIN_UI_SLOT (the server's,
+// window.xfxn): quarters, 4-16, or 4 (100 %) if none was given.
+fn tk_win_scale() -> u32 {
+    let h: i32 = args_handle(WIN_UI_SLOT);
+    if (h <= 0) { return 4; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = h as u32;
+    a.length = WIN_UI_BYTES as u64;
+    a.prot = MPROT_READ;
+    if (vm_map(&a) != E_OK) { return 4; }
+    let p: *u32 = a.addr as *u32;
+    let q: u32 = 4;
+    if (p[0] == WIN_UI_VERSION && p[1] >= TK_SCALE_MIN && p[1] <= TK_SCALE_MAX) { q = p[1]; }
+    vm_unmap(a.addr, 0);
+    return q;
+}
+
+// The server's UI face, from slots WIN_FACE_SLOT and WIN_FACE_BOLD_SLOT,
+// mapped read-only and checked (of_map), set as ui's text (tk_set_fonts):
+// body text TK_TEXT_SIZE, a table's heads that size in bold, headings
+// TK_HEAD_SIZE bold. 1 if the regular face was taken (a bold one that is
+// refused is drawn regular), else 0: the ui keeps the bitmap font.
+fn tk_win_fonts(tw: *tk_win, ui: *tk_ui) -> u32 {
+    let h: i32 = args_handle(WIN_FACE_SLOT);
+    if (h <= 0 || of_map(&tw.face[0], h) != 0) { return 0; }
+    let bold: *of_face = &tw.face[0];
+    let hb: i32 = args_handle(WIN_FACE_BOLD_SLOT);
+    if (hb > 0 && of_map(&tw.face[1], hb) == 0) { bold = &tw.face[1]; }
+    tk_font_init(&tw.ft[0], &tw.face[0], TK_TEXT_SIZE, ui.scale);
+    tk_font_init(&tw.ft[1], bold, TK_TEXT_SIZE, ui.scale);
+    tk_font_init(&tw.ft[2], bold, TK_HEAD_SIZE, ui.scale);
+    tk_set_fonts(ui, &tw.ft[0], &tw.ft[1], &tw.ft[2]);
+    return 1;
+}
+
 
 // The program's string tables, from slot WIN_LOCALE_SLOT (the server's,
 // window.xfxn), mapped read-only, copied and checked (lc_parse) and given

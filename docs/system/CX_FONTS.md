@@ -239,3 +239,36 @@ The method is FreeType's `smooth` area-and-cover accumulation (from memory;
 FreeType is not on disk). SerenityOS's `Userland/Libraries/LibGfx/EdgeFlagPathRasterizer.cpp`
 (sampled edge flags) was the other candidate: exact only to its sample
 count, which an oracle would have to reproduce too.
+
+### 4.2 The toolkit's font handle (built 2026-11-26, roadmap 2.8a′4)
+
+A request is a **family, a weight, italic or not, and a size** (§3 item 5).
+`of_open` (`os/std/fontfile.xfxn`) picks the family's file: `<family>`,
+`-b`, `-i`, `-bi` (weights 550 and up are bold); when that file is missing
+it falls back to the upright face of the same weight, and then to regular.
+`tk_font` (`os/std/toolkit_font.xfxn`) holds a face at a size given in
+logical units. `tk_font_scale` turns that into device pixels for a ui's
+scale, `ppem = (size · q + 2) / 4`, and keeps a glyph cache (§4.1) for
+that size only.
+
+- **Metrics** are whole device pixels. `asc = ceil(ascender)`, and
+  `line = asc + ceil(−descender)`. The underline position and thickness
+  are each at least 1 pixel.
+- **Advances** are 26.6 values. They are summed and rounded only where a
+  glyph is placed (`(p + 32) >> 6`), so a run of text has the same width
+  however it is split. There is no kerning yet.
+- **Unseen characters** take no room and draw nothing. These are the bidi
+  controls that UAX #9 removes, plus the zero-width characters, U+FEFF
+  and U+00AD. Without this the face's glyph 0 would draw a box for them.
+- **Sharing.** A display client has no `GRANT_DISK`, so it cannot read
+  /System/Fonts itself. displayd loads the regular and bold faces of the
+  configured family and passes each memory object to every client it
+  starts, in spawn slots 6 and 7 with `MAP|INSPECT` rights. The client maps
+  the object read-only and runs `of_check` on it as it would on a file
+  (`of_map`). The server can still change a face after the client has
+  checked it, which is the same trust the client already gives the
+  server's bitmap font.
+
+Sizes in the toolkit: body text is 13, headings are 18 bold (Aurora,
+2026-11-26). The x tests (`os/apps/font_tests.xfxn`, 8000–8399) hold drawn
+text to `rs_draw` pixel for pixel, never to the cache.

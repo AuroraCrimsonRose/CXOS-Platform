@@ -27,6 +27,15 @@ const WIN_FONT_SLOT: u32 = 4;       // the server's font, a memory object to map
 const WIN_LOCALE_SLOT: u32 = 5;
 const WIN_LOCALE_ONE: u32 = 16384;      // LC_TABLE_MAX (an xtest holds them equal)
 const WIN_LOCALE_BYTES: u32 = 32776;    // 8 + 2 x WIN_LOCALE_ONE
+// the user's interface (2.8a′4), from the server's /Shared/Config/ui.xuco:
+// its UI face, regular and bold, each an XFNT v2 file in a memory object to
+// map read-only and check (of_map); and a page, read-only too, of u32
+// WIN_UI_VERSION and u32 the scale in quarters (4-16)
+const WIN_FACE_SLOT: u32 = 6;
+const WIN_FACE_BOLD_SLOT: u32 = 7;
+const WIN_UI_SLOT: u32 = 8;
+const WIN_UI_VERSION: u32 = 1;
+const WIN_UI_BYTES: u32 = 4096;
 
 const DS_OP_WINDOW_NEW: u32 = 1;   // w, h, flags, title; handles: the two buffers
 const DS_OP_COMMIT: u32 = 2;       // win, buffer, nrects, rects; handle: the lease

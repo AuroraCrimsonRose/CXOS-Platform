@@ -1606,7 +1606,7 @@ language work in `language/CX_X_PLAN.md`.
      the faces in the image. **Done.** **a′3** the X rasteriser over integers, a glyph
      cache, and a Differential fact holding it to the oracle pixel for
      pixel. **Done** (`os/std/raster.xfxn`; `RasterDiff`, `cxk font raster`). **a′4** the toolkit's font handle (family, weight, style,
-     size), the UI scale setting, the gallery's text in CX Sans. **a′5**
+     size), the UI scale setting, the gallery's text in CX Sans. **Done** (`os/std/toolkit_font.xfxn`; faces shared by displayd; `/Shared/Config/ui.xuco`, the shell's `ui`). **a′4b** boot and test speed, measured 2026-11-26 (one boot, 3913 s guest; the gallery 324 s): the RSA remainder word-wise (Montgomery, as Serenity's `ModularPower.cpp`; `bn_mod` is bit-serial, about 30 s guest a signature check, with interrupts off), a verified image remembered per file (XNU's `load_code_signature`), the disk read by DMA or interrupt and by extent, with a block cache (Haiku's `block_cache.cpp`), faces checked once, the blend without divisions; then the deadlines (1500 s, `-t 1800`) and the gallery's 450 s back down. **a′5**
      icons: IBM Carbon (Aurora chose it 2026-11-25 from a sheet of both),
      SVG converted on the host (cubics to quadratics) with a name table.
      Decided in 2.8a's design (2026-11-11, `system/CX_TOOLKIT.md` §2): the

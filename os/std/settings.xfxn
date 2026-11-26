@@ -211,3 +211,66 @@ fn settings_get_str(text: *u8, len: u32, key: *u8, out: *u8, cap: u32) -> i32 {
     if (xd_str(text, &v, out, cap) < 0) { return 0; }
     return 1;
 }
+
+// ---- the user's interface (roadmap 2.8a′4) ----
+//
+// /Shared/Config/ui.<slot>.xuco: `face`, the UI's font family (a name in
+// /System/Fonts: cxsans and its -b, -i, -bi), and `scale`, a percentage
+// of 100 to 400 in steps of 25 (CX_TOOLKIT.md §4's quarters). The display
+// server reads it when it starts and gives every client it starts the
+// face and the scale (std/dserver.xfxn); the shell's `ui` writes it.
+
+const SETTINGS_UI_FACE: u32 = 16;       // room for a family's name (OF_NAME_MAX 14 and a NUL)
+
+// A percentage as quarters: 4-16, or 0 if s is not one of 100, 125 ... 400.
+fn settings_ui_quarters(s: *u8) -> u32 {
+    let n: u32 = strlen(s);
+    if (n == 0 || n > 3) { return 0; }
+    let v: u32 = 0;
+    let i: u32 = 0;
+    while (i < n) {
+        if (s[i] < 48 || s[i] > 57) { return 0; }
+        v = v * 10 + ((s[i] - 48) as u32);
+        i += 1;
+    }
+    if (v < 100 || v > 400 || v % 25 != 0) { return 0; }
+    return v / 25;
+}
+
+// The saved face (into face, SETTINGS_UI_FACE bytes) and scale (*scale,
+// quarters): each left as it was if not saved, or not one.
+fn settings_ui_read(face: *u8, scale: *u32) -> void {
+    let text: [512]u8;
+    let seq: u32 = 0;
+    let n: i32 = settings_load("/Shared/Config", "ui", "xuco", &text[0], sizeof text, &seq);
+    if (n <= 0) { return; }
+    let v: [16]u8;
+    if (settings_get_str(&text[0], n as u32, "scale", &v[0], sizeof v) == 1) {
+        let q: u32 = settings_ui_quarters(&v[0]);
+        if (q != 0) { *scale = q; }
+    }
+    if (settings_get_str(&text[0], n as u32, "face", &v[0], sizeof v) == 1 && strlen(&v[0]) > 0) {
+        strcopy(face, &v[0], SETTINGS_UI_FACE);
+    }
+}
+
+// Save both: 0 or an error (E_INVALID_ARGS for a scale outside 4-16).
+fn settings_ui_save(face: *u8, scale: u32) -> i32 {
+    if (scale < 4 || scale > 16) { return E_INVALID_ARGS; }
+    let pct: [8]u8;
+    let p: u32 = scale * 25;
+    let k: u32 = 0;
+    if (p >= 100) { pct[k] = (48 + p / 100) as u8; k += 1; }
+    pct[k] = (48 + (p / 10) % 10) as u8; k += 1;
+    pct[k] = (48 + p % 10) as u8; k += 1;
+    pct[k] = 0;
+    let body: [160]u8;
+    let n: u32 = 0;
+    body[0] = 0;
+    n = settings_cat(&body[0], sizeof body, n, "face = \"");
+    n = settings_cat(&body[0], sizeof body, n, face);
+    n = settings_cat(&body[0], sizeof body, n, "\"\nscale = \"");
+    n = settings_cat(&body[0], sizeof body, n, &pct[0]);
+    n = settings_cat(&body[0], sizeof body, n, "\"");
+    return settings_store("/Shared/Config", "ui", "xuco", &body[0]);
+}

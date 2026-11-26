@@ -1,0 +1,228 @@
+# Step 2.8a′4, the toolkit's text in outline fonts: the font handle
+# (std/toolkit_font.xfxn), text drawn and measured in it (std/toolkit.xfxn),
+# faces shared by displayd (std/dserver.xfxn, std/fontfile.xfxn) and the UI
+# setting (std/settings.xfxn), run by `cxk test sabotage`. Each must turn
+# red exactly the self-tests named. Format: docs/devkit/CX_CXK_PLAN.md,
+# "cxk test sabotage". A group holds at most one sabotage per test.
+
+# ---- the handle ----
+
+[ppem-unrounded]
+# a ui's size in device pixels rounds down: 150 % of 13 is 19, not 20
+expect = x: fonts: the handle, its sizes and widths @ failed at step 8013
+group = g1
+narrow = yes
+edit = os/std/toolkit_font.xfxn
+<<<
+    let ppem: u32 = (t.size * scale + 2) / 4;
+===
+    let ppem: u32 = (t.size * scale) / 4;
+>>>
+
+[asc-floor]
+# the ascent rounds down: a line's tallest glyph is cut at its top
+expect = x: fonts: the handle, its sizes and widths @ failed at step 8019
+group = g2
+narrow = yes
+edit = os/std/toolkit_font.xfxn
+<<<
+    t.asc = rs_ceil64(rs_scale(f.ascender, ppem)) as i32;
+===
+    t.asc = rs_floor64(rs_scale(f.ascender, ppem)) as i32;
+>>>
+
+[unseen-drawn]
+# a zero-width character is drawn (a box). CX Sans gives U+200B and the
+# soft hyphen no advance of their own, so only the glyph refusal sees it
+expect = x: fonts: the handle, its sizes and widths @ failed at step 8025
+group = g3
+narrow = yes
+edit = os/std/toolkit_font.xfxn
+<<<
+fn tk_font_unseen(cp: u32) -> u32 {
+===
+fn tk_font_unseen(cp: u32) -> u32 {
+    if (cp != 0) { return 0; }
+>>>
+
+[pen-truncated]
+# a pen rounds down, not at the half: every glyph and width moves (the
+# first width to show it is MMMM bold; iiii at 13 px rounds down anyway)
+expect = x: fonts: the handle, its sizes and widths @ failed at step 8045
+group = g6
+narrow = yes
+edit = os/std/toolkit_font.xfxn
+<<<
+fn tk_font_pen(p: i64) -> i32 { return ((p + 32) >> 6) as i32; }
+===
+fn tk_font_pen(p: i64) -> i32 { return (p >> 6) as i32; }
+>>>
+
+[strong-is-regular]
+# a table's header cells are set in the regular face
+expect = x: fonts: the handle, its sizes and widths @ failed at step 8045
+group = g5
+narrow = yes
+edit = os/std/toolkit.xfxn
+<<<
+    if (style != TK_ST_TEXT && ui.ft_strong != (0 as *tk_font)) { return ui.ft_strong; }
+===
+>>>
+
+[advances-kept]
+# a rescaled font keeps the advances of its old size
+expect = x: fonts: the handle, its sizes and widths @ failed at step 8048
+group = g4
+narrow = yes
+edit = os/std/toolkit_font.xfxn
+<<<
+    memzero((&t.gk[0]) as *u8, 1024);       // advances are this size's
+===
+>>>
+
+# ---- drawing ----
+
+[cov-no-tx]
+# glyphs stay where they are when the ui is moved
+expect = x: fonts: text drawn as rs_draw draws it @ failed at step 8139
+group = g1
+narrow = yes
+edit = os/std/toolkit.xfxn
+<<<
+                let at: u32 = (px + ui.tx) as u32;
+===
+                let at: u32 = px as u32;
+>>>
+
+[cov-unclipped]
+# a glyph is drawn whole past its clip's right edge
+expect = x: fonts: text drawn as rs_draw draws it @ failed at step 8135
+group = g2
+narrow = yes
+edit = os/std/toolkit.xfxn
+<<<
+    let x1: i32 = tk_imin(gx + (b.width as i32), (c.x + c.w) as i32);
+===
+    let x1: i32 = gx + (b.width as i32);
+>>>
+
+[mirror-unshifted]
+# mirrored text starts at the mirrored x, not ends there
+expect = x: fonts: text drawn as rs_draw draws it @ failed at step 8143
+group = g3
+narrow = yes
+edit = os/std/toolkit.xfxn
+<<<
+        ox = w - x - tk_font_pen(kept);
+===
+        ox = w - x;
+>>>
+
+# ---- layout and the field ----
+
+[field-cells]
+# a field's columns are the bitmap font's cells
+expect = x: fonts: layout and the text field @ failed at step 8231
+group = g1
+narrow = yes
+edit = os/std/toolkit.xfxn
+<<<
+    tk_fadv[d] = tk_cp_adv(ui, t, cp);
+===
+    tk_fadv[d] = tk_cp_adv(ui, 0 as *tk_font, cp);
+>>>
+
+[caret-cells]
+# the caret is put a cell a character along
+expect = x: fonts: layout and the text field @ failed at step 8238
+group = g2
+narrow = yes
+edit = os/std/toolkit.xfxn
+<<<
+        let cx: i32 = x0 + tk_fxd(caret_d);
+===
+        let cx: i32 = x0 + (caret_d as i32) * (tk_char_w(ui) as i32);
+>>>
+
+[scroll-late]
+# the field scrolls only once the caret is four units past its room
+expect = x: fonts: layout and the text field @ failed at step 8243
+group = g3
+narrow = yes
+edit = os/std/toolkit.xfxn
+<<<
+    while (f.scroll < col && tk_fxd(col) - tk_fxd(f.scroll) > lim) { f.scroll = f.scroll + 1; }
+===
+    while (f.scroll < col && tk_fxd(col) - tk_fxd(f.scroll) > lim + tk_len(ui, 4)) { f.scroll = f.scroll + 1; }
+>>>
+
+[head-as-text]
+# a heading is set as body text
+expect = x: fonts: layout and the text field @ failed at step 8223
+group = g4
+narrow = yes
+edit = os/std/toolkit.xfxn
+<<<
+    if (ui.node[i].kind == TK_HEADING) { return TK_ST_HEAD; }
+===
+>>>
+
+# ---- sharing and the setting ----
+
+[map-unchecked]
+# a face handed over is taken without its check
+expect = x: fonts: a shared face, the UI setting @ failed at step 8311
+group = g1
+narrow = yes
+edit = os/std/fontfile.xfxn
+<<<
+    rc = of_check(f, p, n as u32);
+    if (rc != 0) {
+        let why: u32 = f.why;
+        vm_unmap(a.addr, 0);
+===
+    rc = of_check(f, p, n as u32);
+    rc = 0;
+    if (rc != 0) {
+        let why: u32 = f.why;
+        vm_unmap(a.addr, 0);
+>>>
+
+[scale-any-step]
+# a scale that is not a quarter is taken
+expect = x: fonts: a shared face, the UI setting @ failed at step 8322
+group = g2
+narrow = yes
+edit = os/std/settings.xfxn
+<<<
+    if (v < 100 || v > 400 || v % 25 != 0) { return 0; }
+===
+    if (v < 100 || v > 400) { return 0; }
+>>>
+
+[bold-from-750]
+# weight 700 is given the regular face
+expect = x: fonts: a shared face, the UI setting @ failed at step 8337
+group = g3
+narrow = yes
+edit = os/std/fontfile.xfxn
+<<<
+const OF_BOLD_FROM: u32 = 550;
+===
+const OF_BOLD_FROM: u32 = 750;
+>>>
+
+[faces-not-shared]
+# displayd starts its clients without the faces: the gallery falls back
+# to the bitmap font, which the test's server does not have
+expect = x: gallery: the window holds what was drawn @ failed at step 4604
+group = g5
+narrow = yes
+edit = os/std/dserver.xfxn
+<<<
+        if (s.face[k].mem > 0) {
+            sh[nh].handle = s.face[k].mem; sh[nh].op = IPC_HANDLE_COPY;
+===
+        if (s.face[k].mem > 0 && k > 9) {
+            sh[nh].handle = s.face[k].mem; sh[nh].op = IPC_HANDLE_COPY;
+>>>

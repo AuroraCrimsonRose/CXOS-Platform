@@ -18,6 +18,8 @@
 
 import "window.xfxn";
 import "time.xfxn";
+import "fontfile.xfxn";     // 2.8a′4: the UI faces it shares
+import "settings.xfxn";
 
 const DSV_KEY_EP: u64 = 1;
 const DSV_KEY_INPUT: u64 = 2;
@@ -40,7 +42,11 @@ struct dsv {
     proc: [16]i32,      // each client's process; WM_CLIENT_MAX
     frames: u32,
     pixels: u64,
-    locale: [16]u8      // its clients' locale (2.8a4; empty: en): dsv_set_locale
+    locale: [16]u8,     // its clients' locale (2.8a4; empty: en): dsv_set_locale
+    // 2.8a′4: the user's interface, from /Shared/Config/ui.xuco (dsv_ui_load)
+    face: [2]of_face,   // the UI face, regular and bold (mem 0: none)
+    ui_mem: i32,        // the page its clients read the scale from (window.xfxn WIN_UI_SLOT)
+    scale: u32          // quarters
 }
 
 global dsv_inbox: [65536]u8;    // IPC_MSG_MAX, so that any message can be taken
@@ -82,9 +88,35 @@ fn dsv_init(s: *dsv, width: u32, height: u32, cursor_w: u32, cursor_h: u32) -> i
     // Titles need GRANT_DISK, and a virtual screen is pinned without them.
     let f: *ds_font = 0 as *ds_font;
     if ((width == 0 || width == DSV_VIRTIO_GPU) && (ds_font_load(&s.font, "/System/Fonts/console_16.xfnt") == 0)) { f = &s.font; }
+    if (width == 0 || width == DSV_VIRTIO_GPU) { dsv_ui_load(s); }
     wm_init(&s.w, &s.comp, &s.desktop, &s.cursor, f, &s.trusted, &s.mark);
     return 0;
 }
+
+// The user's interface (2.8a′4): the face and scale /Shared/Config/ui.xuco
+// names (settings_ui_read), else CX Sans at 100 %. A face that will not
+// load falls back to CX Sans; with neither, clients draw the bitmap font.
+// The scale goes in a page each client maps read-only (WIN_UI_SLOT).
+fn dsv_ui_load(s: *dsv) -> void {
+    let family: [16]u8;     // SETTINGS_UI_FACE
+    strcopy(&family[0], "cxsans", 16);
+    s.scale = 4;
+    settings_ui_read(&family[0], &s.scale);
+    if (of_open(&s.face[0], &family[0], 400, 0) != 0) {
+        strcopy(&family[0], "cxsans", 16);
+        of_open(&s.face[0], &family[0], 400, 0);
+    }
+    if (s.face[0].mem > 0) { of_open(&s.face[1], &family[0], 700, 0); }
+    let addr: u64 = 0;
+    let m: i32 = ds_mem(WIN_UI_BYTES as u64, &addr);
+    if (m <= 0) { return; }
+    let p: *u32 = addr as *u32;
+    p[0] = WIN_UI_VERSION;
+    p[1] = s.scale;
+    vm_unmap(addr, 0);
+    s.ui_mem = m;
+}
+
 
 // The locale the server's clients are started in (a tag, at most 15 bytes
 // of letters, digits and '-'; "" or "en": English alone). 0 or E_INVALID_ARGS.
@@ -164,7 +196,7 @@ fn dsv_launch(s: *dsv, path: *u8, args: *u8, args_len: u32) -> i32 {
     if (send <= 0) { s.w.client[c].used = 0; return send; }
     // the connection, and the server's font, shared read-only: a client
     // draws its own text (system/CX_TOOLKIT.md §2) and needs no GRANT_DISK
-    let sh: [3]spawn_handle;
+    let sh: [6]spawn_handle;
     sh[0].handle = send; sh[0].op = IPC_HANDLE_MOVE; sh[0].rights = IPC_RIGHTS_SAME; sh[0].slot = WIN_SLOT;
     let nh: u32 = 1;
     if (s.font.bits != (0 as *u8) && s.font.mem > 0) {
@@ -177,6 +209,21 @@ fn dsv_launch(s: *dsv, path: *u8, args: *u8, args_len: u32) -> i32 {
     if (lm > 0) {
         sh[nh].handle = lm; sh[nh].op = IPC_HANDLE_COPY;
         sh[nh].rights = HRIGHT_MAP | HRIGHT_INSPECT; sh[nh].slot = WIN_LOCALE_SLOT;
+        nh += 1;
+    }
+    // the UI faces and the scale (2.8a′4), shared read-only as the font is
+    let k: u32 = 0;
+    while (k < 2) {
+        if (s.face[k].mem > 0) {
+            sh[nh].handle = s.face[k].mem; sh[nh].op = IPC_HANDLE_COPY;
+            sh[nh].rights = HRIGHT_MAP | HRIGHT_INSPECT; sh[nh].slot = WIN_FACE_SLOT + k;
+            nh += 1;
+        }
+        k += 1;
+    }
+    if (s.ui_mem > 0) {
+        sh[nh].handle = s.ui_mem; sh[nh].op = IPC_HANDLE_COPY;
+        sh[nh].rights = HRIGHT_MAP | HRIGHT_INSPECT; sh[nh].slot = WIN_UI_SLOT;
         nh += 1;
     }
     let a: spawn_args;
@@ -505,4 +552,7 @@ fn dsv_shutdown(s: *dsv) -> void {
     while (wm_reap_ghost(&s.w) != WM_NONE) { }
     if (s.input > 0) { handle_close(s.input); s.input = 0; }
     ds_screen_close(&s.screen);
+    of_free(&s.face[0]);
+    of_free(&s.face[1]);
+    if (s.ui_mem > 0) { handle_close(s.ui_mem); s.ui_mem = 0; }
 }

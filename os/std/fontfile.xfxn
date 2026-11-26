@@ -57,11 +57,94 @@ fn of_load(f: *of_face, name: *u8) -> i32 {
     return 0;
 }
 
-// Let go of a face of_load made.
+// Let go of a face of_load or of_map made.
 fn of_free(f: *of_face) -> void {
     if (f.mem > 0) {
         vm_unmap(f.addr, 0);
         handle_close(f.mem);
+    } else if (f.mem < 0) {
+        vm_unmap(f.addr, 0);
     }
     memzero(f as *u8, sizeof *f);
 }
+
+// A face another process loaded (of_load's f.mem, handed over with
+// HRIGHT_MAP and HRIGHT_INSPECT, as the display server gives its clients
+// theirs): mapped read-only and checked as the file would be. 0,
+// E_CORRUPT with f.why set, or the error mapping it gave. The mapping is
+// the face's (of_free lets go of it); the handle stays the caller's.
+fn of_map(f: *of_face, h: i32) -> i32 {
+    memzero(f as *u8, sizeof *f);
+    let mi: mem_info;
+    let oi: object_info_args;
+    memzero((&oi) as *u8, sizeof oi);
+    oi.handle = h; oi.topic = OBJINFO_MEM; oi.buf = (&mi) as u64; oi.cap = sizeof mi;
+    let rc: i32 = object_info(&oi);
+    if (rc < 0) { return rc; }
+    if (mi.size < OF_HEADER as u64 || mi.size > (OF_FILE_MAX as u64) + 4096) { f.why = OF_W_LENGTH; return E_CORRUPT; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = h as u32;
+    a.length = mi.size;
+    a.prot = MPROT_READ;
+    rc = vm_map(&a);
+    if (rc != E_OK) { return rc; }
+    let p: *u8 = a.addr as *u8;
+    // the file is as long as its counts say; the object is whole pages
+    let n: u64 = of_length(of_u32(p, 28), of_u32(p, 32), of_u32(p, 36), of_u32(p, 40));
+    if (n > mi.size) { n = mi.size; }
+    rc = of_check(f, p, n as u32);
+    if (rc != 0) {
+        let why: u32 = f.why;
+        vm_unmap(a.addr, 0);
+        memzero(f as *u8, sizeof *f);
+        f.why = why;
+        return rc;
+    }
+    f.addr = a.addr;
+    f.mem = 0 - 1;      // mapped, not owned: of_free unmaps and closes nothing
+    return 0;
+}
+
+// ---- a face by family, weight and style (2.8a′4) ----
+
+// The image's files are fixed instances: a family's regular and bold
+// (weight 400 and 700), each upright and italic, as `<family>`, `-b`,
+// `-i`, `-bi`. A weight from this up is bold's.
+const OF_BOLD_FROM: u32 = 550;
+
+// The family's file for weight and italic into out (room for 15): 1, or 0
+// for a family name that cannot take the suffix.
+fn of_face_name(out: *u8, family: *u8, bold: u32, italic: u32) -> u32 {
+    let n: u32 = strlen(family);
+    if (n == 0 || n + 3 > OF_NAME_MAX) { return 0; }
+    let k: u32 = strcopy(out, family, 15);
+    if (bold == 1 || italic == 1) { out[k] = 45; k = k + 1; }      // '-'
+    if (bold == 1) { out[k] = 98; k = k + 1; }                      // 'b'
+    if (italic == 1) { out[k] = 105; k = k + 1; }                   // 'i'
+    out[k] = 0;
+    return 1;
+}
+
+// The face nearest a request: the family's file for its weight and style;
+// failing that (not there), the upright one of that weight, then the
+// regular. 0, or what of_load returns for the last tried.
+fn of_open(f: *of_face, family: *u8, weight: u32, italic: u32) -> i32 {
+    let bold: u32 = 0;
+    if (weight >= OF_BOLD_FROM) { bold = 1; }
+    let name: [16]u8;
+    if (of_face_name(&name[0], family, bold, italic) == 0) { return E_INVALID_ARGS; }
+    let rc: i32 = of_load(f, &name[0]);
+    if (rc != E_NOT_FOUND) { return rc; }
+    if (italic == 1) {
+        of_face_name(&name[0], family, bold, 0);
+        rc = of_load(f, &name[0]);
+        if (rc != E_NOT_FOUND) { return rc; }
+    }
+    if (bold == 1) {
+        of_face_name(&name[0], family, 0, 0);
+        rc = of_load(f, &name[0]);
+    }
+    return rc;
+}
+

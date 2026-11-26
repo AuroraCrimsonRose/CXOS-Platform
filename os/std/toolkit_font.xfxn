@@ -1,0 +1,158 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/toolkit_font.xfxn - the toolkit's font handle (roadmap 2.8a′4).
+// Aurora Tejeda / CATX Systems
+// Threads: one. A font belongs to its ui's thread, as its glyph cache does.
+//
+// A request is a family, a weight, italic or not, and a size
+// (CX_FONTS.md §3 item 5). of_open (std/fontfile.xfxn) finds the
+// family's nearest file in /System/Fonts; tk_font_init sets a face at a
+// size in logical units, and tk_font_scale gives it the device size of a
+// ui's scale (CX_TOOLKIT.md §4: fonts are asked for by device pixel size),
+// with a glyph cache (std/raster.xfxn) for that size alone. A display
+// client has no GRANT_DISK: its faces are the server's, mapped read-only
+// (of_map). This file uses the toolkit's UTF-8 reader (tk_utf8_at), so it
+// is imported by std/toolkit.xfxn, never alone.
+//
+// The toolkit's sizes (TK_TEXT_SIZE, TK_HEAD_SIZE): body text 13, a
+// heading 18 bold, in logical units (Aurora, 2026-11-26).
+//
+// Metrics are whole device pixels: a line is asc above the baseline and
+// the rest below it, so text set at a line's top has its baseline at
+// top + asc. Advances are 26.6 pixels, summed, and rounded only where a
+// glyph is placed (tk_font_pen), so a word's width is the same however it
+// is cut. No kerning yet (CX_FONTS.md §4: a later step).
+
+import "fontfile.xfxn";
+import "raster.xfxn";
+
+const TK_FONT_BUDGET: u32 = 262144;    // coverage bytes a font's cache keeps
+const TK_TEXT_SIZE: u32 = 13;
+const TK_HEAD_SIZE: u32 = 18;
+
+struct tk_font {
+    face: *of_face,
+    size: u32,          // logical units to the em
+    ppem: u32,          // device pixels to the em, at the scale last given
+    asc: i32,           // device: the baseline below the line's top
+    line: i32,          // device: a line's height
+    ul: i32,            // device: the underline's top below the baseline
+    ult: i32,           // device: its thickness, at least 1
+    gk: [256]u32,       // below U+0100: the glyph + 1, or 0 not yet looked up
+    ga: [256]i32,       // and its advance at ppem, 26.6
+    cache: rs_cache
+}
+
+// v em units at ppem as whole device pixels, rounded (v may be negative).
+fn tk_font_px(v: i32, ppem: u32) -> i32 {
+    return rs_floor64(rs_scale(v, ppem) + 32) as i32;
+}
+
+// The device size and metrics for a ui at `scale` quarters; the cache
+// starts again at that size.
+fn tk_font_scale(t: *tk_font, scale: u32) -> void {
+    let ppem: u32 = (t.size * scale + 2) / 4;
+    if (ppem < 1) { ppem = 1; }
+    if (ppem > RS_MAX_PPEM) { ppem = RS_MAX_PPEM; }
+    if (t.cache.face != (0 as *of_face)) { rs_cache_free(&t.cache); }
+    t.ppem = ppem;
+    memzero((&t.gk[0]) as *u8, 1024);       // advances are this size's
+    let f: *of_face = t.face;
+    t.asc = rs_ceil64(rs_scale(f.ascender, ppem)) as i32;
+    t.line = t.asc + (rs_ceil64(rs_scale(0 - f.descender, ppem)) as i32);
+    t.ul = 0 - tk_font_px(f.ul_pos, ppem);
+    t.ult = tk_font_px(f.ul_thick, ppem);
+    if (t.ult < 1) { t.ult = 1; }
+    if (t.ul < 1) { t.ul = 1; }
+    rs_cache_init(&t.cache, f, ppem, TK_FONT_BUDGET);
+}
+
+// face at size logical units (1-256), for a ui at `scale` quarters: 0, or
+// E_INVALID_ARGS. t keeps a pointer to face, which must outlive it.
+fn tk_font_init(t: *tk_font, face: *of_face, size: u32, scale: u32) -> i32 {
+    memzero(t as *u8, sizeof *t);
+    if (face == (0 as *of_face) || face.p == (0 as *u8) || size < 1 || size > 256) { return E_INVALID_ARGS; }
+    t.face = face;
+    t.size = size;
+    tk_font_scale(t, scale);
+    return 0;
+}
+
+fn tk_font_free(t: *tk_font) -> void {
+    if (t.cache.face != (0 as *of_face)) { rs_cache_free(&t.cache); }
+    memzero(t as *u8, sizeof *t);
+}
+
+// Characters that take no room and show nothing: the bidirectional
+// controls UAX #9 removes (X9) and the zero-width ones. A face has no
+// glyph for them, and its glyph 0 would draw a box.
+fn tk_font_unseen(cp: u32) -> u32 {
+    if (cp >= 0x200B && cp <= 0x200F) { return 1; }
+    if (cp >= 0x202A && cp <= 0x202E) { return 1; }
+    if (cp >= 0x2060 && cp <= 0x2069) { return 1; }
+    if (cp == 0xFEFF || cp == 0xAD) { return 1; }
+    return 0;
+}
+
+// A character's glyph and its advance in 26.6 pixels (0 for an unseen
+// one), looked up: of_lookup's binary search and the glyph's record.
+fn tk_font_find(t: *tk_font, cp: u32, adv: *i64) -> u32 {
+    let g: u32 = of_lookup(t.face, cp);
+    *adv = 0;
+    if (tk_font_unseen(cp) == 1) { return g; }
+    let gl: of_glyph;
+    if (of_glyph_get(t.face, g, &gl) == 0) { *adv = rs_scale(gl.advance as i32, t.ppem); }
+    return g;
+}
+
+// The glyph of a character below U+0100, kept from the first time: text is
+// measured many times a frame, and nearly all of it is there.
+fn tk_font_low(t: *tk_font, cp: u32) -> u32 {
+    if (t.gk[cp] == 0) {
+        let a: i64 = 0;
+        t.gk[cp] = tk_font_find(t, cp, &a) + 1;
+        t.ga[cp] = a as i32;
+    }
+    return t.gk[cp] - 1;
+}
+
+// A character's advance in 26.6 pixels.
+fn tk_font_adv(t: *tk_font, cp: u32) -> i64 {
+    if (cp < 256) { tk_font_low(t, cp); return t.ga[cp] as i64; }
+    let a: i64 = 0;
+    tk_font_find(t, cp, &a);
+    return a;
+}
+
+// A pen at p 26.6 pixels from the text's start, as a whole pixel.
+fn tk_font_pen(p: i64) -> i32 { return ((p + 32) >> 6) as i32; }
+
+// n bytes of UTF-8 (a byte that is not UTF-8 is '?') in 26.6 pixels.
+fn tk_font_width(t: *tk_font, s: *u8, n: u32) -> i64 {
+    let at: u32 = 0;
+    let w: i64 = 0;
+    while (at < n) {
+        let cp: u32 = 63;
+        let l: u32 = tk_font_utf8(s, n, at, &cp);
+        at = at + l;
+        w = w + tk_font_adv(t, cp);
+    }
+    return w;
+}
+
+// The character at s[at]: its length, at least 1 ('?' for a byte that is
+// not UTF-8), as tk_utf8_at decides (std/toolkit.xfxn).
+fn tk_font_utf8(s: *u8, n: u32, at: u32, cp: *u32) -> u32 {
+    let l: u32 = tk_utf8_at(s, n, at, cp);
+    if (l == 0) { *cp = 63; return 1; }
+    return l;
+}
+
+// A character's glyph, drawn or kept: 0 and *out (the cache's, valid until
+// the next call), or what rs_cache_get returns. Nothing for an unseen one
+// (E_NOT_FOUND).
+fn tk_font_glyph(t: *tk_font, cp: u32, out: **rs_bitmap) -> i32 {
+    if (tk_font_unseen(cp) == 1) { return E_NOT_FOUND; }
+    if (cp < 256) { return rs_cache_get(&t.cache, tk_font_low(t, cp), out); }
+    return rs_cache_get(&t.cache, of_lookup(t.face, cp), out);
+}

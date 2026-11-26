@@ -446,6 +446,69 @@ fn cmd_font(arg: *u8) -> void {
     puts("font: refused\n");
 }
 
+// ---- ui: the desktop's face and scale (roadmap 2.8a′4) ----
+//
+// /Shared/Config/ui.xuco (settings.xfxn settings_ui_*), which the display
+// server reads when it starts: the windows it starts after that use them.
+
+// Does s start with the word w and a space? The rest's offset, or 0.
+fn ui_word(s: *u8, w: *u8) -> u32 {
+    let n: u32 = strlen(w);
+    let i: u32 = 0;
+    while (i < n) { if (s[i] != w[i]) { return 0; } i += 1; }
+    if (s[n] != 32) { return 0; }
+    while (s[n] == 32) { n += 1; }
+    return n;
+}
+
+fn cmd_ui(arg: *u8) -> void {
+    let face: [16]u8;       // SETTINGS_UI_FACE
+    strcopy(&face[0], "cxsans", 16);
+    let scale: u32 = 4;
+    settings_ui_read(&face[0], &scale);
+    if (arg[0] == 0) {
+        puts("ui: face ");
+        puts(&face[0]);
+        puts(", scale ");
+        print_u32(scale * 25);
+        puts("% - 'ui face <family>', 'ui scale <100-400>'; displayd uses them from its next start\n");
+        return;
+    }
+    let at: u32 = ui_word(arg, "scale");
+    if (at > 0) {
+        let q: u32 = settings_ui_quarters(&arg[at]);
+        if (q == 0) { puts("ui: a scale is 100 to 400, in steps of 25\n"); return; }
+        scale = q;
+    } else {
+        at = ui_word(arg, "face");
+        if (at == 0) { puts("ui: 'ui', 'ui face <family>' or 'ui scale <percent>'\n"); return; }
+        let name: *u8 = &arg[at];
+        let n: u32 = strlen(name);
+        // a family takes -b, -i and -bi after it, within a font name's 14
+        let ok: u32 = 1;
+        if (n == 0 || n > 11) { ok = 0; }
+        let i: u32 = 0;
+        while (i < n) {
+            let c: u8 = name[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) { ok = 0; }
+            i += 1;
+        }
+        if (ok == 0) { puts("ui: a family is 1-11 of a-z, 0-9 and _\n"); return; }
+        let path: [40]u8;
+        let k: u32 = strcopy(&path[0], "/System/Fonts/", 40);
+        k = k + strcopy(&path[k], name, 40 - k);
+        strcopy(&path[k], ".xfnt", 40 - k);
+        if (file_size(&path[0]) < 0) { puts("ui: no such face in /System/Fonts\n"); return; }
+        strcopy(&face[0], name, 16);
+    }
+    if (settings_ui_save(&face[0], scale) != 0) { puts("ui: could not be saved\n"); return; }
+    puts("ui: face ");
+    puts(&face[0]);
+    puts(", scale ");
+    print_u32(scale * 25);
+    puts("% from displayd's next start\n");
+}
+
 fn cmd_pwd(arg: *u8) -> void {
     let buf: [256]u8;
     if (file_err("pwd", getcwd(&buf[0], sizeof buf)) == 1) { return; }
@@ -999,6 +1062,7 @@ fn _start() -> void {
     register("cd",     cmd_cd,     "change the working directory");
     register("pwd",    cmd_pwd,    "print the working directory");
     register("font",   cmd_font,   "list console fonts, or 'font <name>' to use one");
+    register("ui",     cmd_ui,     "the desktop's face and scale: 'ui face <family>', 'ui scale <percent>'");
     register("ifconfig", cmd_ifconfig, "network interface status");
     register("setip",  cmd_setip,  "set the local IP address");
     register("ping",   cmd_ping,   "ICMP echo a host");

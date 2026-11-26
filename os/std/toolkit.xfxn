@@ -23,11 +23,19 @@ import "string.xfxn";
 import "mem.xfxn";
 import "locale.xfxn";       // 2.8a4: message keys (CX_TOOLKIT.md §10)
 import "bidi.xfxn";
+import "toolkit_font.xfxn";   // 2.8a′4: the font handle
 
 const TK_NODES_MAX: u32 = 512;
 const TK_ARENA_BYTES: u32 = 12288;
 const TK_EVENTS_MAX: u32 = 32;
 const TK_NONE: u32 = 0xFFFFFFFF;
+// What text is set in (tk_text): a ui's outline fonts (tk_set_fonts), or the
+// bitmap font, bold for STRONG and HEAD; CELL is always the bitmap's (a text
+// grid's cells are its).
+const TK_ST_TEXT: u32 = 0;
+const TK_ST_STRONG: u32 = 1;
+const TK_ST_HEAD: u32 = 2;
+const TK_ST_CELL: u32 = 3;
 const TK_GRID_COLS_MAX: u32 = 8;
 const TK_SCALE_MIN: u32 = 4;        // 100 %
 const TK_SCALE_MAX: u32 = 16;       // 400 %
@@ -395,7 +403,11 @@ struct tk_ui {
     contrast: u32,          // 1: the high-contrast tokens, whatever dark says
     inspect: u32,           // 1: every widget's box drawn over it (the inspector's)
     painted: ds_damage,     // what the last tk_paint drew, as laid out (tk_inspect)
-    ax_mark: [512]u8        // TK_NODES_MAX: what an audit's walk reached
+    ax_mark: [512]u8,       // TK_NODES_MAX: what an audit's walk reached
+    // 2.8a′4: outline text (toolkit_font.xfxn), or 0 for the bitmap font
+    ft_text: *tk_font,      // body text
+    ft_strong: *tk_font,    // a table's heads (0: ft_text)
+    ft_head: *tk_font       // headings (0: ft_strong)
 }
 
 // ---- units ----
@@ -987,6 +999,28 @@ fn tk_set_scale(ui: *tk_ui, scale: u32) -> void {
     if (scale > TK_SCALE_MAX) { scale = TK_SCALE_MAX; }
     ui.scale = scale;
     ui.glyph = tk_glyph_for(scale);
+    tk_fonts_rescale(ui);
+    ui.relayout = 1;
+}
+
+// Each of the ui's outline fonts at its scale, once each.
+fn tk_fonts_rescale(ui: *tk_ui) -> void {
+    if (ui.ft_text != (0 as *tk_font)) { tk_font_scale(ui.ft_text, ui.scale); }
+    if (ui.ft_strong != (0 as *tk_font) && ui.ft_strong != ui.ft_text) { tk_font_scale(ui.ft_strong, ui.scale); }
+    if (ui.ft_head != (0 as *tk_font) && ui.ft_head != ui.ft_text && ui.ft_head != ui.ft_strong) { tk_font_scale(ui.ft_head, ui.scale); }
+}
+
+// Set the ui's text in outline fonts (2.8a′4): body text, a table's heads
+// and headings, each sized for the ui's scale from now on (and on every
+// tk_set_scale). strong and head may be 0 (as body text, as strong); text 0
+// goes back to the bitmap font. The fonts stay the caller's, and must
+// outlive the ui or the next tk_set_fonts.
+fn tk_set_fonts(ui: *tk_ui, text: *tk_font, strong: *tk_font, head: *tk_font) -> void {
+    ui.ft_text = text;
+    ui.ft_strong = strong;
+    ui.ft_head = head;
+    if (text == (0 as *tk_font)) { ui.ft_strong = 0 as *tk_font; ui.ft_head = 0 as *tk_font; }
+    tk_fonts_rescale(ui);
     ui.relayout = 1;
 }
 
@@ -1251,18 +1285,55 @@ fn tk_char_h(ui: *tk_ui) -> u32 {
     return ui.font.height * ui.glyph;
 }
 
-// Text's size in logical units; a heading is drawn one pixel wider.
-fn tk_text_lw(ui: *tk_ui, i: u32) -> i32 {
+// The outline font text in `style` is set in, or 0 for the bitmap font.
+fn tk_style_font(ui: *tk_ui, style: u32) -> *tk_font {
+    if (style == TK_ST_CELL) { return 0 as *tk_font; }
+    if (style == TK_ST_HEAD && ui.ft_head != (0 as *tk_font)) { return ui.ft_head; }
+    if (style != TK_ST_TEXT && ui.ft_strong != (0 as *tk_font)) { return ui.ft_strong; }
+    return ui.ft_text;
+}
+
+// A line of text in `style`: its height in device pixels.
+fn tk_line_h(ui: *tk_ui, style: u32) -> u32 {
+    let t: *tk_font = tk_style_font(ui, style);
+    if (t == (0 as *tk_font)) { return tk_char_h(ui); }
+    return t.line as u32;
+}
+
+// A character's advance in 26.6 device pixels, in font t (0: the bitmap's cell).
+fn tk_cp_adv(ui: *tk_ui, t: *tk_font, cp: u32) -> i64 {
+    if (t == (0 as *tk_font)) { return (tk_char_w(ui) as i64) * 64; }
+    return tk_font_adv(t, cp);
+}
+
+// n bytes of UTF-8 in `style`: their width in device pixels.
+fn tk_str_dw(ui: *tk_ui, s: *u8, n: u32, style: u32) -> u32 {
+    let t: *tk_font = tk_style_font(ui, style);
+    if (t == (0 as *tk_font)) { return tk_utf8_count(s, n) * tk_char_w(ui); }
+    return tk_font_pen(tk_font_width(t, s, n)) as u32;
+}
+
+// What a node's text is set in: a heading's is HEAD.
+fn tk_node_style(ui: *tk_ui, i: u32) -> u32 {
+    if (ui.node[i].kind == TK_HEADING) { return TK_ST_HEAD; }
+    return TK_ST_TEXT;
+}
+
+// Text's size in logical units; a heading in the bitmap font is drawn one
+// pixel wider (bold).
+fn tk_text_lw_as(ui: *tk_ui, i: u32, style: u32) -> i32 {
     let s: *u8 = tk_text_of(ui, i);
     if (s == (0 as *u8)) { return 0; }
-    let d: u32 = tk_utf8_count(s, strlen(s)) * tk_char_w(ui);
-    if (ui.node[i].kind == TK_HEADING && d > 0) { d = d + 1; }
+    let d: u32 = tk_str_dw(ui, s, strlen(s), style);
+    if (style == TK_ST_HEAD && tk_style_font(ui, style) == (0 as *tk_font) && d > 0) { d = d + 1; }
     return tk_logical(ui, d);
 }
 
+fn tk_text_lw(ui: *tk_ui, i: u32) -> i32 { return tk_text_lw_as(ui, i, tk_node_style(ui, i)); }
+
 fn tk_text_lh(ui: *tk_ui, i: u32) -> i32 {
     if (ui.node[i].text == TK_NONE) { return 0; }
-    return tk_logical(ui, tk_char_h(ui));
+    return tk_logical(ui, tk_line_h(ui, tk_node_style(ui, i)));
 }
 
 // ---- layout: measure, children first ----
@@ -1298,7 +1369,7 @@ fn tk_window_bar(ui: *tk_ui, i: u32) -> u32 {
 // A string's width in logical units.
 fn tk_str_lw(ui: *tk_ui, s: *u8) -> i32 {
     if (s == (0 as *u8)) { return 0; }
-    return tk_logical(ui, tk_utf8_count(s, strlen(s)) * tk_char_w(ui));
+    return tk_logical(ui, tk_str_dw(ui, s, strlen(s), TK_ST_TEXT));
 }
 
 // What a word of a key's name may take of its 32 bytes, so the whole fits.
@@ -1407,7 +1478,9 @@ fn tk_table_cols(ui: *tk_ui, t: u32, colw: *i32) -> u32 {
         k = 0;
         c = ui.node[r].first;
         while (c != TK_NONE && k < cols) {
-            colw[k] = tk_imax(colw[k], tk_text_lw(ui, c) + 2 * TK_ROW_PADX);
+            let cs: u32 = TK_ST_TEXT;
+            if (r == head) { cs = TK_ST_STRONG; }      // the heads are bold
+            colw[k] = tk_imax(colw[k], tk_text_lw_as(ui, c, cs) + 2 * TK_ROW_PADX);
             k = k + 1;
             c = ui.node[c].next;
         }
@@ -2068,10 +2141,12 @@ fn tk_seg(ui: *tk_ui, c: *ds_rect, ax: i32, ay: i32, bx: i32, by: i32, t: i32, a
     }
 }
 
-// Text from (x, y), the bitmap font magnified by the ui's glyph factor.
-fn tk_text(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, argb: u32, bold: u32) -> void {
+// Text from (x, y), the top of its line, in `style` (TK_ST_*): the ui's
+// outline font for it, or the bitmap font magnified by the ui's glyph
+// factor (bold for STRONG and HEAD).
+fn tk_text(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, argb: u32, style: u32) -> void {
     if (s == (0 as *u8)) { return; }
-    tk_text_n(ui, c, x, y, s, strlen(s), argb, bold);
+    tk_text_n(ui, c, x, y, s, strlen(s), argb, style);
 }
 
 // One character's glyph from (gx, y), underlined when under is 1.
@@ -2104,6 +2179,61 @@ fn tk_glyph(ui: *tk_ui, c: *ds_rect, gx: i32, y: i32, cp: u32, argb: u32, bold: 
     }
     // a mnemonic: the cell's last row
     if (under == 1) { tk_box(ui, c, gx, y + ((f.height as i32) - 1) * g, cw, g, argb); }
+}
+
+// An outline glyph's coverage with its pen at x and the baseline at y, in
+// argb (premultiplied) over what is there, clipped to c. Text is set
+// unmirrored (a mirrored ui mirrors text's box, never its glyphs: §10), so
+// callers clear ui.mirror first; it moves by ui.tx as every shape does.
+fn tk_glyph_cov(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, b: *rs_bitmap, argb: u32) -> void {
+    if (b.width == 0 || b.height == 0) { return; }
+    let gx: i32 = x + b.left;
+    let gy: i32 = y + b.top;
+    let x0: i32 = tk_imax(gx, c.x as i32);
+    let y0: i32 = tk_imax(gy, c.y as i32);
+    let x1: i32 = tk_imin(gx + (b.width as i32), (c.x + c.w) as i32);
+    let y1: i32 = tk_imin(gy + (b.height as i32), (c.y + c.h) as i32);
+    // and to the canvas, where it shows
+    x0 = tk_imax(x0, 0 - ui.tx);
+    x1 = tk_imin(x1, (ui.canvas.width as i32) - ui.tx);
+    y0 = tk_imax(y0, 0);
+    y1 = tk_imin(y1, ui.canvas.height as i32);
+    if (x1 <= x0 || y1 <= y0) { return; }
+    let solid: u32 = 0;
+    if ((argb >> 24) == 255) { solid = 1; }
+    let py: i32 = y0;
+    while (py < y1) {
+        let row: *u32 = ds_row(&ui.canvas, py as u32);
+        let src: u32 = ((py - gy) as u32) * b.width;
+        let px: i32 = x0;
+        while (px < x1) {
+            let a: u32 = b.cov[src + ((px - gx) as u32)] as u32;
+            if (a != 0) {
+                let at: u32 = (px + ui.tx) as u32;
+                if (a == 255 && solid == 1) { row[at] = argb; }
+                else { row[at] = ds_over(ds_fade(argb, a), row[at]); }
+            }
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+}
+
+// One character from (gx, y), the top of its line, in font t (0: the
+// bitmap's), underlined when under is 1: its advance in 26.6 pixels.
+fn tk_glyph_at(ui: *tk_ui, t: *tk_font, c: *ds_rect, gx: i32, y: i32, cp: u32, argb: u32, style: u32, under: u32) -> i64 {
+    if (t == (0 as *tk_font)) {
+        let bold: u32 = 0;
+        if (style == TK_ST_STRONG || style == TK_ST_HEAD) { bold = 1; }
+        tk_glyph(ui, c, gx, y, cp, argb, bold, under);
+        return (tk_char_w(ui) as i64) * 64;
+    }
+    let adv: i64 = tk_font_adv(t, cp);
+    if (gx >= ((c.x + c.w) as i32)) { return adv; }
+    let b: *rs_bitmap = 0 as *rs_bitmap;
+    if (tk_font_glyph(t, cp, &b) == 0) { tk_glyph_cov(ui, c, gx, y + t.asc, b, argb); }
+    if (under == 1) { tk_box(ui, c, gx, y + t.asc + t.ul, tk_imax(tk_font_pen(adv), 1), t.ult, argb); }
+    return adv;
 }
 
 // Does the text hold a character that can make it right to left (R, AL,
@@ -2142,11 +2272,11 @@ fn tk_decode(s: *u8, n: u32) -> u32 {
 // Text in UAX #9's visual order (std/bidi.xfxn), the paragraph's direction
 // the ui's; at an odd level a character shows its mirrored glyph (L4). In
 // a mirrored ui the text's box is mirrored and the characters are set in
-// it left to right, never flipped (CX_TOOLKIT.md §10).
-fn tk_text_bidi(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32, bold: u32, mn: u8) -> void {
-    let cw: i32 = (ui.font.width as i32) * (ui.glyph as i32);
+// it left to right, never flipped (CX_TOOLKIT.md §10): what UAX #9 keeps
+// ends at the box's mirrored start.
+fn tk_text_bidi(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32, style: u32, mn: u8) -> void {
+    let t: *tk_font = tk_style_font(ui, style);
     let cnt: u32 = tk_decode(s, n);
-    let tw: i32 = (tk_utf8_count(s, n) as i32) * cw;
     bd_set(&tk_bd, &tk_cps[0], cnt);
     let dir: u32 = BD_LTR;
     if (ui.mirror == 1) { dir = BD_RTL; }
@@ -2157,12 +2287,22 @@ fn tk_text_bidi(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u
     ds_rect_set(&cl, c.x, c.y, c.w, c.h);
     let was: u32 = ui.mirror;
     if (was == 1) {
+        let kept: i64 = 0;
+        let v: u32 = 0;
+        while (v < m) {
+            let i: u32 = tk_bd.ord[v];
+            let cp: u32 = tk_cps[i];
+            if ((tk_bd.lvl[i] & 1) != 0) { cp = bd_mirror(cp); }
+            kept = kept + tk_cp_adv(ui, t, cp);
+            v = v + 1;
+        }
         let w: i32 = ui.canvas.width as i32;
-        ox = w - x - tw + ((cnt - m) as i32) * cw;     // a removed control (X9) leaves its cell at the end
+        ox = w - x - tk_font_pen(kept);
         let cx: i32 = tk_imax(w - (c.x as i32) - (c.w as i32), 0);
         ds_rect_set(&cl, cx as u32, c.y, c.w, c.h);
         ui.mirror = 0;
     }
+    let pen: i64 = 0;
     let v: u32 = 0;
     while (v < m) {
         let i: u32 = tk_bd.ord[v];
@@ -2170,7 +2310,7 @@ fn tk_text_bidi(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u
         if ((tk_bd.lvl[i] & 1) != 0) { cp = bd_mirror(cp); }
         let under: u32 = 0;
         if (i == (mn as u32)) { under = 1; }
-        tk_glyph(ui, &cl, ox + (v as i32) * cw, y, cp, argb, bold, under);
+        pen = pen + tk_glyph_at(ui, t, &cl, ox + tk_font_pen(pen), y, cp, argb, style, under);
         v = v + 1;
     }
     ui.mirror = was;
@@ -2179,11 +2319,13 @@ fn tk_text_bidi(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u
 // n bytes of UTF-8 as text: one glyph a character (a byte that is not
 // UTF-8 is one, as '?'). Text with nothing right to left, in a ui that is
 // not mirrored, is set as it comes (2.8a4's fast path).
-fn tk_text_n(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32, bold: u32) -> void {
-    if (s == (0 as *u8) || ui.font == (0 as *ds_font)) { return; }
+fn tk_text_n(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32, style: u32) -> void {
+    if (s == (0 as *u8)) { return; }
+    let t: *tk_font = tk_style_font(ui, style);
+    if (t == (0 as *tk_font) && ui.font == (0 as *ds_font)) { return; }
     let mn: u8 = tk_mnemonic(ui, s);
-    if (ui.mirror == 1 || tk_rtl_in(s, n)) { tk_text_bidi(ui, c, x, y, s, n, argb, bold, mn); return; }
-    let cw: i32 = (ui.font.width as i32) * (ui.glyph as i32);
+    if (ui.mirror == 1 || tk_rtl_in(s, n)) { tk_text_bidi(ui, c, x, y, s, n, argb, style, mn); return; }
+    let pen: i64 = 0;
     let at: u32 = 0;
     let k: u32 = 0;
     while (at < n) {
@@ -2191,11 +2333,11 @@ fn tk_text_n(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32,
         let l: u32 = tk_utf8_at(s, n, at, &cp);
         if (l == 0) { l = 1; cp = 63; }
         at = at + l;
-        let gx: i32 = x + (k as i32) * cw;
+        let gx: i32 = x + tk_font_pen(pen);
         if (gx >= ((c.x + c.w) as i32)) { return; }
         let under: u32 = 0;
         if (k == (mn as u32)) { under = 1; }
-        tk_glyph(ui, c, gx, y, cp, argb, bold, under);
+        pen = pen + tk_glyph_at(ui, t, c, gx, y, cp, argb, style, under);
         k = k + 1;
     }
 }
@@ -2239,8 +2381,8 @@ fn tk_draw_button(ui: *tk_ui, n: *tk_node, i: u32, c: *ds_rect) -> void {
     // the text, centred, clipped to the inside of the button
     let s: *u8 = tk_text_of(ui, i);
     if (s != (0 as *u8)) {
-        let tw: i32 = ((tk_utf8_count(s, strlen(s)) * tk_char_w(ui)) as i32);
-        let th: i32 = tk_char_h(ui) as i32;
+        let tw: i32 = tk_str_dw(ui, s, strlen(s), TK_ST_TEXT) as i32;
+        let th: i32 = tk_line_h(ui, TK_ST_TEXT) as i32;
         let inside: ds_rect;
         let mine: ds_rect;
         ds_rect_set(&mine, (x + 1) as u32, (y + 1) as u32, (tk_imax(w - 2, 0)) as u32, (tk_imax(h - 2, 0)) as u32);
@@ -2255,7 +2397,7 @@ fn tk_draw_button(ui: *tk_ui, n: *tk_node, i: u32, c: *ds_rect) -> void {
 fn tk_draw_side_text(ui: *tk_ui, n: *tk_node, i: u32, c: *ds_rect, from: i32) -> void {
     let s: *u8 = tk_text_of(ui, i);
     if (s == (0 as *u8)) { return; }
-    let th: i32 = tk_char_h(ui) as i32;
+    let th: i32 = tk_line_h(ui, TK_ST_TEXT) as i32;
     let y: i32 = (n.dy as i32) + ((n.dh as i32) - th) / 2;
     tk_text(ui, c, from + tk_len(ui, TK_TEXT_GAP), y, s, tk_text_colour(ui, n), 0);
 }
@@ -2367,17 +2509,23 @@ fn tk_draw_progress(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
 }
 
 // Where a field's text goes: its first column's x, its row's y, and how
-// many characters fit.
-fn tk_field_geom(ui: *tk_ui, n: *tk_node, tx: *i32, ty: *i32, cap: *u32) -> void {
+// far past the first character shown the caret may be (device pixels). In
+// the bitmap font that is the last whole cell that fits; in an outline
+// font, the room's last pixel.
+fn tk_field_geom(ui: *tk_ui, n: *tk_node, tx: *i32, ty: *i32, lim: *i32) -> void {
     let m: i32 = tk_len(ui, TK_RING);
     let pad: i32 = tk_len(ui, TK_FIELD_PADX);
-    let cw: i32 = tk_char_w(ui) as i32;
     *tx = (n.dx as i32) + m + pad;
-    *ty = (n.dy as i32) + ((n.dh as i32) - (tk_char_h(ui) as i32)) / 2;
+    *ty = (n.dy as i32) + ((n.dh as i32) - (tk_line_h(ui, TK_ST_TEXT) as i32)) / 2;
     let room: i32 = (n.dw as i32) - 2 * m - 2 * pad;
+    if (tk_style_font(ui, TK_ST_TEXT) != (0 as *tk_font)) {
+        *lim = tk_imax(room - tk_len(ui, 1), 0);
+        return;
+    }
+    let cw: i32 = tk_char_w(ui) as i32;
     let fit: i32 = 1;
     if (cw > 0 && room / cw > 1) { fit = room / cw; }
-    *cap = fit as u32;
+    *lim = (fit - 1) * cw;
 }
 
 // The caret's column: characters before it, the accent waiting included.
@@ -2393,9 +2541,55 @@ fn tk_field_caret_col(f: *tk_field) -> u32 {
 // TK_NONE for one UAX #9 removes; the caret's column is returned, at the
 // edge of the character it is before. Text with nothing right to left in
 // a ui that is not mirrored is in logical order, the columns its indices.
+// A column is as wide as its character (2.8a′4): tk_fx[d] is column d's
+// edge, device pixels from column 0's, tk_fx[tk_fn] the text's width.
 global tk_fcol: [257]u32;
 global tk_fbidi: u32;              // 1: the last tk_field_vis ran bidi (tk_bd holds it)
 global tk_fm: u32;                 // and how many characters it kept
+global tk_fx: [258]i32;
+global tk_fn: u32;                 // the columns tk_fx holds
+global tk_fadv: [257]i64;          // each column's advance, 26.6 (tk_field_xs's)
+
+// Column d's edge (the last one's for any past it).
+fn tk_fxd(d: u32) -> i32 {
+    if (d > tk_fn) { return tk_fx[tk_fn]; }
+    return tk_fx[d];
+}
+
+// The k-th character, cp, into its column's advance.
+fn tk_field_x1(ui: *tk_ui, t: *tk_font, k: u32, cp: u32) -> void {
+    let d: u32 = tk_fcol[k];
+    if (d == TK_NONE || d >= 257) { return; }
+    if (tk_fbidi == 1 && k < BD_MAX && (tk_bd.lvl[k] & 1) != 0) { cp = bd_mirror(cp); }
+    tk_fadv[d] = tk_cp_adv(ui, t, cp);
+    if (d + 1 > tk_fn) { tk_fn = d + 1; }
+}
+
+// tk_fx and tk_fn for the columns tk_fcol gives a field's characters.
+fn tk_field_xs(ui: *tk_ui, f: *tk_field) -> void {
+    let t: *tk_font = tk_style_font(ui, TK_ST_TEXT);
+    tk_fn = 0;
+    let k: u32 = 0;
+    let at: u32 = 0;
+    while (at <= f.len && k < 257) {
+        if (at == f.caret && f.dead != 0) { tk_field_x1(ui, t, k, f.dead); k += 1; }
+        if (at == f.len || k >= 257) { break; }
+        let cp: u32 = 63;
+        let l: u32 = tk_utf8_at(&f.buf[0], f.len, at, &cp);
+        if (l == 0) { l = 1; cp = 63; }
+        tk_field_x1(ui, t, k, cp);
+        k += 1;
+        at = at + l;
+    }
+    let sum: i64 = 0;
+    tk_fx[0] = 0;
+    let d: u32 = 0;
+    while (d < tk_fn) {
+        sum = sum + tk_fadv[d];
+        tk_fx[d + 1] = tk_font_pen(sum);
+        d += 1;
+    }
+}
 
 fn tk_field_vis(ui: *tk_ui, f: *tk_field) -> u32 {
     let cc: u32 = tk_field_caret_col(f);
@@ -2403,6 +2597,7 @@ fn tk_field_vis(ui: *tk_ui, f: *tk_field) -> u32 {
     if (ui.mirror == 0 && !tk_rtl_in(&f.buf[0], f.len) && (f.dead < 0x0590)) {
         let k: u32 = 0;
         while (k < 257) { tk_fcol[k] = k; k += 1; }
+        tk_field_xs(ui, f);
         return cc;
     }
     // the characters, the accent at the caret
@@ -2449,28 +2644,31 @@ fn tk_field_vis(ui: *tk_ui, f: *tk_field) -> u32 {
         e = vv + 1;
         if ((tk_bd.lvl[cc - 1] & 1) != 0) { e = vv; }
     }
+    tk_field_xs(ui, f);
     if (ui.mirror == 1) { return m - e; }
     return e;
 }
 
 // Keep the caret in sight: the first character shown moves if it must.
 fn tk_field_scroll(ui: *tk_ui, n: *tk_node, f: *tk_field) -> void {
-    let tx: i32 = 0; let ty: i32 = 0; let cap: u32 = 1;
-    tk_field_geom(ui, n, &tx, &ty, &cap);
+    let tx: i32 = 0; let ty: i32 = 0; let lim: i32 = 0;
+    tk_field_geom(ui, n, &tx, &ty, &lim);
     let col: u32 = tk_field_vis(ui, f);
     if (col < f.scroll) { f.scroll = col; }
-    if (col > f.scroll + cap - 1) { f.scroll = col - (cap - 1); }
+    while (f.scroll < col && tk_fxd(col) - tk_fxd(f.scroll) > lim) { f.scroll = f.scroll + 1; }
 }
 
-// One character of a field at column col (from the first shown).
-// k is the character's index (tk_field_vis): at an odd level it shows its
-// mirrored glyph, and in a mirrored ui its cell is mirrored, not the glyph.
-fn tk_field_glyph(ui: *tk_ui, c: *ds_rect, tx: i32, ty: i32, col: u32, s: *u8, l: u32, fg: u32, bg: u32, under: u32, k: u32) -> void {
-    let cw: i32 = tk_char_w(ui) as i32;
-    let ch: i32 = tk_char_h(ui) as i32;
-    let gx: i32 = tx + (col as i32) * cw;
+// One character of a field in column d, tx being column 0's x (the first
+// shown is at the field's). k is the character's index (tk_field_vis): at
+// an odd level it shows its mirrored glyph, and in a mirrored ui its cell
+// is mirrored, not the glyph.
+fn tk_field_glyph(ui: *tk_ui, c: *ds_rect, tx: i32, ty: i32, d: u32, s: *u8, l: u32, fg: u32, bg: u32, under: u32, k: u32) -> void {
+    let t: *tk_font = tk_style_font(ui, TK_ST_TEXT);
+    let ch: i32 = tk_line_h(ui, TK_ST_TEXT) as i32;
+    let gx: i32 = tx + tk_fxd(d);
+    let cw: i32 = tk_fxd(d + 1) - tk_fxd(d);
     if (bg != 0) { tk_box(ui, c, gx, ty, cw, ch, bg); }
-    if (ui.font != (0 as *ds_font)) {
+    if (t != (0 as *tk_font) || ui.font != (0 as *ds_font)) {
         let cp: u32 = 63;
         if (tk_utf8_at(s, l, 0, &cp) == 0) { cp = 63; }
         if (tk_fbidi == 1 && k < BD_MAX && (tk_bd.lvl[k] & 1) != 0) { cp = bd_mirror(cp); }
@@ -2484,7 +2682,7 @@ fn tk_field_glyph(ui: *tk_ui, c: *ds_rect, tx: i32, ty: i32, col: u32, s: *u8, l
             ds_rect_set(&cl, tk_imax(w - (c.x as i32) - (c.w as i32), 0) as u32, c.y, c.w, c.h);
             ui.mirror = 0;
         }
-        tk_glyph(ui, &cl, x, ty, cp, fg, 0, 0);
+        tk_glyph_at(ui, t, &cl, x, ty, cp, fg, TK_ST_TEXT, 0);
         ui.mirror = was;
     }
     if (under == 1) { tk_box(ui, c, gx, ty + ch - tk_len(ui, 1), cw, tk_len(ui, 1), fg); }
@@ -2512,9 +2710,10 @@ fn tk_draw_field(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
     ds_rect_set(&mine, (x + 1) as u32, (y + 1) as u32, (tk_imax(w - 2, 0)) as u32, (tk_imax(h - 2, 0)) as u32);
     if (ds_rect_and(&inside, &mine, c) == 0) { tk_draw_ring(ui, n, c); return; }
     tk_field_scroll(ui, n, f);
-    let caret_d: u32 = tk_field_vis(ui, f);     // and tk_fcol: where each character shows
-    let tx: i32 = 0; let ty: i32 = 0; let cap: u32 = 1;
-    tk_field_geom(ui, n, &tx, &ty, &cap);
+    let caret_d: u32 = tk_field_vis(ui, f);     // and tk_fcol, tk_fx: where each character shows
+    let tx: i32 = 0; let ty: i32 = 0; let lim: i32 = 0;
+    tk_field_geom(ui, n, &tx, &ty, &lim);
+    let x0: i32 = tx - tk_fxd(f.scroll);        // column 0, the first shown at tx
     let a: u32 = f.anchor; let b: u32 = f.caret;
     if (a > b) { a = f.caret; b = f.anchor; }
     let pre: [4]u8;
@@ -2527,7 +2726,7 @@ fn tk_draw_field(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
     while (at <= f.len) {
         if (at == f.caret && pre_n > 0) {
             let dd: u32 = tk_fcol[col];
-            if (dd != TK_NONE && dd >= f.scroll) { tk_field_glyph(ui, &inside, tx, ty, dd - f.scroll, &pre[0], pre_n, fg, 0, 1, col); }
+            if (dd != TK_NONE && dd >= f.scroll) { tk_field_glyph(ui, &inside, x0, ty, dd, &pre[0], pre_n, fg, 0, 1, col); }
             col = col + 1;
         }
         if (at == f.len) { break; }
@@ -2536,15 +2735,15 @@ fn tk_draw_field(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
         if (l == 0) { l = 1; }
         let d: u32 = tk_fcol[col];
         if (d != TK_NONE && d >= f.scroll) {
-            if (at >= a && at < b) { tk_field_glyph(ui, &inside, tx, ty, d - f.scroll, &f.buf[at], l, ui.theme.on_accent, ui.theme.accent, 0, col); }
-            else { tk_field_glyph(ui, &inside, tx, ty, d - f.scroll, &f.buf[at], l, fg, 0, 0, col); }
+            if (at >= a && at < b) { tk_field_glyph(ui, &inside, x0, ty, d, &f.buf[at], l, ui.theme.on_accent, ui.theme.accent, 0, col); }
+            else { tk_field_glyph(ui, &inside, x0, ty, d, &f.buf[at], l, fg, 0, 0, col); }
         }
         col = col + 1;
         at = at + l;
     }
     if (tk_on(n, TK_F_FOCUS) == 1) {
-        let cx: i32 = tx + ((caret_d - f.scroll) as i32) * (tk_char_w(ui) as i32);
-        tk_box(ui, &inside, cx, ty, tk_len(ui, 1), tk_char_h(ui) as i32, fg);
+        let cx: i32 = x0 + tk_fxd(caret_d);
+        tk_box(ui, &inside, cx, ty, tk_len(ui, 1), tk_line_h(ui, TK_ST_TEXT) as i32, fg);
     }
     tk_draw_ring(ui, n, c);
 }
@@ -2553,9 +2752,7 @@ fn tk_draw_node(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
     let n: *tk_node = &ui.node[i];
     let k: u32 = n.kind;
     if (k == TK_LABEL || k == TK_HEADING) {
-        let bold: u32 = 0;
-        if (k == TK_HEADING) { bold = 1; }
-        tk_text(ui, c, n.dx as i32, n.dy as i32, tk_text_of(ui, i), tk_text_colour(ui, n), bold);
+        tk_text(ui, c, n.dx as i32, n.dy as i32, tk_text_of(ui, i), tk_text_colour(ui, n), tk_node_style(ui, i));
     }
     else if (k == TK_BUTTON) { tk_draw_button(ui, n, i, c); }
     else if (k == TK_CHECK || k == TK_RADIO) { tk_draw_check(ui, n, i, c); }
@@ -3550,13 +3747,16 @@ fn tk_im_key(ui: *tk_ui, i: u32, code: u32, ch: u32, held: u32) -> u32 {
 fn tk_field_at(ui: *tk_ui, i: u32, x: i32) -> u32 {
     let n: *tk_node = &ui.node[i];
     let f: *tk_field = &ui.field[n.field];
-    let tx: i32 = 0; let ty: i32 = 0; let cap: u32 = 1;
-    tk_field_geom(ui, n, &tx, &ty, &cap);
-    let cw: i32 = tk_imax(tk_char_w(ui) as i32, 1);
-    let col: u32 = f.scroll;
-    if (x > tx) { col = col + (((x - tx) + cw / 2) / cw) as u32; }
-    // the column's edge to a place between characters, in visual order (2.8a4)
+    let tx: i32 = 0; let ty: i32 = 0; let lim: i32 = 0;
+    tk_field_geom(ui, n, &tx, &ty, &lim);
     tk_field_vis(ui, f);
+    // the nearest column edge: past a character once x is past its middle
+    let col: u32 = f.scroll;
+    let dx: i32 = x - tx;
+    if (x > tx) {
+        while (col < tk_fn && dx >= tk_fxd(col + 1) - tk_fxd(f.scroll) - (tk_fxd(col + 1) - tk_fxd(col)) / 2) { col = col + 1; }
+    }
+    // the column's edge to a place between characters, in visual order (2.8a4)
     if (tk_fbidi == 1) {
         let m: u32 = tk_fm;
         let e: u32 = tk_imin(col as i32, m as i32) as u32;
@@ -3866,7 +4066,7 @@ fn tk_draw_tabs(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
     let line: i32 = tk_len(ui, 1);
     tk_box(ui, c, n.dx as i32, sb - line, n.dw as i32, line, ui.theme.border);
     let top: i32 = tk_dev(ui, n.y + TK_RING) as i32;
-    let chh: i32 = tk_char_h(ui) as i32;
+    let chh: i32 = tk_line_h(ui, TK_ST_TEXT) as i32;
     let k: u32 = 0;
     let x0: i32 = 0;
     let x1: i32 = 0;
@@ -4308,7 +4508,7 @@ fn tk_draw_chevron(ui: *tk_ui, c: *ds_rect, cx: i32, cy: i32, open: u32, argb: u
 fn tk_draw_rows(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
     let n: *tk_node = &ui.node[i];
     tk_box(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, ui.theme.raised);
-    let chh: i32 = tk_char_h(ui) as i32;
+    let chh: i32 = tk_line_h(ui, TK_ST_TEXT) as i32;
     let focused: u32 = tk_on(n, TK_F_FOCUS);
     let head: u32 = TK_NONE;
     if (n.kind == TK_TABLE) { head = tk_rows_first(ui, i); }
@@ -4323,7 +4523,7 @@ fn tk_draw_rows(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
             if (r == head) {
                 tk_box(ui, c, rn.dx as i32, ry, rn.dw as i32, rh, ui.theme.off_bg);
                 tk_box(ui, c, rn.dx as i32, ry + rh - tk_len(ui, 1), rn.dw as i32, tk_len(ui, 1), ui.theme.border);
-                bold = 1;
+                bold = TK_ST_STRONG;
             } else if (r == n.sel) {
                 let bg: u32 = ui.theme.pressed;
                 if (focused == 1) { bg = ui.theme.accent; fg = ui.theme.on_accent; }
@@ -4725,7 +4925,7 @@ fn tk_draw_menubar(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
     tk_box(ui, c, n.dx as i32, (n.dy as i32) + (n.dh as i32) - line, n.dw as i32, line, ui.theme.border);
     let open: u32 = TK_NONE;
     if (ui.bar == i && ui.pop_n > 0) { open = ui.pop[ui.pop_n - 1]; }
-    let chh: i32 = tk_char_h(ui) as i32;
+    let chh: i32 = tk_line_h(ui, TK_ST_TEXT) as i32;
     let m: u32 = n.first;
     while (m != TK_NONE) {
         if (tk_shown(ui, m) == 1) {
@@ -4746,8 +4946,7 @@ fn tk_draw_menu(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
     let r: i32 = tk_len(ui, TK_RADIUS);
     tk_shape(ui, c, n.dx as i32, n.dy as i32, n.dw as i32, n.dh as i32, r, 0, ui.theme.border);
     tk_shape(ui, c, (n.dx as i32) + 1, (n.dy as i32) + 1, (n.dw as i32) - 2, (n.dh as i32) - 2, tk_imax(r - 1, 0), 0, ui.theme.raised);
-    let chh: i32 = tk_char_h(ui) as i32;
-    let cw: i32 = tk_char_w(ui) as i32;
+    let chh: i32 = tk_line_h(ui, TK_ST_TEXT) as i32;
     let padx: i32 = tk_len(ui, TK_ROW_PADX);
     let key: [32]u8;
     let it: u32 = n.first;
@@ -4772,7 +4971,7 @@ fn tk_draw_menu(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
                 tk_text(ui, c, ix + padx, ty, tk_text_of(ui, it), fg, 0);
                 let kn: u32 = tk_item_key(ui, it, &key[0]);
                 if (kn > 0) {
-                    let kw: i32 = (tk_utf8_count(&key[0], kn) as i32) * cw;
+                    let kw: i32 = tk_str_dw(ui, &key[0], kn, TK_ST_TEXT) as i32;
                     tk_text(ui, c, ix + iw - padx - kw, ty, &key[0], kc, 0);
                 }
             }
@@ -5037,7 +5236,7 @@ fn tk_tip_show(ui: *tk_ui, i: u32) -> void {
     let s: *u8 = &ui.arena[ui.node[i].tip];
     let n: *tk_node = &ui.node[i];
     let w: i32 = tk_dev(ui, tk_str_lw(ui, s) + 2 * TK_ROW_PADX) as i32;
-    let h: i32 = tk_dev(ui, tk_logical(ui, tk_char_h(ui)) + 2 * TK_POP_PAD) as i32;
+    let h: i32 = tk_dev(ui, tk_logical(ui, tk_line_h(ui, TK_ST_TEXT)) + 2 * TK_POP_PAD) as i32;
     let gap: i32 = tk_len(ui, TK_POP_PAD);
     let cw: i32 = ui.canvas.width as i32;
     let ch: i32 = ui.canvas.height as i32;
@@ -5066,7 +5265,7 @@ fn tk_draw_tip(ui: *tk_ui, r: *ds_rect) -> void {
     let c: ds_rect;
     if (tk_drect(ui, &tr, ui.tip_x, ui.tip_y, ui.tip_w, ui.tip_h) == 0 || ds_rect_and(&c, &tr, r) == 0) { return; }
     tk_shape(ui, &c, ui.tip_x, ui.tip_y, ui.tip_w, ui.tip_h, tk_len(ui, TK_RADIUS), 0, ui.theme.text);
-    let chh: i32 = tk_char_h(ui) as i32;
+    let chh: i32 = tk_line_h(ui, TK_ST_TEXT) as i32;
     tk_text(ui, &c, ui.tip_x + tk_len(ui, TK_ROW_PADX), ui.tip_y + (ui.tip_h - chh) / 2, &ui.arena[ui.node[ui.tip_for].tip], ui.theme.surface, 0);
 }
 
@@ -5279,7 +5478,7 @@ fn tk_draw_textgrid(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
                     let cp: u32 = v & 0x1FFFFF;
                     if (cp > 32) {
                         let l: u32 = tk_utf8_put(cp, &buf[0]);
-                        tk_text_n(ui, g, x, y, &buf[0], l, fg, 0);
+                        tk_text_n(ui, g, x, y, &buf[0], l, fg, TK_ST_CELL);
                     }
                 }
                 col = col + 1;

@@ -486,7 +486,7 @@ fn lt_all_keyed() -> u32 {
         if (n.tip != TK_NONE && n.tipkey == TK_NONE) { return 1; }
         if (n.text != TK_NONE && lt_boxed(n.kind) == 1 && tk_reachable(&tt_ui, i) == 1) {
             let s: *u8 = &tt_ui.arena[n.text];
-            if (tk_utf8_count(s, strlen(s)) * tk_char_w(&tt_ui) > n.dw) { return 2; }
+            if (tk_str_dw(&tt_ui, s, strlen(s), tk_node_style(&tt_ui, i)) > n.dw) { return 2; }
         }
         i += 1;
     }
