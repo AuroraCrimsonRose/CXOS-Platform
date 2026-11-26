@@ -157,8 +157,18 @@ file(WRITE ${BUILD_DIR}/cxk_version.h
 # them in is a source-list change, not a flags change.
 # -fno-omit-frame-pointer: a panic names its callers by walking the chain
 # (arch/x86_64/idt.c, panic_stack_walk).
+# -O2 since 2.8a'4b: until then no -O at all, so clang's -O0, which nothing
+# chose; a boot went from 1719 s to 1122 s of guest time, a signature check's
+# SHA-256 about four times faster. The kernel was written under -O0, so the
+# three that Linux builds with keep the rules it was written to:
+# -fno-strict-aliasing (it reads structs through byte pointers and back),
+# -fwrapv (signed overflow wraps, as -O0 happened to give), and
+# -fno-delete-null-pointer-checks (a check after a load stays a check).
+# Hardware ordering at -O2: drivers/iowin.c's barriers, arch/x86/pio.h's and
+# arch_cpu_relax's memory clobbers.
 set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
             -fno-omit-frame-pointer
+            -O2 -fno-strict-aliasing -fwrapv -fno-delete-null-pointer-checks
             -mcmodel=kernel -mno-red-zone
             -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -Wall -Wextra -Werror -Wshorten-64-to-32 ${CXK_DEFS}

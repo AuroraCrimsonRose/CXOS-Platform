@@ -58,14 +58,26 @@ static int inside(struct iowin *w, uint32_t off, uint32_t width) {
 
 #define MMIO(n, w, off) (*(volatile uint##n##_t *)((w)->base + (off)))
 
+/* A compiler barrier on each side of the device: memory written for a DMA
+   engine (descriptors, buffers) is in memory before the write that tells the
+   device to look, and nothing is read from such memory before the read that
+   says it is ready. Volatile orders the register accesses only among
+   themselves. The kernel is built at -O2 since 2.8a'4b; until then -O0, and
+   this file being apart from its callers, gave it by accident. The CPU's
+   own ordering (x86: stores in order, uncached MMIO) needs nothing more. */
+#define IOWIN_BARRIER() __atomic_signal_fence(__ATOMIC_SEQ_CST)   /* the compiler's, no instruction */
+
 #define IOWIN_ACCESSORS(n)                                                    \
 uint##n##_t iowin_read##n(struct iowin *w, uint32_t off) {                    \
     if (!inside(w, off, n / 8)) return (uint##n##_t)~0u;                      \
-    if (w->kind == IOWIN_PORT) return PORT_IN(n, w, off);                     \
-    return MMIO(n, w, off);                                                   \
+    uint##n##_t v_ = w->kind == IOWIN_PORT ? PORT_IN(n, w, off)               \
+                                           : MMIO(n, w, off);                 \
+    IOWIN_BARRIER();                                                          \
+    return v_;                                                                \
 }                                                                             \
 void iowin_write##n(struct iowin *w, uint32_t off, uint##n##_t v) {           \
     if (!inside(w, off, n / 8)) return;                                       \
+    IOWIN_BARRIER();                                                          \
     if (w->kind == IOWIN_PORT) PORT_OUT(n, w, off, v);                        \
     else MMIO(n, w, off) = v;                                                 \
 }

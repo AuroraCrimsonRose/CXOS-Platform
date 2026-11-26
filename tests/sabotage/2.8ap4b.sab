@@ -1,0 +1,39 @@
+# Step 2.8a′4b, the kernel built at -O2 to the rules it was written under
+# (tools/cmake/CMakeLists.txt's KCFLAGS), run by `cxk test sabotage`. Each
+# takes one flag away and must turn red exactly the self-test named: its
+# probes answer by the code the compiler made. All three land in the same
+# test, so each boots alone. Format: docs/devkit/CX_CXK_PLAN.md,
+# "cxk test sabotage".
+
+[no-optimise]
+# back to clang's -O0, as the kernel was built until 2.8a′4b
+expect = kernel built at -O2, signed wrap, no strict aliasing
+narrow = yes
+edit = tools/cmake/CMakeLists.txt
+<<<
+            -O2 -fno-strict-aliasing -fwrapv -fno-delete-null-pointer-checks
+===
+            -fno-strict-aliasing -fwrapv -fno-delete-null-pointer-checks
+>>>
+
+[no-wrapv]
+# signed overflow undefined: x + 1 > x folds to true
+expect = kernel built at -O2, signed wrap, no strict aliasing
+narrow = yes
+edit = tools/cmake/CMakeLists.txt
+<<<
+            -O2 -fno-strict-aliasing -fwrapv -fno-delete-null-pointer-checks
+===
+            -O2 -fno-strict-aliasing -fno-delete-null-pointer-checks
+>>>
+
+[strict-aliasing]
+# type-based aliasing: the int's load after the short's store is forwarded
+expect = kernel built at -O2, signed wrap, no strict aliasing
+narrow = yes
+edit = tools/cmake/CMakeLists.txt
+<<<
+            -O2 -fno-strict-aliasing -fwrapv -fno-delete-null-pointer-checks
+===
+            -O2 -fwrapv -fno-delete-null-pointer-checks
+>>>

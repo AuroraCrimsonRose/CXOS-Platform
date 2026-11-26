@@ -13,32 +13,32 @@
 
 static inline uint8_t arch_pio_in8(uint16_t port) {
     uint8_t v;
-    __asm__ volatile ("inb %1, %0" : "=a"(v) : "Nd"(port));
+    __asm__ volatile ("inb %1, %0" : "=a"(v) : "Nd"(port) : "memory");
     return v;
 }
 
 static inline uint16_t arch_pio_in16(uint16_t port) {
     uint16_t v;
-    __asm__ volatile ("inw %1, %0" : "=a"(v) : "Nd"(port));
+    __asm__ volatile ("inw %1, %0" : "=a"(v) : "Nd"(port) : "memory");
     return v;
 }
 
 static inline uint32_t arch_pio_in32(uint16_t port) {
     uint32_t v;
-    __asm__ volatile ("inl %1, %0" : "=a"(v) : "Nd"(port));
+    __asm__ volatile ("inl %1, %0" : "=a"(v) : "Nd"(port) : "memory");
     return v;
 }
 
 static inline void arch_pio_out8(uint16_t port, uint8_t v) {
-    __asm__ volatile ("outb %0, %1" : : "a"(v), "Nd"(port));
+    __asm__ volatile ("outb %0, %1" : : "a"(v), "Nd"(port) : "memory");
 }
 
 static inline void arch_pio_out16(uint16_t port, uint16_t v) {
-    __asm__ volatile ("outw %0, %1" : : "a"(v), "Nd"(port));
+    __asm__ volatile ("outw %0, %1" : : "a"(v), "Nd"(port) : "memory");
 }
 
 static inline void arch_pio_out32(uint16_t port, uint32_t v) {
-    __asm__ volatile ("outl %0, %1" : : "a"(v), "Nd"(port));
+    __asm__ volatile ("outl %0, %1" : : "a"(v), "Nd"(port) : "memory");
 }
 
 #endif

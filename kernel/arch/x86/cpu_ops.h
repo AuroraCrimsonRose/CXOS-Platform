@@ -34,7 +34,7 @@ static inline int arch_irqs_enabled(void) {
 
 static inline void arch_irq_enable(void)  { __asm__ volatile ("sti" : : : "memory"); }
 static inline void arch_irq_disable(void) { __asm__ volatile ("cli" : : : "memory"); }
-static inline void arch_cpu_relax(void)   { __asm__ volatile ("pause"); }
+static inline void arch_cpu_relax(void)   { __asm__ volatile ("pause" : : : "memory"); }
 static inline void arch_cpu_halt(void)    { __asm__ volatile ("hlt" : : : "memory"); }
 
 /* sti takes effect after the NEXT instruction, so an interrupt pending at the

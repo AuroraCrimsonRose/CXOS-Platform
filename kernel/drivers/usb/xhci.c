@@ -913,7 +913,9 @@ static void msi_self_test(struct xhci_hc *c, const struct pci_device *dev) {
     struct xhci_trb ev;
     run_command(c, 0, 0, TRB_TYPE(TRB_CMD_NOOP) | TRB_IOC, &ev);
 
-    for (int i = 0; i < 200000 && msi_hits == 0; i++) { }
+    /* bounded in time, not iterations: a count is a time only at one
+       optimisation level and one clock (the kernel is -O2 since 2.8a'4b) */
+    for (int i = 0; i < 10 && msi_hits == 0; i++) timer_sleep(1);
 
     uint32_t hits = msi_hits;
     op_wr(c, XOP_USBCMD, op_rd(c, XOP_USBCMD) & ~(1u << 2));  /* back to polling */

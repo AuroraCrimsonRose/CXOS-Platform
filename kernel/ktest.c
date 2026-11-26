@@ -3409,6 +3409,39 @@ static int test_usb_flush_policy(void) {
     return ok;
 }
 
+/* ---- the kernel is built at -O2, to the rules it was written under ----
+ *
+ * tools/cmake/CMakeLists.txt's KCFLAGS (2.8a'4b). Each probe is answered by
+ * the code the compiler made, not by a flag's name: x + 1 > x folds to true
+ * unless signed overflow wraps (-fwrapv), and a load after stores through
+ * an int and a short to the same bytes keeps the int's value unless the
+ * compiler must assume they alias (-fno-strict-aliasing). Both only fold at
+ * -O1 and up, which __OPTIMIZE__ says. Out of line, their arguments through
+ * volatiles, so nothing is folded at the call. -fno-delete-null-pointer-checks
+ * has no probe: one would load through null. */
+__attribute__((noinline)) static int kb_wraps(int x) { return x + 1 > x; }
+
+__attribute__((noinline)) static int kb_alias(int *i, short *s) {
+    *i = 0x10001;
+    *s = 2;
+    return *i;
+}
+
+static int test_kernel_build(void) {
+#ifdef __OPTIMIZE__
+    int optimised = 1;
+#else
+    int optimised = 0;                          /* -O0: the probes cannot tell */
+#endif
+    volatile int big = 0x7FFFFFFF;
+    int wraps = kb_wraps(big) == 0;             /* INT_MAX + 1 wrapped below */
+    static int word;
+    int *volatile ip = &word;
+    short *volatile sp = (short *)&word;
+    int aliases = kb_alias(ip, sp) == 0x10002;  /* the short's store seen */
+    return optimised && wraps && aliases;
+}
+
 static int test_crypto_profile(void) {
     uint8_t *b = (uint8_t *)kmalloc(16u + 256u);
     if (!b) return 0;
@@ -3820,6 +3853,7 @@ void ktest_run(void) {
     }
 
     KT("ktest.only is read by its rules",          test_ktest_only_rules());
+    KT("kernel built at -O2, signed wrap, no strict aliasing", test_kernel_build());
     KT("paging maps, and refuses what it must not", test_paging());
     KT("I/O windows refuse what lies outside them", test_iowin());
     KT("heap kmalloc/kfree",               test_heap());
