@@ -38,7 +38,7 @@ public static class XfntFormat
     /// time a vector font appeared, for a byte that costs nothing now.
     /// </summary>
     public const byte KindBitmap = 1;
-    public const byte KindVector = 2;   // reserved; nothing writes or reads it yet
+    public const byte KindVector = 2;   // XFNT v2, outlines (XfntOutline; the OS: std/outline.xfxn)
 
     /// <summary>Row bytes are most-significant-bit-first: 0x80 is the leftmost pixel.</summary>
     public const ushort FlagMsbFirst = 0x0001;

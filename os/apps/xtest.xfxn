@@ -28,6 +28,7 @@ import "toolkit_tests.xfxn";
 import "gallery_pages.xfxn";
 import "locale_tests.xfxn";
 import "picture_tests.xfxn";
+import "outline_tests.xfxn";
 import "ai_tests.xfxn";
 
 const MS: u64 = 1000000;
@@ -3483,6 +3484,9 @@ fn all() -> void {
     test_run("picture: a bad QOI is refused",          pic_t_refused,              30000);
     test_run("picture: cover crops and filters",       pic_t_cover,                30000);
     test_run("picture: background 1, else the gradient", pic_t_background,         300000);
+    test_run("fonts: an XFNT v2 face reads as written",  of_t_small,                 30000);
+    test_run("fonts: each rule refuses its own break", of_t_refused,               60000);
+    test_run("fonts: the faces in /System/Fonts",      of_t_system,                300000);
     test_run("windows: the stack, a press raises",     w_stack,                    30000);
     test_run("windows: keys to the focused one only",  w_keys,                     30000);
     test_run("windows: the system's keys are nobody else's", w_system_keys,           30000);

@@ -1603,7 +1603,7 @@ language work in `language/CX_X_PLAN.md`.
      Name "Plex": they ship as CX Sans and CX Mono). **Done.** CFF is
      refused until a face needs it. **a′2** the OS reader: the same checks
      in X, sabotages feeding it bad files, fonts only from `/System/Fonts`,
-     the faces in the image. **a′3** the X rasteriser over integers, a glyph
+     the faces in the image. **Done.** **a′3** the X rasteriser over integers, a glyph
      cache, and a Differential fact holding it to the oracle pixel for
      pixel. **a′4** the toolkit's font handle (family, weight, style,
      size), the UI scale setting, the gallery's text in CX Sans. **a′5**

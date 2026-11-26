@@ -570,6 +570,41 @@ add_custom_command(
     COMMENT "FONT ter-u16n.bdf -> console_16.xfnt (CP437)"
 )
 
+# ---- outline faces: IBM Plex (OFL-1.1) TrueType -> XFNT v2, staged to /System/Fonts (2.8a′2) ----
+#
+# Converted here from the vendored TTFs, never checked in built, as the
+# console font is. Plex reserves the name "Plex", and a converted font is a
+# Modified Version: the faces ship as CX Sans and CX Mono. Files are named
+# cx<family>[-b][-i][-bi]: XSTG caps a staged name at 32 bytes, path
+# included, and std/outline.xfxn's of_load takes the name alone.
+set(PLEX_DIR ${SRC_DIR}/vendor/plex)
+set(OUTLINE_FACES
+    "cxsans|sans/IBMPlexSans-Regular|CX Sans"
+    "cxsans-b|sans/IBMPlexSans-Bold|CX Sans"
+    "cxsans-i|sans/IBMPlexSans-Italic|CX Sans"
+    "cxsans-bi|sans/IBMPlexSans-BoldItalic|CX Sans"
+    "cxmono|mono/IBMPlexMono-Regular|CX Mono"
+    "cxmono-b|mono/IBMPlexMono-Bold|CX Mono"
+    "cxmono-i|mono/IBMPlexMono-Italic|CX Mono"
+    "cxmono-bi|mono/IBMPlexMono-BoldItalic|CX Mono")
+set(OUTLINE_XFNTS)
+set(OUTLINE_STAGE)
+foreach(face ${OUTLINE_FACES})
+    string(REPLACE "|" ";" parts "${face}")
+    list(GET parts 0 out_name)
+    list(GET parts 1 ttf)
+    list(GET parts 2 face_name)
+    set(out ${BUILD_DIR}/${out_name}.xfnt)
+    add_custom_command(
+        OUTPUT ${out}
+        COMMAND ${CXK} font build ${PLEX_DIR}/${ttf}.ttf --face "${face_name}" -o ${out}
+        DEPENDS ${PLEX_DIR}/${ttf}.ttf ${CXK}
+        COMMENT "FONT ${ttf}.ttf -> ${out_name}.xfnt (${face_name})"
+    )
+    list(APPEND OUTLINE_XFNTS ${out})
+    list(APPEND OUTLINE_STAGE --stage System/Fonts/${out_name}.xfnt=${out})
+endforeach()
+
 # ---- string tables: Fluent sources -> .xstr, staged to /System/Locale (2.8a4) ----
 #
 # An app's table is built from the toolkit's source and its own at once, so a
@@ -765,6 +800,7 @@ set(CXK_STAGED_PROGRAMS
 )
 set(CXK_STAGED_SHARED
     --stage System/Fonts/console_16.xfnt=${CONSOLE16_XFNT}
+    ${OUTLINE_STAGE}
     --stage System/Locale/gallery-en.xstr=${GALLERY_EN}
     --stage System/Locale/gallery-qps.xstr=${GALLERY_QPS}
     --stage System/Locale/plurals.xplt=${PLURALS_XPLT}
@@ -804,7 +840,7 @@ add_custom_command(
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_DISK_ELF} ${EXEC_XOEX} ${DISK_APP_XUEX}
             ${SUPERVISOR_XSEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
             ${SETCHECK_XUEX} ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX} ${FUTEX_XUEX} ${XTEST_XUEX} ${DISPLAYD_XUEX} ${WDEMO_XUEX} ${GALLERY_XUEX} ${BOCHS_XUEX} ${VIRTGPU_XUEX} ${PROCMAN_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
-            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${LOCALE_FILES} ${BACKGROUND_QOIS} ${CXK}
+            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${OUTLINE_XFNTS} ${LOCALE_FILES} ${BACKGROUND_QOIS} ${CXK}
     COMMENT "Building the CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})

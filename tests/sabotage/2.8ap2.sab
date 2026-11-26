@@ -1,0 +1,149 @@
+# Step 2.8a′2, the OS's XFNT v2 reader (std/outline.xfxn), run by
+# `cxk test sabotage`. Each must turn red exactly the self-tests named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds
+# at most one sabotage per test.
+#
+# The mutation test stops at its first red, so one blinded rule a boot. A
+# rule from each part of the checker is blinded (the header, the length,
+# the map, the glyphs, the points, the padding); the rest share its loop.
+# The host's XfntOutlineTests holds the X file's face and mutations to the
+# C# checker, which is sabotaged on the host.
+
+# ---- the header ----
+
+[magic-blind]
+# any first four bytes pass
+expect = x: fonts: each rule refuses its own break @ failed at step 100
+group = g1
+edit = os/std/outline.xfxn
+<<<
+    if (p[0] != 88 || p[1] != 70 || p[2] != 78 || p[3] != 84) { return of_refuse(f, OF_W_MAGIC); }   // "XFNT"
+===
+>>>
+
+[version-blind]
+# a v1 file reads on as a v2 one
+expect = x: fonts: each rule refuses its own break @ failed at step 101
+expect = x: fonts: the faces in /System/Fonts @ failed at step 1907
+group = g2
+edit = os/std/outline.xfxn
+<<<
+    if (of_u16(p, 4) != 2) { return of_refuse(f, OF_W_VERSION); }
+===
+>>>
+
+[length-blind]
+# the counts need not describe the file
+expect = x: fonts: each rule refuses its own break @ failed at step 117
+group = g3
+edit = os/std/outline.xfxn
+<<<
+    if (of_length(glyphs, map, contours, points) != (n as u64)) { return of_refuse(f, OF_W_LENGTH); }
+===
+>>>
+
+# ---- the sections ----
+
+[map-order-blind]
+# codepoints in any order
+expect = x: fonts: each rule refuses its own break @ failed at step 121
+group = g4
+edit = os/std/outline.xfxn
+<<<
+        if (i > 0 && cp <= prev) { return of_refuse(f, OF_W_MAP_ORDER); }
+===
+>>>
+
+[empty-box-blind]
+# a glyph with no contours may carry a box
+expect = x: fonts: each rule refuses its own break @ failed at step 131
+group = g5
+edit = os/std/outline.xfxn
+<<<
+            if (x0 != 0 || y0 != 0 || x1 != 0 || y1 != 0) { return of_refuse(f, OF_W_BOX); }
+===
+>>>
+
+[two-off-blind]
+# two off-curve points together: a segment that is not a line or one quadratic
+expect = x: fonts: each rule refuses its own break @ failed at step 139
+group = g6
+edit = os/std/outline.xfxn
+<<<
+                if (on == 0 && prev_off == 1) { return of_refuse(f, OF_W_TWO_OFF); }
+===
+>>>
+
+[padding-blind]
+# anything after the flags
+expect = x: fonts: each rule refuses its own break @ failed at step 140
+group = g7
+edit = os/std/outline.xfxn
+<<<
+        if (p[i] != 0) { return of_refuse(f, OF_W_PADDING); }
+===
+>>>
+
+# ---- reading a checked face ----
+
+[lookup-short]
+# the binary search never looks at the last entry
+expect = x: fonts: an XFNT v2 face reads as written @ failed at step 8
+group = g1
+edit = os/std/outline.xfxn
+<<<
+    let hi: u32 = f.map;
+    while (lo < hi) {
+===
+    let hi: u32 = f.map - 1;
+    while (lo < hi) {
+>>>
+
+[glyph-first-wrong]
+# a glyph's first contour read from its contour count
+expect = x: fonts: an XFNT v2 face reads as written @ failed at step 12
+group = g3
+edit = os/std/outline.xfxn
+<<<
+    out.first = of_u32(f.p, r + 12);
+===
+    out.first = of_u32(f.p, r + 10);
+>>>
+
+# ---- loading ----
+
+[name-takes-a-path]
+# of_load lets a '/' into the path
+expect = x: fonts: the faces in /System/Fonts @ failed at step 1902
+group = g1
+edit = os/std/outline.xfxn
+<<<
+        if (!((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 95)) { return 0; }
+===
+        if (!((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 95 || c == 47)) { return 0; }
+>>>
+
+[free-keeps-face]
+# of_free lets go of the memory and leaves the face looking loaded
+expect = x: fonts: the faces in /System/Fonts @ failed at step 1008
+group = g4
+edit = os/std/outline.xfxn
+<<<
+        handle_close(f.mem);
+    }
+    memzero(f as *u8, sizeof *f);
+===
+        handle_close(f.mem);
+    }
+>>>
+
+[face-not-staged]
+# the image lacks a face
+expect = x: fonts: the faces in /System/Fonts @ failed at step 1701
+group = g5
+edit = tools/cmake/CMakeLists.txt
+<<<
+    "cxmono-bi|mono/IBMPlexMono-BoldItalic|CX Mono")
+===
+    )
+>>>

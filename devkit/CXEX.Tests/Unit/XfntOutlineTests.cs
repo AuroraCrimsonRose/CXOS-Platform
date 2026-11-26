@@ -128,6 +128,48 @@ public class XfntOutlineTests
         Assert.Contains(says, ex.Message);
     }
 
+    // ---- the OS's checker is held to the same face and the same breaks ----
+    //
+    // os/apps/outline_tests.xfxn carries Small()'s bytes and this file's
+    // mutations as X arrays, for std/outline.xfxn's tests. Read them out of
+    // it: the bytes must be the writer's, and every mutation there must be
+    // refused here, so the two checkers answer to one list.
+
+    private static uint[] XArray(string src, string name)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(src,
+            $@"global {name}: \[(\d+)\]u(?:8|32) = \[([^\]]*)\];");
+        Assert.True(m.Success, $"{name} is in outline_tests.xfxn");
+        var items = m.Groups[2].Value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.StartsWith("0x") ? Convert.ToUInt32(s[2..], 16) : uint.Parse(s)).ToArray();
+        Assert.Equal(int.Parse(m.Groups[1].Value), items.Length);
+        return items;
+    }
+
+    [Fact]
+    public void The_OS_tests_hold_the_small_face_and_every_mutation_of_it()
+    {
+        string? root = TestEnv.RepoRoot;
+        Assert.SkipWhen(root is null, "no CXOS checkout found. Set CXK_ROOT to the repository root.");
+        string src = File.ReadAllText(Path.Combine(root!, "os", "apps", "outline_tests.xfxn"));
+
+        var good = XfntOutline.Write(Small());
+        Assert.Equal(good, XArray(src, "ot_small").Select(v => (byte)v).ToArray());
+
+        uint[] at = XArray(src, "ot_m_at"), size = XArray(src, "ot_m_size"), val = XArray(src, "ot_m_val");
+        uint[] at2 = XArray(src, "ot_m_at2"), size2 = XArray(src, "ot_m_size2"), val2 = XArray(src, "ot_m_val2");
+        uint[] len = XArray(src, "ot_m_len");
+        Assert.Equal(Mutations().Count(), at.Length);
+        for (int i = 0; i < at.Length; i++)
+        {
+            var bad = new byte[len[i]];
+            Array.Copy(good, bad, Math.Min(good.Length, bad.Length));
+            for (int k = 0; k < size[i]; k++) bad[at[i] + k] = (byte)(val[i] >> (8 * k));
+            for (int k = 0; k < size2[i]; k++) bad[at2[i] + k] = (byte)(val2[i] >> (8 * k));
+            Assert.Throws<InvalidDataException>(() => XfntOutline.Read(bad));
+        }
+    }
+
     [Fact]
     public void Every_truncation_of_a_valid_file_is_refused()
     {

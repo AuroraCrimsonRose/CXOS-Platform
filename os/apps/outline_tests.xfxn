@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/outline_tests.xfxn - the x tests of std/outline.xfxn, the XFNT v2
+// reader: a small face read right, each rule refusing its own break, and
+// the faces in /System/Fonts.
+// Aurora Tejeda / CATX Systems
+//
+// ot_small is the face devkit's XfntOutlineTests calls Small(), as the
+// host's writer writes it, and the ot_m_* table is that test's list of
+// mutations, in its order. XfntOutlineTests reads both out of this file:
+// it requires ot_small to be exactly its writer's bytes and its checker to
+// refuse every mutation here, so the two checkers are held to one list.
+
+import "outline.xfxn";
+
+// glyph 0 a square; glyph 1 ('A', 'B') a quadratic arch and a triangle;
+// glyph 2 (' ') no contours. Map at 64, glyphs 88, contours 136, points
+// 160, flags 200, 212 bytes.
+global ot_small: [212]u8 = [
+    88, 70, 78, 84, 2, 0, 2, 0, 0, 16, 144, 1, 172, 13, 124, 252,
+    100, 0, 240, 10, 208, 7, 112, 254, 200, 0, 0, 0, 3, 0, 0, 0,
+    3, 0, 0, 0, 3, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0,
+    84, 101, 115, 116, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    32, 0, 0, 0, 2, 0, 0, 0, 65, 0, 0, 0, 1, 0, 0, 0,
+    66, 0, 0, 0, 1, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 8,
+    0, 8, 1, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 8,
+    0, 8, 2, 0, 1, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0,
+    4, 0, 0, 0, 3, 0, 0, 0, 7, 0, 0, 0, 3, 0, 0, 0,
+    0, 0, 0, 0, 0, 8, 0, 0, 0, 8, 0, 8, 0, 0, 0, 8,
+    0, 0, 0, 0, 0, 4, 0, 8, 0, 8, 0, 0, 0, 2, 0, 1,
+    0, 6, 0, 1, 0, 4, 0, 2, 1, 1, 1, 1, 1, 0, 1, 1,
+    1, 1, 0, 0
+];
+global ot_buf: [216]u8;
+
+// The mutations: write ot_m_val (ot_m_size bytes, 1, 2 or 4) at ot_m_at,
+// and a second write when ot_m_size2 is not 0; check ot_m_len bytes; the
+// rule that must refuse it is ot_m_why.
+const OT_MUTATIONS: u32 = 42;
+global ot_m_at: [42]u32 = [
+    0, 4, 6, 7, 8, 10, 12, 14, 16, 18, 24, 26, 44, 28, 32, 36, 40, 40,
+    48, 49, 63, 80, 80, 80, 76, 104, 116, 114, 114, 106, 110, 126,
+    144, 140, 156, 156, 162, 202, 204, 206, 211, 0
+];
+global ot_m_size: [42]u32 = [
+    1, 2, 1, 1, 2, 2, 2, 2, 2, 2, 2, 1, 1, 4, 4, 4, 4, 4,
+    1, 1, 1, 4, 4, 4, 4, 2, 4, 2, 2, 2, 2, 2,
+    4, 4, 4, 4, 2, 1, 1, 1, 1, 0
+];
+global ot_m_val: [42]u32 = [
+    89, 1, 1, 128, 2048, 0, 0, 5, 32768, 36864, 61440, 1, 1, 0, 1114113, 4194305, 16777217, 9,
+    0, 7, 120, 65, 56320, 1114112, 3, 16385, 0, 3, 1, 3000, 28672, 10,
+    0, 1, 4, 2, 65535, 2, 0, 0, 1, 0
+];
+global ot_m_at2: [42]u32 = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 132, 0, 0, 0,
+    0, 144, 0, 0, 0, 0, 0, 0, 0, 0
+];
+global ot_m_size2: [42]u32 = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0,
+    0, 4, 0, 0, 0, 0, 0, 0, 0, 0
+];
+global ot_m_val2: [42]u32 = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0,
+    0, 1, 0, 0, 0, 0, 0, 0, 0, 0
+];
+global ot_m_len: [42]u32 = [
+    212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212,
+    212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212,
+    212, 212, 212, 212, 212, 212, 212, 212, 212, 213
+];
+global ot_m_why: [42]u32 = [
+    OF_W_MAGIC, OF_W_VERSION, OF_W_KIND, OF_W_FLAGS, OF_W_EM, OF_W_WEIGHT,
+    OF_W_ASCENDER, OF_W_DESCENDER, OF_W_GAP, OF_W_HEIGHTS, OF_W_UNDERLINE,
+    OF_W_RESERVED, OF_W_RESERVED, OF_W_GLYPHS, OF_W_MAP_COUNT, OF_W_CONTOUR_COUNT,
+    OF_W_POINT_COUNT, OF_W_LENGTH, OF_W_NAME_EMPTY, OF_W_NAME, OF_W_NAME,
+    OF_W_MAP_ORDER, OF_W_MAP_CHAR, OF_W_MAP_CHAR, OF_W_MAP_GLYPH, OF_W_ADVANCE,
+    OF_W_FIRST_CONTOUR, OF_W_CONTOURS_PAST, OF_W_CONTOUR_TOTAL, OF_W_BOX, OF_W_BOX,
+    OF_W_BOX, OF_W_FIRST_POINT, OF_W_FEW_POINTS, OF_W_POINTS_PAST, OF_W_POINT_TOTAL,
+    OF_W_OUTSIDE, OF_W_FLAG, OF_W_STARTS_OFF, OF_W_TWO_OFF, OF_W_PADDING, OF_W_LENGTH
+];
+
+fn ot_fresh() -> void {
+    let i: u32 = 0;
+    while (i < 216) { if (i < 212) { ot_buf[i] = ot_small[i]; } else { ot_buf[i] = 0; } i = i + 1; }
+}
+
+fn ot_write(at: u32, size: u32, v: u32) -> void {
+    let i: u32 = 0;
+    while (i < size) { ot_buf[at + i] = ((v >> (8 * i)) & 255) as u8; i = i + 1; }
+}
+
+// 1-29: the small face passes, and reads back as the host wrote it
+fn of_t_small(arg: u64) -> i32 {
+    let f: of_face;
+    ot_fresh();
+    if (of_check(&f, &ot_buf[0], 212) != 0) { return 1; }
+    if (f.why != 0) { return 2; }
+    if (f.glyphs != 3 || f.map != 3 || f.contours != 3 || f.points != 10) { return 3; }
+    if (f.weight != 400 || f.flags != 0) { return 4; }
+    if (f.ascender != 3500 || f.descender != 0 - 900 || f.line_gap != 100) { return 5; }
+    if (f.cap_height != 2800 || f.x_height != 2000 || f.ul_pos != 0 - 400 || f.ul_thick != 200) { return 6; }
+    let name: [17]u8;
+    of_name(&f, &name[0]);
+    if (streq(&name[0], "Test") == 0) { return 7; }
+    if (of_lookup(&f, 65) != 1 || of_lookup(&f, 66) != 1) { return 8; }
+    if (of_lookup(&f, 32) != 2) { return 9; }
+    if (of_lookup(&f, 90) != 0 || of_lookup(&f, 0) != 0 || of_lookup(&f, 0x10FFFF) != 0) { return 10; }
+    let g: of_glyph;
+    if (of_glyph_get(&f, 1, &g) != 0) { return 11; }
+    if (g.advance != 2560 || g.contours != 2 || g.first != 1) { return 12; }
+    if (g.xmin != 0 || g.ymin != 0 || g.xmax != 2048 || g.ymax != 2048) { return 13; }
+    if (of_glyph_get(&f, 2, &g) != 0 || g.advance != 1024 || g.contours != 0 || g.first != 3) { return 14; }
+    if (of_glyph_get(&f, 3, &g) != E_INVALID_ARGS) { return 15; }
+    if (of_contour_first(&f, 1) != 4 || of_contour_count(&f, 1) != 3) { return 16; }
+    if (of_contour_first(&f, 2) != 7 || of_contour_count(&f, 2) != 3) { return 17; }
+    if (of_point_x(&f, 5) != 1024 || of_point_y(&f, 5) != 2048 || of_point_on(&f, 5) != 0) { return 18; }
+    if (of_point_x(&f, 9) != 1024 || of_point_y(&f, 9) != 512 || of_point_on(&f, 9) != 1) { return 19; }
+    // the flags read: italic and monospace both set, each alone is known
+    ot_buf[7] = 3;
+    if (of_check(&f, &ot_buf[0], 212) != 0 || f.flags != 3) { return 20; }
+    // a negative underline position and a descender of zero are in range
+    ot_fresh();
+    ot_write(14, 2, 0);
+    if (of_check(&f, &ot_buf[0], 212) != 0 || f.descender != 0) { return 21; }
+    return 0;
+}
+
+// 100-141: mutation i is refused by its own rule; 200-299: a fresh copy
+// passes after each; 300: a file one byte short of the header; 400-611:
+// every truncation of the face
+fn of_t_refused(arg: u64) -> i32 {
+    let f: of_face;
+    let i: u32 = 0;
+    while (i < OT_MUTATIONS) {
+        ot_fresh();
+        ot_write(ot_m_at[i], ot_m_size[i], ot_m_val[i]);
+        if (ot_m_size2[i] != 0) { ot_write(ot_m_at2[i], ot_m_size2[i], ot_m_val2[i]); }
+        let rc: i32 = of_check(&f, &ot_buf[0], ot_m_len[i]);
+        if (rc != E_CORRUPT || f.why != ot_m_why[i]) { return (100 + i) as i32; }
+        if (f.p != 0 as *u8) { return (200 + i) as i32; }    // a refused face is not readable
+        ot_fresh();
+        if (of_check(&f, &ot_buf[0], 212) != 0) { return (250 + i) as i32; }
+        i = i + 1;
+    }
+    ot_fresh();
+    if (of_check(&f, &ot_buf[0], 63) != E_CORRUPT || f.why != OF_W_SHORT) { return 300; }
+    let n: u32 = 0;
+    while (n < 212) {
+        if (of_check(&f, &ot_buf[0], n) != E_CORRUPT) { return (400 + n) as i32; }
+        n = n + 1;
+    }
+    return 0;
+}
+
+// The faces in the image: name, weight, flags.
+const OT_FACES: u32 = 8;
+global ot_face_name: [8]*u8;
+global ot_face_weight: [8]u32 = [400, 700, 400, 700, 400, 700, 400, 700];
+global ot_face_flags: [8]u32 = [0, 0, 1, 1, 2, 2, 3, 3];
+
+// 1000-1899: every face in /System/Fonts loads, passes and is what its
+// name says; 1900-1999: of_load takes a name, and only one of /System/Fonts
+fn of_t_system(arg: u64) -> i32 {
+    ot_face_name[0] = "cxsans";   ot_face_name[1] = "cxsans-b";
+    ot_face_name[2] = "cxsans-i"; ot_face_name[3] = "cxsans-bi";
+    ot_face_name[4] = "cxmono";   ot_face_name[5] = "cxmono-b";
+    ot_face_name[6] = "cxmono-i"; ot_face_name[7] = "cxmono-bi";
+    let f: of_face;
+    let g: of_glyph;
+    let name: [17]u8;
+    let i: u32 = 0;
+    while (i < OT_FACES) {
+        let base: i32 = (1000 + 100 * i) as i32;
+        let rc: i32 = of_load(&f, ot_face_name[i]);
+        if (rc != 0) { return base + 1; }
+        if (f.mem <= 0 || f.p == 0 as *u8) { of_free(&f); return base + 2; }
+        if (f.weight != ot_face_weight[i] || f.flags != ot_face_flags[i]) { of_free(&f); return base + 3; }
+        of_name(&f, &name[0]);
+        let want: *u8 = "CX Sans";
+        if (i >= 4) { want = "CX Mono"; }
+        if (streq(&name[0], want) == 0) { of_free(&f); return base + 4; }
+        // a Latin capital has an outline; U+FFFF is no character and draws glyph 0
+        let a: u32 = of_lookup(&f, 65);
+        if (a == 0 || of_glyph_get(&f, a, &g) != 0 || g.contours == 0 || g.advance == 0) { of_free(&f); return base + 5; }
+        if (of_lookup(&f, 0xFFFF) != 0) { of_free(&f); return base + 6; }
+        if (f.glyphs < 200 || f.ascender <= 0 || f.descender >= 0) { of_free(&f); return base + 7; }
+        of_free(&f);
+        if (f.mem != 0 || f.p != 0 as *u8) { return base + 8; }
+        i = i + 1;
+    }
+    if (of_load(&f, "") != E_INVALID_ARGS) { return 1900; }
+    if (of_load(&f, "../cxsans") != E_INVALID_ARGS) { return 1901; }
+    if (of_load(&f, "x/cxsans") != E_INVALID_ARGS) { return 1902; }
+    if (of_load(&f, "CXSANS") != E_INVALID_ARGS) { return 1903; }
+    if (of_load(&f, "cxsans.xfnt") != E_INVALID_ARGS) { return 1904; }
+    if (of_load(&f, "abcdefghijklmno") != E_INVALID_ARGS) { return 1905; }   // 15 bytes
+    if (of_load(&f, "abcdefghijklmn") != E_NOT_FOUND) { return 1906; }       // 14: a name, no such face
+    // the console's bitmap font is XFNT v1: refused by the version, unread past the header
+    if (of_load(&f, "console_16") != E_CORRUPT || f.why != OF_W_VERSION || f.mem != 0) { return 1907; }
+    return 0;
+}

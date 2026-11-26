@@ -136,6 +136,17 @@ and checker), `OutlineConvert.cs` (TrueType to v2), `TrueTypeFont.cs` (the
 host's TrueType reader), `OutlineRaster.cs` (the oracle rasteriser). Tests:
 `CXEX.Tests/Unit/XfntOutlineTests.cs`.
 
+**The OS side** (2.8a′2): `os/std/outline.xfxn`. `of_check` makes the host
+checker's comparisons in its order and names the rule a file broke
+(`OF_W_*`); `of_load` takes a name, never a path, and reads only
+`/System/Fonts/<name>.xfnt` (a-z, 0-9, `-`, `_`; 14 at most, XSTG's
+32-byte staged names). The image carries CX Sans and CX Mono, regular,
+bold, italic and bold italic (`cxsans`, `cxsans-b`, `-i`, `-bi`;
+`cxmono...`), converted at build time. The x tests
+(`os/apps/outline_tests.xfxn`) break the host tests' small face the same
+42 ways; `XfntOutlineTests` reads those bytes and mutations out of the X
+file and holds them to the C# writer and checker.
+
 **No offsets.** Every section's place follows from the header's four
 counts, every index is checked against a running sum, and the file is
 exactly as long as the counts say. All fields are little-endian.
